@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 
 use gpui::SharedString;
-use rox_canvas::{CanvasItem, CanvasState, Content, Cost};
+use rox_canvas::{CanvasItem, CanvasState, Content, Cost, TargetSize};
 use rox_core::settings::roxo::ObjectBundle;
 use rox_core::settings::{self, PostShaderConfig, WorkspaceBundle};
 use rox_viz::signal::Route;
@@ -249,6 +249,35 @@ fn items(
     }
 }
 
+/// `weight` with each target of `canvas` that follows its box counted at the
+/// pixels its session draws at, `drawn` by item id, in place of the width
+/// and height it keeps for Fixed. One not drawing counts nothing. Only the
+/// canvas's own items: a canvas in one of its grids has sessions of its own.
+pub(crate) fn drawing(
+    mut weight: Weight,
+    canvas: &CanvasState,
+    drawn: impl Fn(&str) -> Option<[u32; 2]>,
+) -> Weight {
+    let pixels = |[width, height]: [u32; 2]| u64::from(width) * u64::from(height);
+
+    canvas.walk(&mut |item, _| {
+        if let Content::Target {
+            sizing: TargetSize::Follow,
+            width,
+            height,
+            ..
+        } = &item.content
+        {
+            let kept = pixels([*width, *height]);
+            let now = drawn(&item.id).map_or(0, pixels);
+            let sum = &mut weight.cost.target_pixels;
+            *sum = sum.saturating_sub(kept).saturating_add(now);
+        }
+    });
+
+    weight
+}
+
 /// The inspector's line: the counts always, over or not.
 pub(crate) fn counts(weight: &Weight) -> SharedString {
     rox_i18n::t!(
@@ -351,6 +380,31 @@ mod tests {
 
     fn bare() -> WorkspaceBundle {
         WorkspaceBundle::default()
+    }
+
+    #[test]
+    fn a_following_target_weighs_what_it_draws() {
+        let canvas: CanvasState = serde_json::from_value(json!({ "items": [
+            { "id": "fixed", "content": { "kind": "target", "owner": "plugin:a", "width": 1920, "height": 1080 } },
+            { "id": "follows", "content": {
+                "kind": "target", "owner": "plugin:b", "width": 1280, "height": 720, "sizing": "follow"
+            } },
+            { "id": "group", "content": { "kind": "group", "items": [
+                { "id": "inside", "content": {
+                    "kind": "target", "owner": "plugin:c", "width": 1280, "height": 720, "sizing": "follow"
+                } }
+            ] } }
+        ] }))
+        .unwrap();
+        let weight = weigh_canvas(serde_json::to_value(&canvas).unwrap());
+        assert_eq!(weight.cost.target_pixels, 1920 * 1080 + 2 * 1280 * 720);
+
+        let drawn = drawing(weight, &canvas, |id| match id {
+            "follows" => Some([3840, 2144]),
+            _ => None,
+        });
+        assert_eq!(drawn.cost.target_pixels, 1920 * 1080 + 3840 * 2144);
+        assert_eq!(drawn.cost.targets, 3);
     }
 
     #[test]

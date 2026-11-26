@@ -164,21 +164,57 @@ fn listed(
         .collect()
 }
 
-/// What a renderer with these asks runs as on this system now.
-pub fn tier(cap: &RendererCap) -> Tier {
-    tier_in(cap, &sandbox::support())
+/// What the renderer in `folder`, with these asks, runs as on this system
+/// now. Resolving its interpreter may probe one, as the scan already has.
+pub fn tier(folder: &Loaded, cap: &RendererCap) -> Tier {
+    tier_in(folder, cap, &sandbox::support())
 }
 
-fn tier_in(cap: &RendererCap, support: &Support) -> Tier {
-    Tier::of(cap.unconfined, &cap.access, support)
+fn tier_in(folder: &Loaded, cap: &RendererCap, support: &Support) -> Tier {
+    Tier::of(cap.unconfined, &cap.access, support, || {
+        interpreter_install(folder)
+    })
 }
 
-/// Whether `record`'s approval covers the tier `cap` runs as now. An
-/// approval from before the sandbox recorded none: it was given for a
-/// renderer running with the user's permissions, and whatever this system
-/// gives it now is at most that.
-fn sandbox_holds(record: &PluginRecord, cap: &RendererCap, support: &Support) -> bool {
-    record.sandbox.is_empty() || record.sandbox == tier_in(cap, support).key()
+/// What the interpreter the package's entry resolves to needs from outside
+/// the system's folders (ADR 38). The Program Folders as a whole are never
+/// granted: only the install of the one program the entry runs.
+#[cfg(target_os = "linux")]
+fn interpreter_install(folder: &Loaded) -> Vec<std::path::PathBuf> {
+    let Some(command) = folder
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest::entry_for(manifest, &folder.dir).ok())
+    else {
+        return Vec::new();
+    };
+
+    let home = dirs::home_dir().and_then(|home| home.canonicalize().ok());
+    let data = settings::data_dir().canonicalize().ok();
+    sandbox::interpreter_install(
+        std::path::Path::new(command.get_program()),
+        &folder.dir,
+        home.as_deref(),
+        data.as_deref(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn interpreter_install(_folder: &Loaded) -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
+/// Whether `record`'s approval covers the tier the renderer in `folder`
+/// runs as now. An approval from before the sandbox recorded none: it was
+/// given for a renderer running with the user's permissions, and whatever
+/// this system gives it now is at most that.
+fn sandbox_holds(
+    record: &PluginRecord,
+    folder: &Loaded,
+    cap: &RendererCap,
+    support: &Support,
+) -> bool {
+    record.sandbox.is_empty() || record.sandbox == tier_in(folder, cap, support).key()
 }
 
 /// [`sandbox_holds`] for the settings page and the switch, which raise the
@@ -192,7 +228,7 @@ pub fn sandbox_approved(folder: &Loaded, record: Option<&PluginRecord>) -> bool 
         return true;
     };
 
-    record.is_none_or(|record| sandbox_holds(record, cap, &sandbox::support()))
+    record.is_none_or(|record| sandbox_holds(record, folder, cap, &sandbox::support()))
 }
 
 /// The gate, read from what's on disk and in the records now. Every start
@@ -232,7 +268,7 @@ fn check<'a>(
 
     // Approved as sandboxed and the sandbox can't be applied here now, or
     // the other way round: the user's yes was for another tier.
-    if !sandbox_holds(record, cap, support) {
+    if !sandbox_holds(record, folder, cap, support) {
         return Err(Refused::Tier);
     }
 
@@ -415,7 +451,7 @@ pub fn start(
 
     // A renderer that can't start counts as one that exits, as a plugin's
     // failed start does, so a broken one stops rather than looping.
-    let tier = tier_in(&asks, &support);
+    let tier = tier_in(folder, &asks, &support);
     let hello = Hello {
         sizes,
         resizes: asks.resizes,
@@ -573,7 +609,10 @@ fn spawn(
     extra: Extra,
 ) -> Result<(Process, process::Pipes), String> {
     let Tier::Sandboxed {
-        network, folders, ..
+        network,
+        folders,
+        interpreter,
+        ..
     } = tier
     else {
         return process::spawn_with("renderer", &folder.id, command, &folder.dir, extra);
@@ -583,9 +622,10 @@ fn spawn(
         return Err("the sandbox can't be applied here".into());
     };
 
+    // The interpreter's install is the one the approval named, so a program
+    // that resolved elsewhere since fails to start rather than gaining a grant.
     let reads = read_folders(folders);
-    let program = std::path::PathBuf::from(command.get_program());
-    let profile = sandbox::Profile::renderer(&folder.dir, &program, cache, &reads, *network);
+    let profile = sandbox::Profile::renderer(&folder.dir, interpreter, cache, &reads, *network);
 
     process::spawn_confined(
         "renderer",
@@ -640,7 +680,7 @@ fn read_folders(folders: &[sandbox::Folder]) -> Vec<std::path::PathBuf> {
         };
 
         for path in named {
-            match readable(&path, home.as_deref(), data.as_deref()) {
+            match sandbox::grantable(&path, home.as_deref(), data.as_deref()) {
                 Some(path) => reads.push(path),
                 None => log::warn!(
                     "renderer: not granting {} for {}: it holds the home or rox's data folder",
@@ -652,28 +692,6 @@ fn read_folders(folders: &[sandbox::Folder]) -> Vec<std::path::PathBuf> {
     }
 
     reads
-}
-
-/// `path` as a read grant, or None when granting it would grant more than
-/// the folder the card named. A user folder that xdg-user-dirs set to home
-/// itself, or a library folder at home or above it, would hand over every
-/// file the user has, and one around or inside rox's data folder its
-/// accounts and approvals.
-#[cfg(target_os = "linux")]
-fn readable(
-    path: &std::path::Path,
-    home: Option<&std::path::Path>,
-    data: Option<&std::path::Path>,
-) -> Option<std::path::PathBuf> {
-    let path = path.canonicalize().ok()?;
-
-    let holds_home = home.is_some_and(|home| home.starts_with(&path));
-    let near_data = data.is_some_and(|data| data.starts_with(&path) || path.starts_with(data));
-    if holds_home || near_data {
-        return None;
-    }
-
-    Some(path)
 }
 
 /// Where each lent handle lands in a renderer on Unix. The order is fixed:
@@ -1247,34 +1265,6 @@ mod tests {
                 Err(Refused::Tier)
             );
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_read_grant_never_holds_home_or_the_data_folder() {
-        let root = std::env::temp_dir().join(format!("rox-renderers-read-{}", std::process::id()));
-        let home = root.join("home");
-        let data = home.join(".local/share/rox");
-        let music = home.join("Music");
-        for dir in [&data, &music] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        let (home, data, music) = (
-            home.canonicalize().unwrap(),
-            data.canonicalize().unwrap(),
-            music.canonicalize().unwrap(),
-        );
-
-        let grant = |path: &std::path::Path| readable(path, Some(&home), Some(&data));
-        assert_eq!(grant(&music), Some(music.clone()));
-        assert_eq!(grant(&home), None, "home itself, as xdg-user-dirs can set");
-        assert_eq!(grant(&root), None, "above home");
-        assert_eq!(grant(std::path::Path::new("/")), None);
-        assert_eq!(grant(&data.join("..")), None, "around the data folder");
-        assert_eq!(grant(&data), None);
-        assert_eq!(grant(&root.join("missing")), None, "not there");
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

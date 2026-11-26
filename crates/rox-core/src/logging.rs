@@ -60,17 +60,26 @@ impl Logger {
     }
 }
 
+/// Sources whose info lines are debug noise, held to warnings and errors.
+/// blade-graphics logs every buffer and texture made or freed and every
+/// swapchain it reconfigures, about six lines for each step of a window
+/// resize. Its Vulkan backend is the module `hal`.
+const QUIET_INFO: &[&str] = &[
+    "blade_graphics::hal::resource",
+    "blade_graphics::hal::surface",
+];
+
+/// Whether a line from `target` at `level` reaches the log.
+fn passes(level: Level, target: &str) -> bool {
+    match level {
+        Level::Info => !QUIET_INFO.iter().any(|quiet| target.starts_with(quiet)),
+        level => level < Level::Info,
+    }
+}
+
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        if metadata.level() > Level::Info {
-            return false;
-        }
-        // blade-graphics logs every buffer and texture create/destroy at
-        // info. That's debug noise; its warnings and errors still pass.
-        !(metadata.level() == Level::Info
-            && metadata
-                .target()
-                .starts_with("blade_graphics::vulkan::resource"))
+        passes(metadata.level(), metadata.target())
     }
 
     fn log(&self, record: &Record) {
@@ -193,4 +202,28 @@ fn roll(sink: &mut Sink) {
     let (file, bytes) = open_file(&sink.path);
     sink.file = file;
     sink.bytes = bytes;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resize_writes_nothing_and_a_gpu_warning_still_does() {
+        let resize = [
+            "blade_graphics::hal::resource",
+            "blade_graphics::hal::surface",
+        ];
+        for target in resize {
+            assert!(!passes(Level::Info, target), "{target}");
+            assert!(passes(Level::Warn, target), "{target}");
+        }
+
+        assert!(
+            passes(Level::Info, "blade_graphics::hal::init"),
+            "the adapter, once"
+        );
+        assert!(passes(Level::Info, "rox::canvas::target"));
+        assert!(!passes(Level::Debug, "rox::canvas::target"));
+    }
 }

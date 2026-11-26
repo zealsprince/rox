@@ -951,10 +951,10 @@ impl SettingsWindow {
             .unwrap_or_default();
 
         // What a renderer runs as here, beside its version (ADR 38).
-        let tier = folder
-            .and_then(|f| f.manifest.as_ref())
-            .and_then(|m| m.capabilities.renderer.as_ref())
-            .map(|cap| tier_mark(&rox_services::renderers::tier(cap)));
+        let tier = folder.and_then(|f| {
+            let cap = f.manifest.as_ref()?.capabilities.renderer.as_ref()?;
+            Some(tier_mark(&rox_services::renderers::tier(f, cap)))
+        });
 
         // Only a switched-on plugin has details to fold. The rest keep the
         // chevron's width so every name lines up.

@@ -934,6 +934,10 @@ impl CanvasPanel {
         self.targets.status(item)
     }
 
+    pub(crate) fn target_drawn(&self, id: &str) -> Option<[u32; 2]> {
+        self.targets.drawn(id)
+    }
+
     pub(crate) fn start_target_again(&mut self, id: &str) {
         self.targets.start_again(id);
     }
@@ -2570,6 +2574,7 @@ impl CanvasPanel {
                     width: TARGET_PIXELS[0],
                     height: TARGET_PIXELS[1],
                     config: Value::Null,
+                    aside: Default::default(),
                     sizing: rox_canvas::TargetSize::Follow,
                     scale: 100,
                     fit: rox_canvas::ImageFit::Cover,

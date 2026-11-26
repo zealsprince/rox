@@ -17,7 +17,7 @@
 //! the card's Switch On approves.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use gpui::{
@@ -113,6 +113,10 @@ pub struct RendererConfig {
     pub rests: bool,
     /// The renderer's settings by key, as its manifest declares them.
     pub settings: serde_json::Value,
+    /// The settings of each renderer the panel showed before, by its id,
+    /// so picking it again finds them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub aside: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for RendererConfig {
@@ -126,6 +130,7 @@ impl Default for RendererConfig {
             scale: 100,
             rests: false,
             settings: serde_json::Value::Null,
+            aside: BTreeMap::new(),
         }
     }
 }
@@ -246,6 +251,13 @@ impl RendererPanel {
         let off = target::renderer_id(&owner).map(Readiness::of) == Some(Readiness::Off);
         if owner != self.config.chrome.owner {
             self.config.rests = suggests_rest(&owner);
+            let config = &mut self.config;
+            target_settings::switch(
+                &mut config.settings,
+                &mut config.aside,
+                &config.chrome.owner,
+                &owner,
+            );
             self.config.chrome.owner = owner;
             panel::refresh_tab_panel(&self.tab_panel, cx);
             self.save_config(cx);
@@ -1255,6 +1267,26 @@ mod tests {
         assert_eq!([config.width, config.height], [1920, 1080]);
         assert_eq!(config.scaling.fit(), ImageFit::Contain);
         assert_eq!(config.scale, 100);
+    }
+
+    #[test]
+    fn a_panel_saved_before_renderers_kept_their_own_settings_reads_as_it_was() {
+        let saved = serde_json::json!({
+            "owner": "plugin:plasma",
+            "settings": { "look": "ember", "rate": 30 },
+        });
+        let config: RendererConfig = serde_json::from_value(saved).unwrap();
+
+        assert_eq!(
+            config.settings,
+            serde_json::json!({ "look": "ember", "rate": 30 })
+        );
+        assert!(config.aside.is_empty());
+        let written = serde_json::to_value(&config).unwrap();
+        assert!(
+            written.get("aside").is_none(),
+            "nothing aside is nothing written"
+        );
     }
 
     #[test]

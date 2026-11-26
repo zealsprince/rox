@@ -29,6 +29,9 @@ pub struct Frame {
     pub opacity: f32,
     /// Pixels per unit.
     pub k: f32,
+    /// Pixels per unit at rest: `k` times the own scale of each group the
+    /// frame is inside, which a render target's rest size counts.
+    pub rest: f32,
 }
 
 impl Frame {
@@ -38,6 +41,7 @@ impl Frame {
             size: [viewport.width, viewport.height],
             opacity: 1.,
             k: 1.,
+            rest: 1.,
         };
 
         // A stage with no area has nothing to scale by, so it lays out as
@@ -64,6 +68,7 @@ impl Frame {
             size: [stage.width, stage.height],
             opacity: 1.,
             k,
+            rest: k,
         }
     }
 }
@@ -160,6 +165,7 @@ pub fn child_frame(item: &CanvasItem, parent: &Frame, live: &Live) -> Frame {
         size,
         opacity: parent.opacity * item.opacity * live.opacity,
         k: parent.k,
+        rest: parent.rest * item.place.scale,
     }
 }
 
@@ -278,12 +284,13 @@ pub fn quad_point(corners: &[[f32; 2]; 4], unit: [f32; 2]) -> Option<[f32; 2]> {
 }
 
 /// An item's size on screen at rest, in the pixels the canvas lays out in:
-/// its box and its own scale through the parent's pixels per unit. Tilt,
-/// the camera's perspective and what routes and sway do to it don't count,
-/// so a render target sized from it holds still while its item moves.
+/// its box and its own scale, and the scale of each group around it,
+/// through the stage's pixels per unit. Tilt, the camera's perspective and
+/// what routes and sway do to it don't count, so a render target sized from
+/// it holds still while its item moves.
 pub fn rest_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
     let [width, height] = item_size(item, parent);
-    let k = parent.k * item.place.scale;
+    let k = parent.rest * item.place.scale;
 
     [width * k, height * k]
 }
@@ -1109,10 +1116,29 @@ mod tests {
         it.place.scale = 1.5;
         let parent = Frame {
             k: 2.,
+            rest: 2.,
             ..stage_frame()
         };
 
         assert_eq!(rest_size(&it, &parent), [600., 300.]);
+    }
+
+    #[test]
+    fn a_groups_own_scale_counts_toward_the_rest_size() {
+        let mut group = item(Anchor::Center, [0., 0., 0.], [400., 400.]);
+        group.place.scale = 2.;
+        group.place.rotation = [0.3, 0., 0.];
+        let inner = item(Anchor::Center, [0., 0., 0.], [100., 50.]);
+
+        let stage = Frame {
+            k: 0.5,
+            rest: 0.5,
+            ..stage_frame()
+        };
+        let frame = child_frame(&group, &stage, &Live::default());
+
+        assert_eq!(frame.k, 0.5, "the projection's own scale stays the stage's");
+        assert_eq!(rest_size(&inner, &frame), [100., 50.]);
     }
 
     #[test]

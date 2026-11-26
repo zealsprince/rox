@@ -399,10 +399,14 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
             .unwrap_or_default();
         Weighed { weight }
     });
-    let counts = cost::counts(&weighed.weight);
-    let targets = cost::target_counts(&weighed.weight);
-    let animates = cost::animates(&weighed.weight);
-    let lines = cost::warnings(&weighed.weight);
+    // The sessions' sizes move with every resize, which edits nothing, so
+    // they're read each time rather than kept with the rest.
+    let weight = weighed.weight;
+    let weight = cost::drawing(weight, &panel.config.canvas, |id| panel.target_drawn(id));
+    let counts = cost::counts(&weight);
+    let targets = cost::target_counts(&weight);
+    let animates = cost::animates(&weight);
+    let lines = cost::warnings(&weight);
 
     // The tone is a fixed yellow that washes out on a light theme, so it
     // marks the line and the words keep the theme's own text color.
@@ -1786,9 +1790,26 @@ fn target_rows(
             if off.contains(&picked) {
                 this.ask_enable_later(picked.clone(), cx);
             }
+            // Each renderer keeps its own settings, in one undo step.
+            let id = owner_id.clone();
             this.change_later(
                 "target.owner",
-                edit_target(&owner_id, move |owner, _, _| *owner = picked.clone()),
+                move |canvas| {
+                    if let Some(CanvasItem {
+                        content:
+                            Content::Target {
+                                owner,
+                                config,
+                                aside,
+                                ..
+                            },
+                        ..
+                    }) = canvas.find_mut(&id)
+                    {
+                        crate::canvas::target_settings::switch(config, aside, owner, &picked);
+                        *owner = picked;
+                    }
+                },
                 cx,
             )
         },

@@ -114,20 +114,35 @@ impl Scene {
     /// Runs the probe confined, answering each try's word by name.
     fn probe(&self, reads: &[PathBuf], network: bool) -> HashMap<String, String> {
         let manifest = manifest::load(&self.package).unwrap();
-        let mut command = manifest::entry_for(&manifest, &self.package).unwrap();
+        let command = manifest::entry_for(&manifest, &self.package).unwrap();
+        let interpreter = self.install(Path::new(command.get_program()));
+
+        self.probe_with(command, &interpreter, reads, network)
+    }
+
+    /// What `program`'s install is granted, with this scene's home and data
+    /// folder standing in for the user's.
+    fn install(&self, program: &Path) -> Vec<PathBuf> {
+        let home = self.root.join("home").canonicalize().unwrap();
+        let data = self.root.join("data").canonicalize().unwrap();
+        sandbox::interpreter_install(program, &self.package, Some(&home), Some(&data))
+    }
+
+    /// Runs `command` confined, with `interpreter` as its tier's grant.
+    fn probe_with(
+        &self,
+        mut command: Command,
+        interpreter: &[PathBuf],
+        reads: &[PathBuf],
+        network: bool,
+    ) -> HashMap<String, String> {
         command.env("PROBE_OUT", "stdout").env("ROX_FRAMES_FD", "3");
 
         let frames_path = self.root.join("frames");
         std::fs::write(&frames_path, b"RXF1 frames").unwrap();
         let frames = std::fs::File::open(&frames_path).unwrap();
 
-        let profile = Profile::renderer(
-            &self.package,
-            Path::new(command.get_program()),
-            &self.cache,
-            reads,
-            network,
-        );
+        let profile = Profile::renderer(&self.package, interpreter, &self.cache, reads, network);
         let abi = match sandbox::support() {
             Support::Sandbox { abi, .. } => abi,
             other => panic!("checked before: {other:?}"),
@@ -280,6 +295,65 @@ fn abi() -> u32 {
     }
 }
 
+/// A Python installed under home, pyenv's way, is granted its install and
+/// runs confined. It still can't read a file beside the install, or the
+/// home around it.
+#[test]
+fn an_interpreter_under_home_reaches_its_install_and_nothing_beside_it() {
+    if !runnable() {
+        return;
+    }
+
+    let scene = Scene::new("pyenv");
+    let versions = scene.root.join("home/.pyenv/versions");
+    let install = versions.join("3.12.1");
+    for dir in ["bin", "lib/python3.12"] {
+        std::fs::create_dir_all(install.join(dir)).unwrap();
+    }
+    let python = manifest::find_program("python3", None).unwrap();
+    let copied = install.join("bin/python3");
+    std::fs::copy(python.canonicalize().unwrap(), &copied).unwrap();
+    let inside = install.join("lib/python3.12/marker.txt");
+    std::fs::write(&inside, "in the install\n").unwrap();
+    let beside = versions.join("notes.txt");
+    std::fs::write(&beside, "beside the install\n").unwrap();
+
+    let targets_at = scene.package.join("targets.json");
+    let mut targets: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&targets_at).unwrap()).unwrap();
+    targets["install_file"] = json!(inside);
+    targets["beside_install"] = json!(beside);
+    std::fs::write(&targets_at, targets.to_string()).unwrap();
+
+    let install = install.canonicalize().unwrap();
+    let interpreter = scene.install(&copied);
+    assert_eq!(interpreter, [install.join("bin"), install.join("lib")]);
+
+    let mut command = Command::new(&copied);
+    command.arg(scene.package.join("probe.py"));
+    let seen = scene.probe_with(command, &interpreter, &[], false);
+
+    assert_words(&seen, "reached", &["install-file"]);
+    assert_words(&seen, "blocked", &["beside-install"]);
+    assert_words(&seen, "blocked", ALWAYS_BLOCKED);
+    assert_words(&seen, "reached", ALWAYS_REACHED);
+
+    // Without the grant the same program doesn't start at all.
+    let mut command = Command::new(&copied);
+    command.arg(scene.package.join("probe.py"));
+    let profile = Profile::renderer(&scene.package, &[], &scene.cache, &[], false);
+    let refused = process::spawn_confined(
+        "renderer",
+        "pyenv",
+        command,
+        &scene.package,
+        Extra::None,
+        &profile,
+        abi(),
+    );
+    assert!(refused.is_err(), "it ran without its install granted");
+}
+
 /// The shell a renderer's script starts with, confined, still runs.
 #[test]
 fn a_shell_runs_confined() {
@@ -292,13 +366,7 @@ fn a_shell_runs_confined() {
     command
         .arg("-c")
         .arg("echo ran > \"$ROX_CACHE_DIR/ran\"; cat \"$ROX_CACHE_DIR/ran\"");
-    let profile = Profile::renderer(
-        &scene.package,
-        Path::new("/bin/sh"),
-        &scene.cache,
-        &[],
-        false,
-    );
+    let profile = Profile::renderer(&scene.package, &[], &scene.cache, &[], false);
 
     let (mut process, pipes) = process::spawn_confined(
         "renderer",
@@ -349,7 +417,7 @@ fn what_starting_confined_costs() {
                         true => {
                             let profile = Profile::renderer(
                                 &scene.package,
-                                &program,
+                                &scene.install(&program),
                                 &scene.cache,
                                 &[],
                                 false,

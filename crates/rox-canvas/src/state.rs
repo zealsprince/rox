@@ -3,7 +3,7 @@
 //! so one broken item costs only itself.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -471,6 +471,11 @@ pub enum Content {
         /// rox holds each to the declaration before the renderer sees it.
         #[serde(default)]
         config: Value,
+        /// The settings of each renderer the target named before, by its
+        /// id, so naming it again finds them and two renderers that share
+        /// a key never read each other's.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        aside: BTreeMap<String, Value>,
         /// How the pixel size is chosen. Left out reads as fixed, so a
         /// target saved before the choice keeps its pixels.
         #[serde(default, skip_serializing_if = "TargetSize::is_fixed")]
@@ -1082,6 +1087,7 @@ mod tests {
                 height,
                 rests: false,
                 config: Value::Null,
+                aside: BTreeMap::new(),
                 sizing: TargetSize::Fixed,
                 scale: 100,
                 fit: ImageFit::Stretch,

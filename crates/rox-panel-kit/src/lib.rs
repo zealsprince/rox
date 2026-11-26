@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use gpui::{
     Action, AnyElement, App, Bounds, Context, Div, Element, ElementId, Entity, Focusable as _,
     GlobalElementId, InspectorElementId, LayoutId, MouseButton, MouseDownEvent, Pixels, Point,
-    Rgba, SharedString, Stateful, Subscription, Window, canvas, div, prelude::*, px, svg,
+    Rgba, SharedString, Stateful, Subscription, WeakEntity, Window, canvas, div, prelude::*, px,
+    svg,
 };
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -761,7 +762,7 @@ fn slider_strip<P: 'static>(
         fraction,
         width,
         step,
-        entity: cx.entity(),
+        entity: cx.entity().downgrade(),
         apply: Rc::new(apply),
     }
 }
@@ -774,8 +775,10 @@ struct SliderStrip<P: 'static> {
     fraction: f32,
     width: SliderWidth,
     step: f32,
-    /// A plain element renders with an `App`, so handlers go through the entity.
-    entity: Entity<P>,
+    /// A plain element renders with an `App`, so handlers go through the
+    /// entity. Weak, since a window keeps its last frame's handlers: a strong
+    /// one there keeps a closed panel alive while its settings stay open.
+    entity: WeakEntity<P>,
     apply: ApplyFraction<P>,
 }
 
@@ -815,7 +818,7 @@ impl<P: 'static> RenderOnce for SliderStrip<P> {
                     ui::note_pointer_press(cx);
                     scrub.begin();
                     if let Some(fraction) = scrub.fraction(event.position.x) {
-                        entity.update(cx, |this, cx| {
+                        let _ = entity.update(cx, |this, cx| {
                             apply(this, fraction, cx);
                             cx.notify();
                         });
@@ -836,7 +839,7 @@ impl<P: 'static> RenderOnce for SliderStrip<P> {
                         "end" => 1.0,
                         _ => return,
                     };
-                    entity.update(cx, |this, cx| {
+                    let _ = entity.update(cx, |this, cx| {
                         apply(this, moved.clamp(0.0, 1.0), cx);
                         cx.notify();
                     });
@@ -857,7 +860,7 @@ impl<P: 'static> RenderOnce for SliderStrip<P> {
                                 let entity = entity.clone();
                                 let apply = apply.clone();
                                 move |fraction, cx| {
-                                    entity.update(cx, |this, cx| apply(this, fraction, cx));
+                                    let _ = entity.update(cx, |this, cx| apply(this, fraction, cx));
                                 }
                             });
                         }
@@ -1057,7 +1060,7 @@ pub fn value_slider_edit_typed<P: 'static>(
         // A one-frame window handler cancels on a press outside the input:
         // nothing else in the settings window takes focus, so blur never fires.
         let id = scrub.id();
-        let entity = cx.entity();
+        let entity = cx.entity().downgrade();
         return row.child(
             div()
                 .w(READOUT_W)
@@ -1088,7 +1091,7 @@ pub fn value_slider_edit_typed<P: 'static>(
                                             return;
                                         }
                                         edit.end();
-                                        entity.update(cx, |_, cx| cx.notify());
+                                        let _ = entity.update(cx, |_, cx| cx.notify());
                                     },
                                 );
                             }

@@ -11,7 +11,7 @@
 //! renderer hears it.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gpui::{AnyElement, Context, SharedString, prelude::*};
 use rox_canvas::ImageFit;
@@ -21,7 +21,7 @@ use rox_panel_kit::{choices_shared, picker, toggle};
 use rox_plugins::renderer_settings::{self, RendererSetting, SettingKind};
 use serde_json::Value;
 
-use crate::canvas::target::SCALES;
+use crate::canvas::target::{SCALES, renderer_id};
 
 /// Past this many choices an enum is a dropdown rather than a row of chips.
 const CHIPS_MAX: usize = 4;
@@ -73,19 +73,10 @@ pub(crate) fn fit_choices() -> [(SharedString, ImageFit); 3] {
     ]
 }
 
-/// A number setting's decimals: as many as its step has, or two with no
-/// step.
-fn decimals(step: Option<f64>) -> usize {
-    let Some(step) = step else {
-        return 2;
-    };
-
-    (0..4)
-        .find(|&places| {
-            let scaled = step * 10f64.powi(places);
-            (scaled - scaled.round()).abs() < 1e-6
-        })
-        .unwrap_or(3) as usize
+/// A number setting's decimals: the ones its values are sent with, or two
+/// with no step.
+fn decimals(setting: &RendererSetting) -> usize {
+    setting.decimals().map_or(2, |places| places as usize)
 }
 
 /// A control for each declared setting this rox knows, showing the value
@@ -173,7 +164,7 @@ pub(crate) fn setting_rows<P: 'static>(
                     continue;
                 };
                 let span = settings_ui::span(min as f32, max as f32, "")
-                    .decimals(decimals(setting.step))
+                    .decimals(decimals(setting))
                     .hard();
                 let held = setting.clone();
 
@@ -203,6 +194,33 @@ pub(crate) fn setting_rows<P: 'static>(
     rows
 }
 
+/// A target's settings as its renderer changes from owner `from` to `to`:
+/// what it held goes aside under the old renderer's id, and the new one
+/// gets back what it held there before, or nothing. Two renderers that
+/// share a key never read each other's value.
+pub(crate) fn switch(
+    stored: &mut Value,
+    aside: &mut BTreeMap<String, Value>,
+    from: &str,
+    to: &str,
+) {
+    if from == to {
+        return;
+    }
+
+    let held = std::mem::take(stored);
+    let holds = held.as_object().is_some_and(|held| !held.is_empty());
+    if let Some(from) = renderer_id(from)
+        && holds
+    {
+        aside.insert(from.to_string(), held);
+    }
+
+    *stored = renderer_id(to)
+        .and_then(|to| aside.remove(to))
+        .unwrap_or(Value::Null);
+}
+
 /// `stored` with `key` set to `value`, every other stored key kept.
 pub(crate) fn with(stored: &Value, key: &str, value: Value) -> Value {
     let mut map = stored.as_object().cloned().unwrap_or_default();
@@ -216,11 +234,20 @@ mod tests {
 
     #[test]
     fn a_step_says_how_many_decimals_a_number_shows() {
-        assert_eq!(decimals(Some(1.)), 0);
-        assert_eq!(decimals(Some(10.)), 0);
-        assert_eq!(decimals(Some(0.5)), 1);
-        assert_eq!(decimals(Some(0.25)), 2);
-        assert_eq!(decimals(None), 2);
+        let number = |min: f64, step: Option<f64>| {
+            let declared = serde_json::json!([{
+                "key": "n", "type": "number", "title": "N", "min": min, "max": 100, "step": step
+            }]);
+            let settings: Vec<RendererSetting> = serde_json::from_value(declared).unwrap();
+            decimals(&settings[0])
+        };
+
+        assert_eq!(number(0., Some(1.)), 0);
+        assert_eq!(number(10., Some(10.)), 0);
+        assert_eq!(number(0., Some(0.5)), 1);
+        assert_eq!(number(0., Some(0.25)), 2);
+        assert_eq!(number(0.05, Some(0.1)), 2);
+        assert_eq!(number(0., None), 2);
     }
 
     #[test]
@@ -234,6 +261,39 @@ mod tests {
             with(&Value::Null, "look", Value::from("ice")),
             serde_json::json!({ "look": "ice" })
         );
+    }
+
+    #[test]
+    fn each_renderer_keeps_its_own_settings_across_a_switch() {
+        let mut stored = serde_json::json!({ "look": "ember" });
+        let mut aside = BTreeMap::new();
+
+        switch(
+            &mut stored,
+            &mut aside,
+            "plugin:plasma",
+            "plugin:plasma-two",
+        );
+        assert_eq!(stored, Value::Null, "a key the two share isn't handed over");
+
+        stored = serde_json::json!({ "look": "ice" });
+        switch(
+            &mut stored,
+            &mut aside,
+            "plugin:plasma-two",
+            "plugin:plasma",
+        );
+        assert_eq!(stored, serde_json::json!({ "look": "ember" }));
+        assert_eq!(aside["plasma-two"], serde_json::json!({ "look": "ice" }));
+        assert!(!aside.contains_key("plasma"), "taken back out");
+
+        // No renderer picked keeps nothing, and the same one moves nothing.
+        switch(&mut stored, &mut aside, "plugin:plasma", "");
+        assert_eq!(stored, Value::Null);
+        switch(&mut stored, &mut aside, "", "plugin:plasma");
+        assert_eq!(stored, serde_json::json!({ "look": "ember" }));
+        switch(&mut stored, &mut aside, "plugin:plasma", "plugin:plasma");
+        assert_eq!(stored, serde_json::json!({ "look": "ember" }));
     }
 
     #[test]

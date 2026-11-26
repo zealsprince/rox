@@ -865,7 +865,7 @@ fn record_approval(folder: &Loaded, sandbox: Option<String>) {
         return;
     };
     let sandbox = match &manifest.capabilities.renderer {
-        Some(cap) => sandbox.unwrap_or_else(|| crate::renderers::tier(cap).key()),
+        Some(cap) => sandbox.unwrap_or_else(|| crate::renderers::tier(folder, cap).key()),
         None => String::new(),
     };
 

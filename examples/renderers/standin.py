@@ -9,9 +9,11 @@ renderer you trust.
 It plays rox's part as docs/03-implementation/11-renderers.md specifies it:
 it makes the frame mapping with its header, at --frames for a renderer whose
 manifest says `resizes` (or with --resizes after `--`), and sends that one
-the sizes --resize names on `size` lines. It holds --settings to what the
-manifest declares, sends them in `hello`, and sends --set on a `settings`
-line partway through. With --cover and --spectrum
+the sizes --resize names on `size` lines. It checks the manifest's settings
+against rox's rules and stops with rox's reason for one rox would refuse.
+It holds --settings to what the manifest declares, sends them in `hello`,
+and sends each --set on a `settings` line at its time. With --cover and
+--spectrum
 the cover mapping (a generated test picture) and the spectrum mapping (a
 synthetic spectrum). It starts the renderer with those at fd 3 and up and the
 environment rox gives one, writes `hello`, a pool line, signals lines about 60
@@ -47,6 +49,7 @@ import tempfile
 import termios
 import threading
 import time
+import unicodedata
 
 # ── The layout ─────────────────────────────────────────────────────────────
 #
@@ -145,6 +148,15 @@ MOVE_GAP_MS = 8  # MOVE_GAP: moves go at most this often
 
 STDERR_LINE = 4096  # a stderr line is cut here (STDERR_LINE, rox-plugins/src/process.rs)
 
+# crates/rox-plugins/src/renderer_settings.rs, which a test there compares
+# with these lines and runs check_settings and settings_for against its own.
+MAX_SETTINGS = 32  # MAX_SETTINGS
+MAX_CHOICES = 32  # MAX_CHOICES
+KEY_MAX = 32  # KEY_MAX
+TEXT_MAX = 48  # TEXT_MAX
+VALUE_MAX = 64  # VALUE_MAX
+DECIMALS_MAX = 6  # DECIMALS_MAX
+
 # The names a renderer inherits from rox when they're set, ALLOWED in
 # crates/rox-plugins/src/env.rs, which a test there compares with this list.
 # Every LC_* passes too, and the names ROX_PLUGIN_ENV lists.
@@ -175,6 +187,7 @@ F_SEAL_SHRINK = getattr(fcntl, "F_SEAL_SHRINK", 0x2)
 F_SEAL_GROW = getattr(fcntl, "F_SEAL_GROW", 0x4)
 F_SEAL_FUTURE_WRITE = getattr(fcntl, "F_SEAL_FUTURE_WRITE", 0x10)
 
+READY_WAIT = 30  # seconds --ready waits for the renderer's `ready`
 SIGNALS_RATE = 60  # lines a second: one a paint, at a 60 Hz display
 DISPLAY_RATE = 60  # how often a newest announce is taken and copied
 
@@ -544,38 +557,177 @@ def speaks_python3(program):
     return done.returncode == 0 and (says(done.stdout) or says(done.stderr))
 
 
+# Rust's `trim` drops Unicode White_Space, which isn't quite str.strip's set.
+WHITE_SPACE = "\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+BIDI = {0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)}
+
+
+def misleads(c):
+    """A control character, or a bidi mark, embedding, override or isolate
+    (`misleads` in rox-plugins/src/manifest.rs)."""
+    return unicodedata.category(c) == "Cc" or ord(c) in BIDI
+
+
+def rust_round(x):
+    """Rust's `f64::round`: halves away from zero, where Python's goes to even."""
+    return math.copysign(math.floor(abs(x) + 0.5), x)
+
+
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def decimals_of(n):
+    for places in range(DECIMALS_MAX):
+        scaled = n * 10 ** places
+        if abs(scaled - rust_round(scaled)) < 1e-6:
+            return places
+    return DECIMALS_MAX
+
+
+def accept(setting, value):
+    """`value` as the renderer is sent it, or None when the setting doesn't
+    take it (`accept` in renderer_settings.rs). A stepped number lands on
+    its step, rounded to the step's decimals, and goes out whole when its
+    min, max and step all are."""
+    kind = setting.get("type")
+    if kind == "enum":
+        ok = isinstance(value, str) and any(c["value"] == value for c in setting.get("choices", []))
+        return value if ok else None
+    if kind == "bool":
+        return value if isinstance(value, bool) else None
+    if kind != "number":
+        return None
+
+    low, high, step = setting.get("min"), setting.get("max"), setting.get("step")
+    if not is_number(low) or not is_number(high) or not is_number(value) or not math.isfinite(value):
+        return None
+    if not low <= value <= high:
+        return None
+    if step is None:
+        return float(value)
+
+    places = max(decimals_of(low), decimals_of(step))
+    snapped = low + rust_round((value - low) / step) * step
+    snapped = min(max(rust_round(snapped * 10 ** places) / 10 ** places, low), high)
+    whole = all(float(n).is_integer() and abs(n) < 2 ** 53 for n in (low, high, step))
+    return int(snapped) if whole else float(snapped)
+
+
+def default_of(setting):
+    """What a target holds until the user picks (`default_value`)."""
+    given = setting.get("default")
+    if given is not None and accept(setting, given) is not None:
+        return accept(setting, given)
+    kind = setting.get("type")
+    if kind == "enum":
+        return setting["choices"][0]["value"]
+    if kind == "bool":
+        return False
+    return accept(setting, setting["min"])
+
+
+def check_settings(declared):
+    """None when rox takes this `settings` list, or the one reason it
+    refuses the manifest with, in its words (`check` in
+    renderer_settings.rs)."""
+    if not isinstance(declared, list):
+        return "plugin.json: the renderer's settings aren't a list"
+    if len(declared) > MAX_SETTINGS:
+        return f"plugin.json: a renderer declares more than {MAX_SETTINGS} settings"
+
+    def plain(text):
+        if not isinstance(text, str):
+            return "isn't text"
+        if text.strip(WHITE_SPACE) == "":
+            return "is empty"
+        if len(text.strip(WHITE_SPACE)) > TEXT_MAX:
+            return f"is over {TEXT_MAX} characters"
+        if any(misleads(c) for c in text):
+            return "has a control or direction character"
+        return None
+
+    for at, setting in enumerate(declared):
+        def refuse(why):
+            return f"plugin.json: setting {at} {why}"
+
+        # What serde would refuse before rox's own rules see it.
+        if not isinstance(setting, dict) or not all(isinstance(setting.get(f), str) for f in ("key", "type", "title")):
+            return refuse("needs a key, a type and a title, each text")
+        if not all(setting.get(f) is None or is_number(setting.get(f)) for f in ("min", "max", "step")):
+            return refuse("has a min, max or step that isn't a number")
+        choices = setting.get("choices", [])
+        if not isinstance(choices, list) or not all(
+            isinstance(c, dict) and isinstance(c.get("value"), str) and isinstance(c.get("label"), str) for c in choices
+        ):
+            return refuse("has choices that aren't each a value and a label, as text")
+
+        key = setting["key"]
+        key_ok = (
+            0 < len(key.encode()) <= KEY_MAX
+            and "a" <= key[0] <= "z"
+            and all(c.isascii() and (c.islower() or c.isdigit() or c == "_") for c in key)
+        )
+        if not key_ok:
+            return refuse(f"has a key that isn't a lowercase name of at most {KEY_MAX} letters, digits and underscores")
+        if any(earlier.get("key") == key for earlier in declared[:at]):
+            return refuse("has the same key as one before it")
+        why = plain(setting["title"])
+        if why:
+            return refuse(f"has a title that {why}")
+
+        kind = setting["type"]
+        if kind not in ("enum", "bool", "number"):
+            continue
+        if setting.get("apply", "line") not in ("line", "restart"):
+            return refuse("has an apply that isn't line or restart")
+
+        ranged = any(setting.get(f) is not None for f in ("min", "max", "step"))
+        if kind == "enum":
+            if ranged:
+                return refuse("is an enum with a min, max or step")
+            if not 1 <= len(choices) <= MAX_CHOICES:
+                return refuse(f"needs 1 to {MAX_CHOICES} choices")
+            for ix, choice in enumerate(choices):
+                value = choice["value"]
+                if value == "" or len(value.encode()) > VALUE_MAX or any(misleads(c) for c in value):
+                    return refuse(f"has a choice value that's empty, over {VALUE_MAX} bytes or holds a control character")
+                if any(c["value"] == value for c in choices[:ix]):
+                    return refuse("offers the same choice twice")
+                why = plain(choice["label"])
+                if why:
+                    return refuse(f"has a choice label that {why}")
+        elif kind == "bool":
+            if ranged or choices:
+                return refuse("is a bool with choices or a range")
+        else:
+            if choices:
+                return refuse("is a number with choices")
+            low, high, step = setting.get("min"), setting.get("max"), setting.get("step")
+            if low is None or high is None:
+                return refuse("is a number without a min and a max")
+            if not (math.isfinite(low) and math.isfinite(high) and low < high):
+                return refuse("has a range that isn't min below max")
+            if step is not None and not (math.isfinite(step) and step > 0):
+                return refuse("has a step that isn't above 0")
+
+        if setting.get("default") is not None and accept(setting, setting["default"]) is None:
+            return refuse("has a default it doesn't take")
+
+    return None
+
+
+def restarts(declared, old, new):
+    """Whether going from `old` to `new` moves a setting the renderer reads
+    only at its start (`restarts`)."""
+    return [s["key"] for s in declared if s.get("apply") == "restart" and old.get(s["key"]) != new.get(s["key"])]
+
+
 def settings_for(declared, stored):
     """The settings a session is sent (`values` in
     rox-plugins/src/renderer_settings.rs): every declared key of a type this
     knows, the stored value where the declaration takes it, the default
     where it doesn't. Answers them and the stored keys set aside."""
-    def accept(setting, value):
-        kind = setting.get("type")
-        if kind == "enum":
-            ok = isinstance(value, str) and any(c["value"] == value for c in setting.get("choices", []))
-            return value if ok else None
-        if kind == "bool":
-            return value if isinstance(value, bool) else None
-        if kind == "number":
-            low, high, step = setting.get("min"), setting.get("max"), setting.get("step")
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
-                return None
-            if step:
-                value = min(max(low + round((value - low) / step) * step, low), high)
-            return float(value)
-        return None
-
-    def default(setting):
-        given = setting.get("default")
-        if given is not None and accept(setting, given) is not None:
-            return accept(setting, given)
-        kind = setting.get("type")
-        if kind == "enum":
-            return setting["choices"][0]["value"]
-        if kind == "bool":
-            return False
-        return float(setting["min"])
-
     known = [s for s in declared if s.get("type") in ("enum", "bool", "number")]
     out, dropped = {}, []
     for setting in known:
@@ -585,7 +737,7 @@ def settings_for(declared, stored):
         else:
             if key in stored:
                 dropped.append(key)
-            out[key] = default(setting)
+            out[key] = default_of(setting)
     dropped += [key for key in stored if key not in {s["key"] for s in known}]
     return out, dropped
 
@@ -722,10 +874,10 @@ def parse_announce(line):
     return None
 
 
-def cache_dir():
-    path = os.path.join(tempfile.gettempdir(), "rox-standin-cache")
+def cache_dir(chosen):
+    path = chosen or os.path.join(tempfile.gettempdir(), "rox-standin-cache")
     os.makedirs(path, exist_ok=True)
-    return path
+    return os.path.abspath(path)
 
 
 def run(args):
@@ -736,6 +888,9 @@ def run(args):
             manifest = json.load(f).get("capabilities", {}).get("renderer", {})
     resizes = manifest.get("resizes") is True or args.resizes
     declared = manifest.get("settings", [])
+    refused = check_settings(declared)
+    if refused:
+        sys.exit(f"standin: rox refuses this manifest: {refused}")
 
     # A renderer that resizes gets the mapping at --frames and draws at
     # --size first. One that doesn't gets one size for the whole session.
@@ -756,7 +911,7 @@ def run(args):
         "ROX_FRAMES_FD": str(FIRST_FD),
         # rox makes one per renderer under its data folder. This one is kept
         # between runs, as rox's is, and nothing confines the renderer to it.
-        "ROX_CACHE_DIR": cache_dir(),
+        "ROX_CACHE_DIR": cache_dir(args.cache),
     }
     hello = {"hello": API, "width": width, "height": height, "handle": 0}
     if resizes:
@@ -794,6 +949,7 @@ def run(args):
     announced = queue.Queue()
     reading = threading.Event()
     reading.set()
+    ready = threading.Event()
     flood = {"since": None, "lines": 0, "over": 0}
 
     def note_line(at):
@@ -827,6 +983,8 @@ def run(args):
                 announced.put(parsed)
             else:
                 report.other_lines += 1
+                if line == b"ready\n":
+                    ready.set()
 
     def read_stderr():
         for line in process.stderr:
@@ -876,11 +1034,13 @@ def run(args):
     drive = Drive(args.seconds)
     pointer = pointer_events(args.seconds)
 
-    # The sizes to tell, spread across the run, and the settings line.
+    # The sizes to tell, spread across the run, and the settings changes at
+    # their times.
     sizes = [] if not resizes else [
         ((i + 1) * args.seconds / (len(args.resize) + 1), size) for i, size in enumerate(args.resize)
     ]
-    set_at = 0.5 * args.seconds if args.set is not None else None
+    changes = sorted(args.set, key=lambda change: change[2])
+    stored = dict(args.settings or {})
     pause_at, resume_at = 0.6 * args.seconds, 0.6 * args.seconds + 0.5
     paused = False
     settle_until = drive.stop + min(1.0, 0.1 * args.seconds)
@@ -896,6 +1056,12 @@ def run(args):
     if args.palette:
         send({"palette": PALETTE})
     flush()
+
+    # The drive's clock starts once the renderer prints `ready`, for a test
+    # that has to see the rest before the music.
+    if args.ready and not ready.wait(READY_WAIT):
+        os.killpg(process.pid, signal.SIGKILL)
+        sys.exit(f"standin: the renderer didn't print ready within {READY_WAIT} seconds")
 
     started = time.monotonic()
     next_signals = next_frame = next_spectrum = started
@@ -965,13 +1131,20 @@ def run(args):
             frames.tell(size)
             report.size_lines += 1
             send({"size": {"width": size[0], "height": size[1]}})
-        if not paused and set_at is not None and t >= set_at:
-            set_at = None
-            stored = dict(args.settings or {}, **args.set)
-            changed, _ = settings_for(declared, stored) if declared else (stored, [])
-            if changed != settings:
-                settings = changed
-                send({"settings": settings})
+        while not paused and changes and changes[0][2] <= t:
+            key, value, _ = changes.pop(0)
+            stored[key] = value
+            changed, _ = settings_for(declared, stored) if declared else (dict(stored), [])
+            if changed == settings:
+                continue
+            moved = restarts(declared, settings or {}, changed)
+            settings = changed
+            if moved:
+                # rox starts the session again with these in hello, which a
+                # stand-in with one session can't.
+                print(f"standin: changed a setting read at the start ({', '.join(moved)}): rox would start the renderer again", file=sys.stderr)
+                continue
+            send({"settings": settings})
 
         # The display: the newest announce waiting, copied once a frame.
         if not paused and now >= next_frame:
@@ -999,6 +1172,12 @@ def run(args):
         report.exited_in_grace = True
     except subprocess.TimeoutExpired:
         report.exited_in_grace = False
+        # With --ready a slow renderer still gets to finish, so a test reads
+        # what it wrote whatever the machine's load.
+        try:
+            process.wait(timeout=READY_WAIT if args.ready else 0)
+        except subprocess.TimeoutExpired:
+            pass
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -1071,6 +1250,23 @@ def note_refused(report, refused):
     report.longest_refused_run = max(report.longest_refused_run, report.refused_run)
 
 
+def timed_setting(text):
+    """`KEY=VALUE@SECONDS`: VALUE as JSON where it parses, as a string where
+    it doesn't, so `look=ice@2` and `rate=30@4.5` both read."""
+    change, at, seconds = text.rpartition("@")
+    key, eq, value = change.partition("=")
+    if not at or not eq or not key:
+        raise argparse.ArgumentTypeError("KEY=VALUE@SECONDS")
+    try:
+        value = json.loads(value)
+    except ValueError:
+        pass
+    try:
+        return key, value, float(seconds)
+    except ValueError:
+        raise argparse.ArgumentTypeError("SECONDS is a number") from None
+
+
 def size(text):
     width, _, height = text.partition("x")
     width, height = int(width), int(height)
@@ -1095,7 +1291,7 @@ def main():
     parser.add_argument("--resize", type=lambda s: [size(part) for part in s.split(",")], default=[], help="sizes to send on size lines across the run, WxH,WxH")
     parser.add_argument("--resizes", action="store_true", help="after --, treat the command as a renderer that resizes")
     parser.add_argument("--settings", type=json.loads, help="the target's stored settings as a JSON object, held to the manifest")
-    parser.add_argument("--set", type=json.loads, help="settings to change halfway through, as a JSON object")
+    parser.add_argument("--set", type=timed_setting, action="append", default=[], help="a setting to change at a time into the run, KEY=VALUE@SECONDS, repeatable")
     parser.add_argument("--seconds", type=float, default=8.0, help="how long the session runs (8)")
     parser.add_argument("--cover", action="store_true", help="lend the cover mapping with a test picture")
     parser.add_argument("--spectrum", action="store_true", help="lend the spectrum mapping")
@@ -1104,6 +1300,8 @@ def main():
     parser.add_argument("--program-folder", dest="program_folders", action="append", default=[], help="a Program Folder, searched after the package's bin")
     parser.add_argument("--dump", type=lambda s: {int(n) for n in s.split(",")}, default=set(), help="frame numbers to save as PPM, comma-separated")
     parser.add_argument("--dump-dir", default=".", help="where --dump writes")
+    parser.add_argument("--cache", help="the renderer's ROX_CACHE_DIR (rox-standin-cache in the temp folder)")
+    parser.add_argument("--ready", action="store_true", help=f"start the drive once the renderer prints a line `ready`, and wait for it to exit at the end, each up to {READY_WAIT} seconds")
     parser.add_argument("--json", action="store_true", help="print the report as one JSON line")
     args = parser.parse_args(argv)
     args.command = command

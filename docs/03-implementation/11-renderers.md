@@ -191,7 +191,8 @@ the interpreter's own. For `"interpreter": "python3"` rox tries `python3`, then 
 with the `py -3` launcher ahead of both on Windows, and takes the first that answers
 `--version` with "Python 3" inside 5 seconds (`aliases` and `speaks_python3`,
 `manifest.rs`). The user needs a Python 3 on PATH, or in a folder listed under Program
-Folders, which the Plugins page and the Renderers page both show. A native entry maps
+Folders, which the Plugins page and the Renderers page both show. Where that interpreter
+may live under the sandbox is in [The interpreter](#the-interpreter). A native entry maps
 `<os>-<arch>` to a file in the package:
 
 ```json
@@ -231,12 +232,12 @@ exec deno run --allow-env --allow-read "$1"
 ```
 
 In the sandbox the launcher runs, since it's in the package, and so does whatever it
-starts from the system's folders. A `deno` the user installed in their home, as deno's
-own installer does under `~/.deno`, is found on the path and then refused: only the
-interpreter the manifest names is let run from outside the system's folders, as that one
-file. A Deno renderer gets `DENO_DIR` in its cache folder. A Python renderer runs on the
-system's Python, and one in a virtual environment or a pyenv under home finds its
-binary and none of its libraries.
+starts from the system's folders. Anything else it starts from outside them is refused,
+a `deno` under `~/.deno` included: only the program the entry resolves to is granted its
+install ([The interpreter](#the-interpreter)), and here that program is the launcher. A
+renderer that needs a deno from the user's home names `deno` as its interpreter instead
+and takes deno's defaults, since the entry passes no flags. A Deno renderer gets
+`DENO_DIR` in its cache folder.
 
 On Windows the launcher would be `bin/run-deno.cmd`, found through `PATHEXT`, ending in
 `deno run --allow-env --allow-read %*`. Rust's standard library starts a `.cmd` through
@@ -285,7 +286,36 @@ differ, and a workspace or an object that travels carries them. Plasma's:
 | `min`, `max` | A `number`'s range, both required for it, `min` below `max`. |
 | `step` | A `number`'s step from `min`, above 0. Left out, any number in the range. A value off its step lands on the nearest one. |
 | `default` | The value a target holds until the user picks one. Left out: an enum's first choice, `false`, or a number's `min`. One the setting doesn't take refuses the manifest. |
-| `apply` | `line`, the default, sends a change as a [`settings` line](#rox-to-the-renderer). `restart` starts the target's session again with the new value in `hello`, for a setting the renderer reads only at its start. |
+| `apply` | `line`, the default, sends a change as a [`settings` line](#rox-to-the-renderer). `restart` starts the target's session again with the new value in `hello`, for a setting the renderer reads only at its start. Any other value refuses the manifest with "has an apply that isn't line or restart". |
+
+A field a setting doesn't know is ignored, so a renderer written for a later rox loads
+here with what this rox can show.
+
+A number goes out on the wire the way its declaration is written. One with a step whose
+`min`, `max` and `step` are all whole numbers is always sent as an integer: `50`, never
+`50.0`. A stepped number is snapped to its step from `min`, then rounded to as many
+decimals as `min` or `step` is written with, whichever has more, so a step of `0.1` sends
+`0.6` and never `0.6000000000000001` (`accept`, `renderer_settings.rs`). A number with no
+step is sent as the user left it, as a decimal. Read every number as a float anyway: JSON
+doesn't tell an integer from a float, and a parser that wants one or the other will meet
+both from other hosts.
+
+Each type has one control, in the canvas inspector and in a Renderer panel's settings
+(`setting_rows`, `rox/src/canvas/target_settings.rs`):
+
+| Type | Shown as |
+|---|---|
+| `enum` with up to 4 choices | A row of chips, one a choice, side by side |
+| `enum` with 5 or more | A dropdown |
+| `number` | A slider with its value beside it, which can be typed into |
+| `bool` | A switch |
+
+Chips sit side by side, beside the title in a Renderer panel's settings and under it in
+the inspector, so four long labels run past the row's width. Keep the labels of an enum
+with four choices or fewer to a word or two, and give longer ones to an enum with more,
+which a dropdown lists one a line. A title shows in full in the inspector, where the
+control goes under it, and beside the control in the panel's settings, where a long one
+leaves the control less room.
 
 A title and a label are shown as the package gives them, untranslated, as a plugin's
 `config_schema` titles are on the Plugins page: rox can't translate a stranger's words.
@@ -302,6 +332,13 @@ declares is left out of what's sent, with a log line at the session's start
 (`renderer <id>: set aside settings its manifest doesn't take: ...`). The target keeps
 it stored, so a renderer that declares it again finds it. A renderer is only ever sent
 the keys it declares, each with a value it takes.
+
+A target keeps each renderer's values apart. Pointing a canvas target or a Renderer panel
+at another renderer puts the values it held aside under the old renderer's id, in the
+item's or the panel's `aside`, and brings back the ones it held for the new renderer, or
+none (`switch`, `target_settings.rs`). Two renderers that both declare a `look` never
+read each other's, and switching back finds the old values. On a canvas the switch is one
+undo step. A target saved before `aside` existed holds its renderer's values as it did.
 
 A changed value reaches a running renderer the way its `apply` says: a `settings` line
 with the whole set again, or for a `restart` setting a new session, which doesn't count
@@ -411,10 +448,10 @@ panel's settings:
 | Fixed | Its own width and height, from 16 by 16 to 3840 by 2160, whatever the box |
 
 The box is a Renderer panel's whole body, or a canvas item's size at rest: its box and
-its own scale through the canvas's pixels per unit (`rest_size`,
-`rox-canvas/src/project.rs`). Tilt, the camera's perspective and what routes and sway do
-to an item don't count, so a target pulsing to the bass keeps its size. A group's own
-scale doesn't count either. A following size is rounded to a multiple of 16 pixels and
+its own scale, and the own scale of each group it's inside, through the canvas's pixels
+per unit (`rest_size`, `rox-canvas/src/project.rs`). Tilt, the camera's perspective and
+what routes and sway do to an item or its groups don't count, so a target pulsing to the
+bass keeps its size. A following size is rounded to a multiple of 16 pixels and
 held to 16 by 16 at the least (`follow_size` and `SIZE_STEP`,
 `rox/src/canvas/target.rs`). While the box is being resized, rox waits until its size has
 held for 250 ms, with no mouse button down over a Renderer panel's window, then tells the
@@ -429,7 +466,10 @@ What the renderer gets depends on its manifest:
   the start of its slot, and the slot's size words say which ([Writing a
   frame](#writing-a-frame)). With the GPU texture, the texture is made at the ceiling
   too, and the renderer draws into its top-left corner ([A GPU
-  texture](#a-gpu-texture)).
+  texture](#a-gpu-texture)). Its draw size comes from the wire alone, `hello` and then
+  each `size` line. The mapping's header, `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`,
+  `frames` in `hello` and the texture's extent all give the ceiling, the most it may
+  draw at, which is seldom the size to draw at.
 - One that doesn't say it gets one size for the session: the box's when the session
   starts, so its shape is right at the start, in a mapping exactly that size. A resize
   after that is shown by the target's Fit and tells the renderer nothing. Its next
@@ -487,6 +527,11 @@ renderer declares any ([Settings](#settings)), stored with the panel. Every chan
 the panel's settings, the renderer it picks included, saves the layout half a second
 later, as a dock change does.
 
+A Renderer panel paints the theme's background around the picture, so its `palette` line
+has `stage`, that colour, whenever Surface Opacity is 100%, docked or popped out alike
+(`read`, `rox/src/panels/renderer.rs`). Under 100% it leaves `stage` out, as a canvas
+does.
+
 The pointer over the picture goes to the renderer, mapped through the fit, as over a
 canvas target outside design mode. The right button is the panel's: its press opens the
 panel menu and never reaches the renderer. A pointer over the bands around a contained
@@ -523,7 +568,9 @@ slots. Offsets are bytes from the start of the block or the slot.
 | 64 | pixels | `width * 4 * height` bytes, of the frame's own width and height | RGBA8, straight alpha, sRGB, top row first, rows packed with no padding at the frame's own width |
 
 Slot `n` starts at `4096 + n * slot_bytes`, and the block is `4096 + 2 * slot_bytes`
-long (`Spec`, `rox-frames/src/layout.rs`). The 4096 is the layout's page on every
+long (`Spec`, `rox-frames/src/layout.rs`). For a renderer that resizes, the header's
+`width`, `height` and `stride` are the ceiling's and only size the slots: a frame drawn
+smaller packs its rows at its own `width * 4` from the slot's pixels, never at `stride`. The 4096 is the layout's page on every
 platform, independent of the OS page size. At 1280 by 720 the stride is 5,120 bytes, a
 frame 3,686,400, a slot 3,690,496 and the block 7,385,088.
 
@@ -904,7 +951,7 @@ These are every line rox writes (`launch` in `rox-services/src/renderers.rs` for
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
 {"hello":1,"width":1008,"height":560,"handle":0,"frames":{"width":1920,"height":1080}}
-{"hello":1,"width":1008,"height":560,"handle":0,"frames":{"width":1920,"height":1080},"settings":{"look":"rainbow","rate":60.0}}
+{"hello":1,"width":1008,"height":560,"handle":0,"frames":{"width":1920,"height":1080},"settings":{"look":"rainbow","rate":60}}
 {"hello":1,"width":1280,"height":720,"handle":0,"cover":{"fd":4,"width":256,"height":256}}
 {"hello":1,"width":1280,"height":720,"handle":0,"spectrum":{"fd":4,"bytes":4096,"log_bins":128,"linear_bins":512,"rate":62.5}}
 {"hello":1,"width":1920,"height":1080,"handle":0,"texture":{"fd":4,"width":1920,"height":1080,"allocation_size":8847360,"memory_type":0,"handle_type":"opaque-fd","format":37,"view_formats":[43,37],"flags":8,"usage":31,"tiling":0,"layout":1,"device_uuid":"00000000100000000000000000000000","driver_uuid":"414d442d4d4553412d44525600000000"}}
@@ -915,7 +962,7 @@ These are every line rox writes (`launch` in `rox-services/src/renderers.rs` for
 {"cover":2}
 {"cover":null}
 {"size":{"width":1600,"height":896}}
-{"settings":{"look":"ember","rate":60.0}}
+{"settings":{"look":"ember","rate":60}}
 {"pause":true}
 ```
 
@@ -1008,6 +1055,9 @@ rox sends `stage` only when it's one solid colour, and leaves it out:
   window's own transparency;
 - for a popped-out canvas, and a canvas inside a Group, Overlay, Slide or Drawer, which
   sit on surfaces rox doesn't name.
+
+A Renderer panel sends `stage` under the first rule alone, popped out too, since it paints
+the background around its picture itself ([The Renderer panel](#the-renderer-panel)).
 
 Another item behind the target isn't the stage either. With no `stage`, a renderer that
 wants to blend in has to stay see-through: alpha below 255 shows whatever is behind it.
@@ -1324,7 +1374,7 @@ fails with `EACCES` or `EPERM`.
 |---|---|---|
 | Its package folder | Read and run | Its own code. Never written: a write would change its hash |
 | Its cache folder | Read and write, nothing in it runs | See [The cache folder](#the-cache-folder) |
-| The interpreter its manifest names | Run, as one file | The `python3` or launcher the entry resolved to, when it's outside the package |
+| The interpreter its entry resolves to | Read and run its install | Only when it's outside the system's folders and the package: see [The interpreter](#the-interpreter) |
 | `/nix/store`, `/run/opengl-driver`, `/usr`, `/lib`, `/lib64`, `/lib32`, `/libx32`, `/bin`, `/sbin`, `/opt`, `/app` | Read and run | The system's libraries and programs, wherever the distro keeps them. NixOS keeps them in the store and names the GPU driver at `/run/opengl-driver`; a Flatpak runtime under `/usr` and `/app` |
 | `/etc/ld.so.cache`, `ld.so.preload`, `ld.so.conf` and `ld.so.conf.d`, `localtime`, `vulkan`, `glvnd`, `egl`, `drirc`, `OpenCL`, `fonts` | Read | What the loader, the Vulkan loader, Mesa and fontconfig read. Not `passwd`, `machine-id` or `hostname` |
 | `/sys/devices/system/cpu`, `/dev/urandom`, `/dev/random` | Read | Core counts for thread pools, and randomness |
@@ -1360,8 +1410,8 @@ them anyway, and a library that sees them tries and logs a failure.
 A renderer's log line says what it got:
 
 ```
-renderer roxr-ember: sandboxed at Landlock ABI 7: Run /…/roxr-ember, Run /nix/store, …
-renderer roxr-ember: started at 1280x720, lent a texture, sandboxed
+renderer pulse: sandboxed at Landlock ABI 7: Run /…/plugins/pulse, Run /nix/store, …
+renderer pulse: started at 1280x720, lent a texture, sandboxed
 ```
 
 ### The cache folder
@@ -1369,7 +1419,9 @@ renderer roxr-ember: started at 1280x720, lent a texture, sandboxed
 `<data>/renderer-cache/<id>`, made before every start, outside the package so a write
 there never changes its hash. Its path is `ROX_CACHE_DIR`, in every tier and on every
 platform, so a renderer written for the sandbox runs the same outside it. For a
-sandboxed renderer rox also points what programs write on their own there:
+sandboxed renderer rox also points what programs write on their own there, `HOME`
+included: a sandboxed renderer's home is its cache folder, and the user's home isn't
+named anywhere in its environment.
 
 | Variable | Value |
 |---|---|
@@ -1385,6 +1437,50 @@ it runs. Nothing in the folder runs: a renderer can't write a program there and 
 it, though an interpreter can still read a script from it. Removing the renderer on
 the Renderers page deletes the folder, after its sessions are stopped (`remove` and
 `remove_cache`, `rox-services/src/plugins.rs`).
+
+### The interpreter
+
+A native renderer runs from its package. A script renderer runs on the program its entry
+resolves to ([The package](#the-package)), and in the sandbox that program has to be
+reachable. One in the system's folders above, or in the package's `bin`, always is. One
+anywhere else, as under the user's home, is granted its install and nothing more
+(`interpreter_install`, `rox-plugins/src/sandbox.rs`):
+
+- the file the program resolves to, read and run;
+- its install's `bin` and `lib`, read and run, when the program sits in a folder named
+  `bin` whose parent has a `lib` holding something named for the program, as
+  `lib/python3.12` is for `bin/python3`. A venv's `pyvenv.cfg` beside its `bin` comes too,
+  since Python reads it to find the venv's packages.
+
+The path as found and every path its symlinks lead through are each looked at. A venv's
+`bin/python` is a link to the Python it was made from, so a venv under home over a pyenv
+Python under home grants both installs, and a venv over the system's Python grants the
+venv alone. Neither an install nor any folder in it is granted when it's the user's home,
+a folder above home, or a folder holding or inside rox's data folder, the rule that holds
+a read ask ([The asks](#the-asks)). A Python in `~/.local/bin` with packages in
+`~/.local/lib` gets its file alone, since `~/.local` holds rox's data folder.
+
+| Interpreter | Granted |
+|---|---|
+| A `python3` or `deno` in the Nix store, `/usr` or another system folder | Nothing more |
+| `~/.deno/bin/deno`, a single binary | That file |
+| `~/.pyenv/versions/3.12.1/bin/python3` | That install's `bin` and `lib` |
+| `~/project/.venv/bin/python`, over that pyenv | The venv's `bin`, `lib` and `pyvenv.cfg`, and the pyenv install's `bin` and `lib` |
+| `~/.pyenv/shims/python3` | That file. A shim is a script that runs pyenv from `~/.pyenv/libexec`, which is refused, so list the version's own `bin` under Program Folders instead |
+
+The Program Folders as a whole are never granted. They're where rox looks for an
+interpreter, and one can be any folder the user has, their home included, so granting
+them would hand over whatever else they hold. A file beside an install is still refused:
+a renderer on `~/.pyenv/versions/3.12.1/bin/python3` can't read
+`~/.pyenv/versions/notes.txt`.
+
+The paths granted are part of the tier. The card names them in one line, "Can read and
+run its interpreter from outside the system's folders:" and the paths, and the approval
+records them. When the entry resolves to an interpreter at another path, as after a
+change to Program Folders or PATH, the renderer switches off, and its card asks again
+with "Its interpreter is at another path than when you last switched it on." A start
+whose program resolved somewhere else since the gate passed gets only the approved
+paths, and doesn't run.
 
 ### The asks
 
@@ -1471,10 +1567,12 @@ A debug build of rox reads `ROX_SANDBOX_SIMULATE`: `no-landlock`, `landlock-off`
 
 A renderer written before the sandbox can need changes:
 
-- Config, a cache or a font it keeps in the user's home. Its home is the cache folder
-  now, so what it writes there works and what it expects to find there isn't.
-- An interpreter environment under home: a virtual environment, a pyenv, a `deno` from
-  its own installer, a `node_modules` outside the package. Vendor it into the package.
+- Config, a cache or a font it keeps in the user's home. Its home is the cache folder,
+  so what it writes there works and what it expects to find there isn't.
+- An interpreter environment under home that isn't the entry's own interpreter: a
+  `node_modules` outside the package, a pyenv shim, a program its launcher starts from
+  home. The entry's interpreter itself is granted its install
+  ([The interpreter](#the-interpreter)). Vendor the rest into the package.
 - A local service: a unix socket of any kind, the session bus, a portal, a notification,
   a keyring. TCP on this machine needs `access.network`.
 - A window of its own on the display: there's no display to reach.
@@ -1802,8 +1900,12 @@ against rox's texture by a renderer outside rox. The render pass path with
 
 1. Acquire: an image memory barrier from `VK_QUEUE_FAMILY_EXTERNAL` to your queue family,
    `GENERAL` to `GENERAL`, before your first write.
-2. Write every pixel. Either store into the `Rgba8Unorm` image with the sRGB curve applied
-   in the shader, since a storage image can't be sRGB, or render through an
+2. Write every pixel of the frame: the whole image for a renderer that doesn't resize, and
+   only the top-left corner at the size it was told for one that does. That size comes
+   from `hello` and the newest `size` line, never from the image's extent, which is the
+   ceiling. rox shows the corner alone, so whatever the rest of the image holds never
+   reaches the screen. Either store into the `Rgba8Unorm` image with the sRGB curve
+   applied in the shader, since a storage image can't be sRGB, or render through an
    `R8G8B8A8_SRGB` view and let the hardware apply it. rox samples through an sRGB view
    either way, and both were pixel-exact in the spike. Alpha is straight, as in a slot.
 3. Release: the barrier back to `VK_QUEUE_FAMILY_EXTERNAL`, after your last write,
@@ -1957,7 +2059,7 @@ on Linux and macOS:
 python3 examples/renderers/standin.py --spectrum --palette --cover path/to/renderer
 python3 examples/renderers/standin.py --size 640x360 -- ./my-renderer --verbose
 python3 examples/renderers/standin.py --size 320x180 --frames 1280x720 --resize 640x360,1280x720 path/to/renderer
-python3 examples/renderers/standin.py --settings '{"look":"ember"}' --set '{"look":"ice"}' path/to/renderer
+python3 examples/renderers/standin.py --settings '{"look":"ember"}' --set look=ice@3 --set rate=30@5 path/to/renderer
 ```
 
 Given a folder, it starts the renderer from its `plugin.json` as rox would, the
@@ -1965,7 +2067,8 @@ interpreter looked up in its `bin`, then each `--program-folder`, then `PATH`. A
 it runs the command as given. It makes the frame mapping, and with `--cover` and
 `--spectrum` the cover mapping with a test picture and the spectrum mapping with a
 synthetic spectrum, lends them from fd 3 up in rox's order with rox's environment, a
-`ROX_CACHE_DIR` under the temp folder included, and
+`ROX_CACHE_DIR` included, `rox-standin-cache` in the temp folder unless `--cache DIR`
+names another, and
 writes `hello`, a pool of one signal of each kind (`--empty-pool` for none), and
 `signals` lines about 60 a second from a scripted drive: a rest, a bass swell, then beats
 at 120 a minute, then the music stopping. With `--palette` it sends a `palette` line.
@@ -1987,9 +2090,19 @@ it makes the mapping at `--frames`, says `--size` in `hello` with `frames` besid
 sends each size in `--resize` on a `size` line, spread evenly across the run and held to
 the mapping with its shape kept. It accepts a frame at the size it told last and the one
 before, as rox does. A renderer that doesn't resize gets one mapping at `--size` and no
-`size` line, whatever `--resize` says. `--settings` is the target's stored settings,
-held to what the folder's manifest declares, sent in `hello` with a line on stderr for
-what it set aside, and `--set` changes some of them halfway through on a `settings` line.
+`size` line, whatever `--resize` says.
+
+Given a folder, it checks the manifest's `settings` against rox's rules first, and stops
+with rox's own reason for one rox would refuse, as `standin: rox refuses this manifest:
+plugin.json: setting 1 is a number without a min and a max`. `--settings` is the
+target's stored settings, held to what the manifest declares and sent in `hello` as rox
+sends them, numbers included, with a line on stderr for what it set aside. Each `--set
+KEY=VALUE@SECONDS` changes one at that many seconds into the run, on a `settings` line
+with the whole set. VALUE is read as JSON where it parses and as text where it doesn't,
+so `look=ice@3` and `rate=30@5` both work. A change to a `restart` setting gets a line on
+stderr instead, since rox would start the session again. `--ready` holds the drive back
+until the renderer prints a line `ready`, and gives it as long to exit at the end, each up
+to 30 seconds, for a test that has to see the rest before the music.
 
 It copies the newest announce once a display frame, as rox does, and reports frames
 copied, distinct pictures among them, torn and refused frames, lines read, announces and
@@ -2005,8 +2118,10 @@ renderer or no frame came. `--dump 0,30` saves those frame numbers as PPM files 
 Its layout numbers are copied from `rox-frames` and its limits from the render target.
 Tests hold each copy to the code it came from (`crates/rox-frames/tests/standin.rs`,
 `the_stand_in_starts_a_renderer_as_rox_does` in `rox-services/src/renderers.rs`,
-`the_stand_in_holds_a_renderer_to_these_limits` in `rox/src/canvas/target.rs` and
-`the_stand_in_passes_the_same_names` in `rox-plugins/src/env.rs`). One runs it against
+`the_stand_in_holds_a_renderer_to_these_limits` in `rox/src/canvas/target.rs`,
+`the_stand_in_passes_the_same_names` in `rox-plugins/src/env.rs`, and
+`the_stand_in_holds_settings_to_these_rules` in `rox-plugins/src/renderer_settings.rs`,
+which also runs its settings check and its values against rox's own). One runs it against
 the bars example and wants frames with nothing refused, another watches its spectrum
 and cover mappings through a run and wants them written as rox writes them, and a third
 resizes the bars example three times and runs a renderer written before sizes beside it,
@@ -2063,7 +2178,8 @@ within 2 megapixels. At 33.2 the renderers fell short of 60 frames a second on n
 core each, so that row is partly their cost. The mean crosses 8.3 ms, half a 60 Hz frame,
 at about 18.8 megapixels, read from nine runs at 18.7 (8.2 ms) and six at 19.4 (8.8 ms).
 That's where the canvas's weight line starts warning (`TARGET_PIXELS` in
-`crates/rox/src/canvas/cost.rs`).
+`crates/rox/src/canvas/cost.rs`). The inspector counts a target that follows its box at
+the size its session draws at now, and a fixed one at its own size (`drawing`).
 
 The GPU texture was measured 2026-11-25 on the same machine (Linux 6.18.64, Ryzen 9
 5950X, Radeon RX 6800 XT, RADV from Mesa 26.1.8), in a release build with a 1920x1080
@@ -2100,12 +2216,12 @@ start compiles its shaders into its own cache folder.
 
 A size that follows the box was measured 2026-11-26 on the same machine, in a release
 build in a headless compositor at 1920x1080, with a Renderer panel in a floating window
-resized about 30 times a second for 10 s. Plasma, which resizes, was sent one `size` line
-for the whole drag, once it held still, and kept its process; its session ended with 0
-torn and 0 refused frames. Ember, which doesn't, was sent none and kept its process and
-its one size. rox's frame time over the drag was a mean of 0.64 ms and a worst of 1.43
-ms with Plasma, 0.58 ms and 5.81 ms with Ember, against 0.76 ms and 0.59 ms standing
-still. rox's memory didn't move across either drag.
+resized about 30 times a second for 10 s. A renderer that resizes was sent one `size`
+line for the whole drag, once it held still, and kept its process; its session ended with
+0 torn and 0 refused frames. One that doesn't resize was sent none and kept its process
+and its one size. rox's frame time over the drag was a mean of 0.64 ms and a worst of
+1.43 ms with the first, 0.58 ms and 5.81 ms with the second, against 0.76 ms and 0.59 ms
+standing still. rox's memory didn't move across either drag.
 
 The mapping at the ceiling costs the pages a session has written, not its whole length.
 At a 200% Render Scale the ceiling is 3840 by 2160 and the mapping 63.3 MB. A session
@@ -2134,7 +2250,8 @@ on top of `crates/rox-plugins`: `manifest.rs` (`capabilities.renderer`, `check_r
 `check_wanted`, the entry and the interpreter table), `renderer_settings.rs` (a setting's
 declaration, `check`, `values`, `restarts`), `process.rs` (the spawn, fd 3 and up,
 the Windows handles, stderr, `never_block`, `spawn_confined`), `sandbox.rs` (`Access`,
-`Tier`, `Support`, `Profile`, the ruleset and the filter) and `host.rs` (`BACKOFF`,
+`Tier`, `Support`, `Profile`, `interpreter_install`, `grantable`, the ruleset and the
+filter) and `host.rs` (`BACKOFF`,
 `CRASH_WINDOW`). The tier's gate and the read asks' folders are `sandbox_holds` and
 `read_folders` in `renderers.rs`. The
 approval card's grants are `grants` in `crates/rox-services/src/plugins.rs`, with the

@@ -3552,6 +3552,12 @@ impl Targets {
         Some(target.map_or(Status::Paused, Target::status))
     }
 
+    /// The size target `id`'s session was last told to draw at while it
+    /// follows its box. None for a fixed size or one not drawn yet.
+    pub(crate) fn drawn(&self, id: &str) -> Option<[u32; 2]> {
+        self.shown.get(id)?.told
+    }
+
     pub(crate) fn start_again(&self, id: &str) {
         if let Some(target) = self.shown.get(id).and_then(|shown| shown.target.as_ref()) {
             target.start_again();
@@ -4285,7 +4291,7 @@ mod tests {
             .configure(&serde_json::json!({ "look": "ember", "old": 1 }));
         assert_eq!(
             next_said(&fake),
-            serde_json::json!({ "settings": { "look": "ember", "rate": 60.0 } }),
+            serde_json::json!({ "settings": { "look": "ember", "rate": 60 } }),
             "the whole set, the undeclared key left out"
         );
 

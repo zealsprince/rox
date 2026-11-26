@@ -151,16 +151,19 @@ fn python3() -> Option<&'static str> {
 
 /// A renderer that draws nothing and watches the spectrum and the cover the
 /// way the guide reads them, until stdin closes. What it sees goes to the
-/// file named in its argument, a line for each change: `spectrum <seq>
-/// <flags> <nonzero>`, `square <seq> <nonzero>` for the cover mapping, and
-/// `cover <counter or null>` for each cover line.
+/// file named in its argument as it sees it, a line for each change:
+/// `spectrum <seq> <flags> <nonzero>`, `square <seq> <nonzero>` for the cover
+/// mapping, and `cover <counter or null>` for each cover line. It prints
+/// `ready` once it has looked, which starts the stand-in's drive, and looks
+/// once more after stdin closes.
 #[cfg(unix)]
 const WATCHER: &str = r#"
 import json, mmap, os, select, struct, sys
 
 spectrum = mmap.mmap(int(os.environ["ROX_SPECTRUM_FD"]), 0, prot=mmap.PROT_READ)
 cover = mmap.mmap(int(os.environ["ROX_COVER_FD"]), 0, prot=mmap.PROT_READ)
-seen, last = [], {}
+out = open(sys.argv[1], "w")
+last = {}
 
 def whole(view, at, start, end):
     while True:
@@ -171,38 +174,55 @@ def whole(view, at, start, end):
         if struct.unpack_from("<Q", view, at)[0] == seq:
             return seq, copy
 
+def write(line):
+    out.write(line + "\n")
+    out.flush()
+
+def note(what, now):
+    if last.get(what) != now:
+        write(now)
+        last[what] = now
+
 def look():
     seq, page = whole(spectrum, 8, 16, 3328)
     (flags,) = struct.unpack_from("<I", page, 8)
     note("spectrum", f"spectrum {seq} {flags} {int(any(page[112:]))}")
 
-    seq, pixels = whole(cover, 16, 64, 64 + 256 * 256 * 4)
-    note("square", f"square {seq} {int(any(pixels))}")
+    # The square only when its counter moved: copying it on every look
+    # slows the loop.
+    if struct.unpack_from("<Q", cover, 16)[0] != last.get("square seq"):
+        seq, pixels = whole(cover, 16, 64, 64 + 256 * 256 * 4)
+        note("square", f"square {seq} {int(any(pixels))}")
+        last["square seq"] = seq
 
-def note(what, now):
-    if last.get(what) != now:
-        seen.append(now)
-        last[what] = now
+look()
+sys.stdout.write("ready\n")
+sys.stdout.flush()
 
-stdin = sys.stdin.buffer
+stdin, held = sys.stdin.fileno(), b""
 while True:
     look()
-    if select.select([stdin], [], [], 0.005)[0]:
-        line = stdin.readline()
-        if not line:
-            break
+    if not select.select([stdin], [], [], 0.005)[0]:
+        continue
+    chunk = os.read(stdin, 65536)
+    if not chunk:
+        break
+    *lines, held = (held + chunk).split(b"\n")
+    for line in filter(None, lines):
         message = json.loads(line)
         if "cover" in message and "hello" not in message:
-            seen.append(f"cover {json.dumps(message['cover'])}")
+            write(f"cover {json.dumps(message['cover'])}")
 
-with open(sys.argv[1], "w") as out:
-    out.write("\n".join(seen) + "\n")
+look()
+out.close()
 "#;
 
 /// The stand-in writes the spectrum as rox does: zeros once when it's made,
 /// rows with the playing bit while its drive plays, zeros once when it
 /// stops, and nothing between. Its cover mapping follows the track the same
-/// way, the transparent square named `null`.
+/// way, the transparent square named `null`. The drive waits for the
+/// watcher's first look and the stand-in for its last, so nothing here
+/// depends on how fast the machine is.
 #[cfg(unix)]
 #[test]
 fn the_stand_in_writes_the_spectrum_and_the_cover_as_rox_does() {
@@ -224,6 +244,7 @@ fn the_stand_in_writes_the_spectrum_and_the_cover_as_rox_does() {
             "16x16",
             "--spectrum",
             "--cover",
+            "--ready",
             "--",
         ])
         .args([python, "-c", WATCHER])
@@ -248,13 +269,15 @@ fn the_stand_in_writes_the_spectrum_and_the_cover_as_rox_does() {
     // The rest: zeros written once, the counter stopped.
     assert_eq!(spectrum[0], (2, false, false), "{seen}");
 
-    // The music: the counter moves with the playing bit set.
+    // The music: the counter moves with the playing bit set, by more than
+    // 50 writes whichever of them the watcher caught.
     let played: Vec<u64> = spectrum
         .iter()
         .filter(|&&(_, playing, _)| playing)
         .map(|&(seq, ..)| seq)
         .collect();
-    assert!(played.len() > 50, "{seen}");
+    let (first, last) = (played[0], *played.last().unwrap());
+    assert!((last - first) / 2 > 50, "{seen}");
     assert!(played.windows(2).all(|w| w[1] > w[0]), "{seen}");
     assert!(
         spectrum
@@ -270,7 +293,7 @@ fn the_stand_in_writes_the_spectrum_and_the_cover_as_rox_does() {
         .unwrap();
     let rest = &spectrum[after + 1..];
     assert_eq!(rest.len(), 1, "{seen}");
-    assert_eq!(rest[0].0, played.last().unwrap() + 2, "{seen}");
+    assert!(rest[0].0 > last, "{seen}");
 
     // The cover: transparent and null before the music, the picture while
     // it plays, then transparent and null again.

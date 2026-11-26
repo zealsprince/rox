@@ -59,7 +59,7 @@ impl EnableCard {
             .capabilities
             .renderer
             .as_ref()
-            .map(rox_services::renderers::tier);
+            .map(|cap| rox_services::renderers::tier(&folder, cap));
         let approved_tier = record
             .map(|record| record.sandbox.clone())
             .filter(|sandbox| !sandbox.is_empty());
@@ -220,13 +220,20 @@ impl EnableCard {
         }
 
         // The same files, approved for another tier than this system gives
-        // them now.
+        // them now, or for an interpreter at another path.
         let moved = match (&self.approved_tier, &self.tier) {
-            (Some(was), Some(now)) => *was != now.key(),
-            _ => false,
+            (Some(was), Some(now)) if *was != now.key() => Some(
+                match without_interpreter(was) == without_interpreter(&now.key()) {
+                    true => "settings-plugins-card-interpreter-moved",
+                    false => "settings-plugins-card-sandbox-changed",
+                },
+            ),
+            _ => None,
         };
-        if moved && !matches!(self.since, Some(Since::Declared(_))) {
-            lines.push(rox_i18n::t!("settings-plugins-card-sandbox-changed"));
+        if let Some(moved) = moved
+            && !matches!(self.since, Some(Since::Declared(_)))
+        {
+            lines.push(rox_i18n::t!(moved));
         }
 
         lines
@@ -282,6 +289,19 @@ impl EnableCard {
     }
 }
 
+/// A tier key with its interpreter's paths left out, the `run:` words a
+/// [`Tier::key`] puts between its reads and its gaps.
+fn without_interpreter(key: &str) -> String {
+    let mut parts = key.split(" run:");
+    let mut kept = parts.next().unwrap_or_default().to_string();
+    for part in parts {
+        if let Some(at) = part.find(" gap:") {
+            kept.push_str(&part[at..]);
+        }
+    }
+    kept
+}
+
 /// A renderer's tier as the card reads it out. Only what this system
 /// enforces is promised: an older kernel's gaps get a line each.
 fn tier_lines(tier: &Tier) -> Vec<SharedString> {
@@ -289,12 +309,25 @@ fn tier_lines(tier: &Tier) -> Vec<SharedString> {
         Tier::Sandboxed {
             network,
             folders,
+            interpreter,
             gaps,
         } => {
-            let mut lines = vec![match *network || !folders.is_empty() {
+            let asks = *network || !folders.is_empty() || !interpreter.is_empty();
+            let mut lines = vec![match asks {
                 true => rox_i18n::t!("settings-plugins-card-sandboxed-asks"),
                 false => rox_i18n::t!("settings-plugins-card-sandboxed"),
             }];
+            // The paths themselves, since only they say whose program it is.
+            if !interpreter.is_empty() {
+                let paths: Vec<String> = interpreter
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                lines.push(rox_i18n::t!(
+                    "settings-plugins-card-interpreter",
+                    paths = paths.join(", ")
+                ));
+            }
             if gaps.signals {
                 lines.push(rox_i18n::t!("settings-plugins-card-gap-signals"));
             }
@@ -656,6 +689,7 @@ mod tests {
         Tier::Sandboxed {
             network,
             folders,
+            interpreter: Vec::new(),
             gaps: rox_plugins::sandbox::Gaps::of_abi(abi),
         }
     }
@@ -679,6 +713,27 @@ mod tests {
                 rox_i18n::t!("settings-plugins-card-sandboxed"),
                 rox_i18n::t!("settings-plugins-card-gap-signals"),
                 rox_i18n::t!("settings-plugins-card-gap-truncate"),
+            ]
+        );
+
+        // An interpreter from home names its install, in one line.
+        let pyenv = Tier::Sandboxed {
+            network: false,
+            folders: Vec::new(),
+            interpreter: vec![
+                "/home/u/.pyenv/versions/3.12.1/bin".into(),
+                "/home/u/.pyenv/versions/3.12.1/lib".into(),
+            ],
+            gaps: rox_plugins::sandbox::Gaps::of_abi(7),
+        };
+        assert_eq!(
+            tier_lines(&pyenv),
+            [
+                rox_i18n::t!("settings-plugins-card-sandboxed-asks"),
+                SharedString::from(
+                    "Can read and run its interpreter from outside the system's folders: \
+                     /home/u/.pyenv/versions/3.12.1/bin, /home/u/.pyenv/versions/3.12.1/lib."
+                ),
             ]
         );
 
@@ -757,6 +812,30 @@ mod tests {
             !card
                 .lines()
                 .contains(&rox_i18n::t!("settings-plugins-card-sandbox-changed"))
+        );
+
+        // Approved with its interpreter at another path.
+        let mut card = EnableCard::of(
+            renderer.clone(),
+            Some(&PluginRecord {
+                sandbox: "sandboxed run:/home/u/.pyenv/versions/3.12.1/bin gap:signals".into(),
+                ..approved.clone()
+            }),
+        )
+        .unwrap();
+        card.tier = Some(Tier::Sandboxed {
+            network: false,
+            folders: Vec::new(),
+            interpreter: vec!["/home/u/.pyenv/versions/3.13.0/bin".into()],
+            gaps: rox_plugins::sandbox::Gaps::of_abi(5),
+        });
+        assert_eq!(
+            card.lines().last(),
+            Some(&rox_i18n::t!("settings-plugins-card-interpreter-moved"))
+        );
+        assert_eq!(
+            without_interpreter("sandboxed read:music run:/a b/bin run:/a b/lib gap:signals"),
+            "sandboxed read:music gap:signals"
         );
 
         // A manifest that now asks to run unconfined says that instead.

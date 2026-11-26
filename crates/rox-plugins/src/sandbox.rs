@@ -16,6 +16,8 @@
 //! rules it knows, and [`Gaps`] names what it can't stop, so the enable card
 //! never promises more than the system holds to.
 
+use std::path::{Path, PathBuf};
+
 use serde::Deserialize;
 
 /// A folder of the user's a renderer can ask to read (`access.read`).
@@ -143,6 +145,10 @@ pub enum Tier {
     Sandboxed {
         network: bool,
         folders: Vec<Folder>,
+        /// What its interpreter needs from outside the system's folders,
+        /// read and run ([`interpreter_install`]). Empty for one the system
+        /// or the package holds.
+        interpreter: Vec<PathBuf>,
         gaps: Gaps,
     },
     /// The manifest asks for `"unconfined": true`.
@@ -152,7 +158,14 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub fn of(unconfined: bool, access: &Access, support: &Support) -> Tier {
+    /// `interpreter` is what [`interpreter_install`] grants the program the
+    /// entry resolved to, read only when the tier is sandboxed.
+    pub fn of(
+        unconfined: bool,
+        access: &Access,
+        support: &Support,
+        interpreter: impl FnOnce() -> Vec<PathBuf>,
+    ) -> Tier {
         if unconfined {
             return Tier::Unconfined;
         }
@@ -161,6 +174,7 @@ impl Tier {
             Support::Sandbox { gaps, .. } => Tier::Sandboxed {
                 network: access.network,
                 folders: access.folders(),
+                interpreter: interpreter(),
                 gaps: *gaps,
             },
             Support::Unavailable(why) => Tier::Permissions(why.clone()),
@@ -168,14 +182,16 @@ impl Tier {
     }
 
     /// What an approval records. Every grant and every gap is in it, so an
-    /// approval stands for exactly what the card said. Why a system can't
-    /// sandbox isn't: the renderer runs the same with the user's permissions
-    /// whatever the reason.
+    /// approval stands for exactly what the card said, and an interpreter at
+    /// another path asks again. Why a system can't sandbox isn't: the
+    /// renderer runs the same with the user's permissions whatever the
+    /// reason.
     pub fn key(&self) -> String {
         match self {
             Tier::Sandboxed {
                 network,
                 folders,
+                interpreter,
                 gaps,
             } => {
                 let mut key = String::from("sandboxed");
@@ -185,6 +201,9 @@ impl Tier {
                 if !folders.is_empty() {
                     let names: Vec<&str> = folders.iter().map(|folder| folder.key()).collect();
                     key.push_str(&format!(" read:{}", names.join(",")));
+                }
+                for path in interpreter {
+                    key.push_str(&format!(" run:{}", path.display()));
                 }
                 if gaps.signals {
                     key.push_str(" gap:signals");
@@ -224,6 +243,24 @@ pub fn support() -> Support {
     }
 }
 
+/// `path` as a grant, or None when granting it would hand over more than
+/// the folder the card names: the user's home itself or anything above it,
+/// which would be every file they have, and anything holding or inside
+/// rox's data folder, which holds their accounts and approvals. A read ask
+/// and an interpreter's install are both held to it. `home` and `data` are
+/// canonical.
+pub fn grantable(path: &Path, home: Option<&Path>, data: Option<&Path>) -> Option<PathBuf> {
+    let path = path.canonicalize().ok()?;
+
+    let holds_home = home.is_some_and(|home| home.starts_with(&path));
+    let near_data = data.is_some_and(|data| data.starts_with(&path) || path.starts_with(data));
+    if holds_home || near_data {
+        return None;
+    }
+
+    Some(path)
+}
+
 static FAILED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Records that applying the sandbox failed, so every renderer approved as
@@ -239,7 +276,7 @@ fn failure() -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{Prepared, Profile, prepare};
+pub use linux::{Prepared, Profile, interpreter_install, prepare};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -251,7 +288,7 @@ mod linux {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use super::{Gaps, Support, Unavailable};
+    use super::{Gaps, Support, Unavailable, grantable};
 
     // ── Landlock's uapi (linux/landlock.h) ──
 
@@ -509,14 +546,149 @@ mod linux {
     /// A shell redirect and many runtimes open these.
     const NULL_DEVICES: &[&str] = &["/dev/null", "/dev/zero", "/dev/full"];
 
+    /// How many symlinks [`interpreter_install`] follows before it stops,
+    /// so a loop ends.
+    const LINKS_MAX: usize = 16;
+
+    /// What the interpreter at `program` needs to start, when the system's
+    /// folders and the package don't already hold it: the file it resolves
+    /// to, and its install's `bin` and `lib` when it has one. A Program
+    /// Folder as a whole is never granted, since one can be any folder the
+    /// user has, home included.
+    ///
+    /// The path as found and every path its symlinks lead through are each
+    /// looked at, since a venv's `bin/python` is a link to the Python it
+    /// was made from and its packages are beside the link, not the target.
+    /// An install is the folder above a `bin` holding the program, only when
+    /// that folder's `lib` has something named for the program, as
+    /// `lib/python3.12` is for `bin/python3`. A single binary like deno's
+    /// gets its file alone. Every folder granted is held to [`grantable`],
+    /// and so is the install as a whole, so this can never reach home, a
+    /// folder above it or rox's data folder.
+    pub fn interpreter_install(
+        program: &Path,
+        package: &Path,
+        home: Option<&Path>,
+        data: Option<&Path>,
+    ) -> Vec<PathBuf> {
+        let package = package
+            .canonicalize()
+            .unwrap_or_else(|_| package.to_path_buf());
+        let system: Vec<PathBuf> = SYSTEM_RUN
+            .iter()
+            .filter_map(|root| Path::new(root).canonicalize().ok())
+            .collect();
+        // Already reachable: the profile grants these whole.
+        let reached = |path: &Path| {
+            path.starts_with(&package) || system.iter().any(|root| path.starts_with(root))
+        };
+
+        let mut grants: Vec<PathBuf> = Vec::new();
+        for link in chain(program) {
+            let Some(install) = install_of(&link).and_then(|dir| dir.canonicalize().ok()) else {
+                continue;
+            };
+            if reached(&install) {
+                continue;
+            }
+            if grantable(&install, home, data).is_none() {
+                log::warn!(
+                    "sandbox: not granting the install {} for {}: it holds the home, or holds or is inside rox's data folder",
+                    install.display(),
+                    program.display()
+                );
+                continue;
+            }
+
+            // A venv says where its packages are in pyvenv.cfg, beside its
+            // bin, and Python reads it before anything else.
+            for part in ["bin", "lib", "pyvenv.cfg"] {
+                let Some(path) = grantable(&install.join(part), home, data) else {
+                    continue;
+                };
+                // A part that's a link out of the install grants nothing.
+                if path.starts_with(&install) && !reached(&path) && !grants.contains(&path) {
+                    grants.push(path);
+                }
+            }
+        }
+
+        let Ok(file) = program.canonicalize() else {
+            return grants;
+        };
+        if reached(&file) || grants.iter().any(|granted| file.starts_with(granted)) {
+            return grants;
+        }
+        match grantable(&file, home, data) {
+            Some(file) => grants.push(file),
+            None => log::warn!(
+                "sandbox: not granting {}: it's inside rox's data folder",
+                file.display()
+            ),
+        }
+
+        grants
+    }
+
+    /// `program` and each path its symlinks lead through, in order.
+    fn chain(program: &Path) -> Vec<PathBuf> {
+        let mut links = Vec::new();
+        let Ok(mut at) = std::path::absolute(program) else {
+            return links;
+        };
+
+        for _ in 0..LINKS_MAX {
+            links.push(at.clone());
+            let Ok(target) = std::fs::read_link(&at) else {
+                break;
+            };
+            // A relative target is from the link's folder; an absolute one
+            // replaces the path.
+            at = match at.parent() {
+                Some(dir) => dir.join(target),
+                None => target,
+            };
+        }
+
+        links
+    }
+
+    /// The install `link` belongs to: the folder above the `bin` it's in,
+    /// when that folder's `lib` holds an entry named for it, its name with
+    /// any version digits dropped (`python3.12` is `python`).
+    fn install_of(link: &Path) -> Option<PathBuf> {
+        let bin = link.parent()?;
+        if bin.file_name()? != "bin" {
+            return None;
+        }
+
+        let install = bin.parent()?;
+        let name = link.file_name()?.to_str()?;
+        let stem = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+        if stem.is_empty() {
+            return None;
+        }
+
+        let named = std::fs::read_dir(install.join("lib"))
+            .ok()?
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|entry| entry.starts_with(stem))
+            });
+        named.then(|| install.to_path_buf())
+    }
+
     impl Profile {
-        /// A renderer's: its package folder, `program` when it's an
-        /// interpreter outside the package, the system's libraries, the
-        /// GPU, `cache` writable, and `reads` read-only. `reads` are the
-        /// folders its approved asks resolved to.
+        /// A renderer's: its package folder, `interpreter` as its approved
+        /// tier names it, the system's libraries, the GPU, `cache`
+        /// writable, and `reads` read-only. `reads` are the folders its
+        /// approved asks resolved to.
         pub fn renderer(
             package: &Path,
-            program: &Path,
+            interpreter: &[PathBuf],
             cache: &Path,
             reads: &[PathBuf],
             network: bool,
@@ -524,16 +696,7 @@ mod linux {
             let paths = |list: &[&str]| list.iter().map(PathBuf::from).collect::<Vec<_>>();
 
             let mut run = vec![package.to_path_buf()];
-            // An interpreter off PATH is let run as one file. Its own
-            // libraries are only readable where the system keeps them.
-            let inside = package
-                .canonicalize()
-                .unwrap_or_else(|_| package.to_path_buf());
-            if let Ok(program) = program.canonicalize()
-                && !program.starts_with(&inside)
-            {
-                run.push(program);
-            }
+            run.extend(interpreter.iter().cloned());
             run.extend(paths(SYSTEM_RUN));
 
             let mut read = paths(SYSTEM_READ);
@@ -1097,15 +1260,15 @@ mod tests {
         };
 
         assert_eq!(
-            Tier::of(false, &Access::default(), &full).key(),
+            Tier::of(false, &Access::default(), &full, Vec::new).key(),
             "sandboxed"
         );
         assert_eq!(
-            Tier::of(false, &asks, &full).key(),
+            Tier::of(false, &asks, &full, Vec::new).key(),
             "sandboxed network read:library,pictures"
         );
         assert_eq!(
-            Tier::of(false, &Access::default(), &old).key(),
+            Tier::of(false, &Access::default(), &old, Vec::new).key(),
             "sandboxed gap:signals gap:truncate"
         );
         assert_eq!(
@@ -1115,19 +1278,30 @@ mod tests {
                 &Support::Sandbox {
                     abi: 4,
                     gaps: Gaps::of_abi(4)
-                }
+                },
+                Vec::new
             )
             .key(),
             "sandboxed gap:signals"
         );
 
         // Unconfined is the manifest's call, whatever the system can do.
-        assert_eq!(Tier::of(true, &asks, &full), Tier::Unconfined);
-        assert_eq!(Tier::of(true, &asks, &full).key(), "unconfined");
+        assert_eq!(Tier::of(true, &asks, &full, Vec::new), Tier::Unconfined);
+        assert_eq!(Tier::of(true, &asks, &full, Vec::new).key(), "unconfined");
+
+        // An interpreter from outside the system's folders is part of the
+        // yes: another path asks again.
+        let deno = || vec![PathBuf::from("/home/u/.deno/bin/deno")];
+        assert_eq!(
+            Tier::of(false, &Access::default(), &full, deno).key(),
+            "sandboxed run:/home/u/.deno/bin/deno"
+        );
 
         // Why a system can't sandbox doesn't change what it runs as.
         for why in [Unavailable::NoLandlock, Unavailable::Failed("x".into())] {
-            let tier = Tier::of(false, &asks, &Support::Unavailable(why.clone()));
+            let tier = Tier::of(false, &asks, &Support::Unavailable(why.clone()), || {
+                panic!("no install is looked for outside the sandbox")
+            });
             assert_eq!(tier, Tier::Permissions(why));
             assert_eq!(tier.key(), "permissions");
             assert!(!tier.sandboxed());
@@ -1152,6 +1326,113 @@ mod tests {
 
         *FAILED.lock().unwrap() = None;
         assert_eq!(support(), before);
+    }
+
+    #[test]
+    fn a_grant_never_holds_home_or_the_data_folder() {
+        let root = std::env::temp_dir().join(format!("rox-sandbox-grant-{}", std::process::id()));
+        let home = root.join("home");
+        let data = home.join(".local/share/rox");
+        let music = home.join("Music");
+        for dir in [&data, &music] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let (home, data, music) = (
+            home.canonicalize().unwrap(),
+            data.canonicalize().unwrap(),
+            music.canonicalize().unwrap(),
+        );
+
+        let grant = |path: &Path| grantable(path, Some(&home), Some(&data));
+        assert_eq!(grant(&music), Some(music.clone()));
+        assert_eq!(grant(&home), None, "home itself, as xdg-user-dirs can set");
+        assert_eq!(grant(&root), None, "above home");
+        assert_eq!(grant(Path::new("/")), None);
+        assert_eq!(grant(&data.join("..")), None, "around the data folder");
+        assert_eq!(grant(&data), None);
+        assert_eq!(grant(&root.join("missing")), None, "not there");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A fake home with a deno, a pyenv Python, a venv over it, a Python
+    /// under `~/.local` beside rox's data folder, and one in `~/bin`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interpreter_gets_its_install_and_nothing_around_it() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("rox-sandbox-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        };
+        let file = |rel: &str| {
+            let path = root.join(rel);
+            std::fs::write(&path, "").unwrap();
+            path
+        };
+
+        let home = dir("home");
+        let data = dir("home/.local/share/rox");
+        let package = dir("home/.local/share/rox/plugins/bars");
+        let deno = {
+            dir("home/.deno/bin");
+            file("home/.deno/bin/deno")
+        };
+        let pyenv = dir("home/.pyenv/versions/3.12.1");
+        dir("home/.pyenv/versions/3.12.1/bin");
+        dir("home/.pyenv/versions/3.12.1/lib/python3.12");
+        let python = file("home/.pyenv/versions/3.12.1/bin/python3.12");
+        symlink("python3.12", pyenv.join("bin/python3")).unwrap();
+        let venv = dir("home/project/.venv");
+        dir("home/project/.venv/bin");
+        dir("home/project/.venv/lib/python3.12/site-packages");
+        file("home/project/.venv/pyvenv.cfg");
+        symlink(pyenv.join("bin/python3"), venv.join("bin/python")).unwrap();
+        dir("home/.local/bin");
+        dir("home/.local/lib/python3.12");
+        symlink(&python, home.join(".local/bin/python3")).unwrap();
+        dir("home/bin");
+        dir("home/lib/python3.12");
+        let loose = file("home/bin/python3");
+
+        let canon = |path: &Path| path.canonicalize().unwrap();
+        let (home, data) = (canon(&home), canon(&data));
+        let install = |program: &Path| {
+            linux::interpreter_install(program, &package, Some(&home), Some(&data))
+        };
+
+        assert_eq!(install(&deno), [canon(&deno)], "a single binary, alone");
+
+        let pyenv = canon(&pyenv);
+        let pyenv_grants = [pyenv.join("bin"), pyenv.join("lib")];
+        assert_eq!(install(&pyenv.join("bin/python3")), pyenv_grants);
+
+        let venv = canon(&venv);
+        let mut venv_grants = vec![venv.join("bin"), venv.join("lib"), venv.join("pyvenv.cfg")];
+        venv_grants.extend(pyenv_grants.clone());
+        assert_eq!(
+            install(&venv.join("bin/python")),
+            venv_grants,
+            "the venv and what it's over"
+        );
+
+        // `~/.local` holds rox's data folder, so it's never an install.
+        assert_eq!(install(&home.join(".local/bin/python3")), pyenv_grants);
+
+        // `~/bin` with a `~/lib` would make home the install.
+        assert_eq!(install(&loose), [canon(&loose)]);
+
+        // The system's and the package's own need nothing more.
+        assert!(install(Path::new("/bin/sh")).is_empty());
+        let own = package.join("run");
+        std::fs::write(&own, "").unwrap();
+        assert!(install(&own).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(target_os = "linux")]

@@ -71,16 +71,39 @@ only the internet families. macOS and Windows follow with their own mechanisms (
 Seatbelt profile; an AppContainer), each needing a spike. Until then they are case 5:
 the card says the renderer runs with the user's permissions on this system.
 
+**8. Its home is its cache folder.** Andrew's call. A sandboxed renderer's `HOME`, its
+XDG folders, its temp folder and the GPU drivers' shader caches all point into the cache
+folder rox makes for it, and the user's home isn't named anywhere in its environment. A
+library that writes under `$HOME` on its own then writes somewhere the sandbox lets it,
+and one that reads the user's config there finds none.
+
+**9. An interpreter outside the system's folders gets its own install, and nothing
+more.** Andrew's call. A script renderer whose entry resolves to an interpreter outside
+the system's folders and its package, as one under the user's home, is granted read and
+run on what that interpreter needs to start: the file it resolves to, always, and its
+install's `bin` and `lib` when it sits in a `bin` whose parent's `lib` holds something
+named for it, as a pyenv's or a venv's does. Every link on the way to the file is looked
+at, since a venv's packages are beside the link and not beside the Python it points to.
+The install is held to the rule a read ask is: never the user's home, a folder above it,
+or a folder holding or inside rox's data folder. The paths granted are part of the tier,
+so the card names them and an interpreter at another path asks again.
+
+The Program Folders aren't granted as a whole. They're where rox looks for an
+interpreter, and a user can list any folder there, their home included, so granting
+them would hand a renderer whatever else those folders hold, to run as well as read,
+with nothing on the card to say what that is. One program's install is a few folders the
+card can name.
+
 **Consequences.** An author who wants a renderer to "just run" as before adds one line
 to the manifest and gets a stronger card. Everyone else gets confinement for free.
 
-A renderer can't keep config in the user's home, use an interpreter environment that
-lives there, or call a local service over a unix socket. It vendors what it needs, which
-ADR 30 already advises for the hash. Its home, caches and temp files point at its cache
-folder.
+A renderer can't keep config in the user's home, use anything under home beyond its own
+interpreter's install, or call a local service over a unix socket. It vendors what it
+needs, which ADR 30 already advises for the hash.
 
-A script renderer's interpreter can read the system's library tree. The boundary is the
-same as a native renderer's: not home, not rox's data, not the network.
+A script renderer's interpreter can read the system's library tree, and its own install
+when that's outside it. The boundary is otherwise the same as a native renderer's: not
+home, not rox's data, not the network.
 
 What the sandbox does not stop: a renderer hanging or resetting the GPU, which takes
 rox's device with it (rox restarts on device loss); learning that a path exists through

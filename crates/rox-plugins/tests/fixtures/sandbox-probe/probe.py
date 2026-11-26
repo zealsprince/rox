@@ -176,6 +176,11 @@ def main():
         attempt("library-file", lambda: read_file(t["library_file"]))
         attempt("beside-library", lambda: read_file(t["beside_file"]))
 
+    # Only with an interpreter installed under home.
+    if "install_file" in t:
+        attempt("install-file", lambda: read_file(t["install_file"]))
+        attempt("beside-install", lambda: read_file(t["beside_install"]))
+
     # Learning a path exists isn't stopped.
     attempt("home-stat", lambda: f"size {os.stat(t['home_file']).st_size}")
 

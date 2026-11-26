@@ -5087,3 +5087,20 @@ route-curve-ease-out = Ease Out
 route-curve-ease-in-out = Ease In and Out
 route-curve-power = Exponent
 unit-seconds = { $value } s
+
+## Canvas multi-selection
+
+canvas-key-select-all = Select All Canvas Items
+    .description = Select every item beside the selected one, or every item on the stage
+canvas-set-count = { $count ->
+    [one] One item selected
+   *[other] { $count } items selected
+}
+canvas-set-mixed = Mixed
+canvas-set-visible = Visible
+canvas-align-to-selection = Align to the Selection
+canvas-align-tip-stage = { $tool }, against the stage
+canvas-align-tip-group = { $tool }, against its group
+canvas-align-tip-selection = { $tool }, against the selection's bounds
+canvas-distribute-x = Distribute Horizontally, with equal gaps
+canvas-distribute-y = Distribute Vertically, with equal gaps

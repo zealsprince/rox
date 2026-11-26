@@ -43,6 +43,7 @@ use crate::panels::canvas::{self, CanvasPanel};
 use crate::panels::controls;
 
 mod place_rows;
+mod set_rows;
 mod slice_rows;
 
 const WIDTH: f32 = 340.;
@@ -199,7 +200,7 @@ pub(crate) fn render(
     // and keeps its own.
     let mut context = KeyContext::default();
     context.add(canvas::KEY_CONTEXT);
-    if panel.selected.is_some() {
+    if !panel.selected.is_empty() {
         context.add(canvas::SELECTED_CONTEXT);
     }
 
@@ -224,9 +225,12 @@ pub(crate) fn render(
 
     let height = (f32::from(panel_height(panel)) - 16.).max(120.);
     let weight = weight(panel);
+    // Several selected show the set's rows, not the primary's.
+    let several = panel.selected.several();
     let selected = panel
         .selected
-        .as_ref()
+        .primary()
+        .filter(|_| !several)
         .and_then(|id| panel.config.canvas.find(id))
         .cloned();
 
@@ -261,6 +265,7 @@ pub(crate) fn render(
         .child(div().h(px(1.)).bg(palette::border()))
         .child(match &selected {
             Some(item) => item_rows(panel, item, window, cx),
+            None if several => set_rows::rows(panel, cx),
             None => stage_rows(panel, cx),
         });
 
@@ -440,7 +445,7 @@ fn tree_row(
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let id = item.id.clone();
-    let selected = panel.selected.as_deref() == Some(item.id.as_str());
+    let selected = panel.selected.contains(&item.id);
     let is_group = matches!(item.content, Content::Group { .. });
     let label = SharedString::from(if item.name.is_empty() {
         item.id.clone()
@@ -544,7 +549,7 @@ fn tree_row(
                     return;
                 }
 
-                this.select(Some(id.clone()), window, cx);
+                this.tree_pick(&id, event.modifiers, window, cx);
             })
         })
         .on_drag(
@@ -722,7 +727,7 @@ fn item_rows(
         .child(setting_row(
             rox_i18n::t!("canvas-item-anchor"),
             None,
-            anchor_picker(&id, place.anchor, viewport, cx),
+            anchor_picker(vec![id.clone()], Some(place.anchor), cx),
         ))
         .child(arrange_rows(panel, item, flat, cx));
 
@@ -1333,7 +1338,7 @@ fn actions(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
             icons::UPLOAD,
             "canvas-export-object",
             |this, window, cx| {
-                if let Some(id) = this.selected.clone() {
+                if let Some(id) = this.selected.primary().map(str::to_string) {
                     objects::open_export(this, &id, window, cx);
                 }
             },
@@ -1344,85 +1349,63 @@ fn actions(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
 /// What an arrange tool does when it's pressed.
 type ToolPress = Rc<dyn Fn(&mut CanvasPanel, &mut Window, &mut Context<CanvasPanel>)>;
 
-/// The arrange tools beside the anchor: the six aligns, fill and fit
-/// against the parent's box, and the paint order, each an icon with a
-/// tooltip and each one undo step. With one item selected, its parent's box
-/// is the stage, or the group it's in.
-fn arrange_rows(
-    panel: &CanvasPanel,
-    item: &CanvasItem,
-    flat: bool,
+/// An arrange tool: an icon with a tooltip.
+pub(super) fn tool(
+    icon: &'static str,
+    tip: SharedString,
+    key: String,
+    inert: bool,
+    press: ToolPress,
     cx: &mut Context<CanvasPanel>,
-) -> AnyElement {
-    use crate::canvas::align::{Arrange, Line};
-
-    let locked = item.locked;
+) -> gpui::Stateful<Div> {
     let me = cx.entity().downgrade();
-    let tool =
-        |icon: &'static str, tip: SharedString, key: String, inert: bool, press: ToolPress| {
-            let me = me.clone();
-            div()
-                .id(SharedString::from(format!("{key}-tip")))
-                .child(
-                    settings_ui::icon_button(icon, inert, move |_, window, cx| {
-                        let press = press.clone();
-                        me.update(cx, |this, cx| press(this, window, cx)).ok();
-                    })
-                    .keyed(SharedString::from(key)),
-                )
-                .tooltip(move |window, cx| {
-                    gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                })
-        };
-
-    let aligns = Line::ALL.map(|line| {
-        let (icon, tip, key) = match line {
-            Line::Left => (icons::ALIGN_START_VERTICAL, "canvas-align-left", "left"),
-            Line::CenterX => (
-                icons::ALIGN_CENTER_VERTICAL,
-                "canvas-align-center-x",
-                "center-x",
-            ),
-            Line::Right => (icons::ALIGN_END_VERTICAL, "canvas-align-right", "right"),
-            Line::Top => (icons::ALIGN_START_HORIZONTAL, "canvas-align-top", "top"),
-            Line::CenterY => (
-                icons::ALIGN_CENTER_HORIZONTAL,
-                "canvas-align-center-y",
-                "center-y",
-            ),
-            Line::Bottom => (icons::ALIGN_END_HORIZONTAL, "canvas-align-bottom", "bottom"),
-        };
-        tool(
-            icon,
-            rox_i18n::t!(tip),
-            format!("canvas-align-{key}"),
-            locked,
-            Rc::new(move |this, window, cx| {
-                this.arrange_selected(Arrange::Align(line), window, cx)
-            }),
+    div()
+        .id(SharedString::from(format!("{key}-tip")))
+        .child(
+            settings_ui::icon_button(icon, inert, move |_, window, cx| {
+                let press = press.clone();
+                me.update(cx, |this, cx| press(this, window, cx)).ok();
+            })
+            .keyed(SharedString::from(key)),
         )
-    });
-    let fill = tool(
-        icons::FILL,
-        rox_i18n::t!("canvas-align-fill"),
-        "canvas-align-fill".into(),
-        locked,
-        Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fill, window, cx)),
-    );
-    let fit = tool(
-        icons::RATIO,
-        rox_i18n::t!("canvas-align-fit"),
-        "canvas-align-fit".into(),
-        locked,
-        Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fit, window, cx)),
-    );
+        .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+        })
+}
 
-    let order = [
+/// An align's icon, its name's key, and its id's tail.
+pub(super) fn line_face(
+    line: crate::canvas::align::Line,
+) -> (&'static str, &'static str, &'static str) {
+    use crate::canvas::align::Line;
+
+    match line {
+        Line::Left => (icons::ALIGN_START_VERTICAL, "canvas-align-left", "left"),
+        Line::CenterX => (
+            icons::ALIGN_CENTER_VERTICAL,
+            "canvas-align-center-x",
+            "center-x",
+        ),
+        Line::Right => (icons::ALIGN_END_VERTICAL, "canvas-align-right", "right"),
+        Line::Top => (icons::ALIGN_START_HORIZONTAL, "canvas-align-top", "top"),
+        Line::CenterY => (
+            icons::ALIGN_CENTER_HORIZONTAL,
+            "canvas-align-center-y",
+            "center-y",
+        ),
+        Line::Bottom => (icons::ALIGN_END_HORIZONTAL, "canvas-align-bottom", "bottom"),
+    }
+}
+
+/// The paint order tools, on the selected item or on the set.
+pub(super) fn order_tools(cx: &mut Context<CanvasPanel>) -> Vec<gpui::Stateful<Div>> {
+    [
         (icons::BRING_TO_FRONT, "canvas-bring-to-front", "front"),
         (icons::ARROW_UP, "canvas-bring-forward", "forward"),
         (icons::ARROW_DOWN, "canvas-send-back", "back"),
         (icons::SEND_TO_BACK, "canvas-send-to-back", "to-back"),
     ]
+    .into_iter()
     .map(|(icon, tip, key)| {
         let press: ToolPress = match key {
             "front" => Rc::new(|this, window, cx| this.end_depth(true, window, cx)),
@@ -1436,36 +1419,89 @@ fn arrange_rows(
             format!("canvas-order-{key}"),
             false,
             press,
+            cx,
         )
-    });
+    })
+    .collect()
+}
 
-    let row = |tools: Vec<gpui::Stateful<Div>>| {
-        div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .items_center()
-            .gap(px(2.))
-            .children(tools)
-    };
+pub(super) fn tool_row(tools: Vec<gpui::Stateful<Div>>) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap(px(2.))
+        .children(tools)
+}
 
+/// The arrange tools beside the anchor: the six aligns, fill and fit
+/// against the parent's box, and the paint order, each an icon with a
+/// tooltip and each one undo step. With one item selected, its parent's box
+/// is the stage, or the group it's in, and each tooltip says which.
+fn arrange_rows(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    flat: bool,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    use crate::canvas::align::{Arrange, Line};
+
+    let locked = item.locked;
     let in_group = crate::canvas::edit::path_to(&panel.config.canvas.items, &item.id)
         .is_some_and(|path| path.len() > 1);
-    let to = match in_group {
-        true => rox_i18n::t!("canvas-align-to-group"),
-        false => rox_i18n::t!("canvas-align-to-stage"),
+    let (to, tip_key) = match in_group {
+        true => (
+            rox_i18n::t!("canvas-align-to-group"),
+            "canvas-align-tip-group",
+        ),
+        false => (
+            rox_i18n::t!("canvas-align-to-stage"),
+            "canvas-align-tip-stage",
+        ),
     };
+    let tip = |name: &str| rox_i18n::t!(tip_key, tool = rox_i18n::t!(name).to_string());
+
+    let mut align_tools: Vec<gpui::Stateful<Div>> = Line::ALL
+        .into_iter()
+        .map(|line| {
+            let (icon, name, key) = line_face(line);
+            tool(
+                icon,
+                tip(name),
+                format!("canvas-align-{key}"),
+                locked,
+                Rc::new(move |this, window, cx| {
+                    this.arrange_selected(Arrange::Align(line), window, cx)
+                }),
+                cx,
+            )
+        })
+        .collect();
+    align_tools.push(tool(
+        icons::FILL,
+        tip("canvas-align-fill"),
+        "canvas-align-fill".into(),
+        locked,
+        Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fill, window, cx)),
+        cx,
+    ));
+    align_tools.push(tool(
+        icons::RATIO,
+        tip("canvas-align-fit"),
+        "canvas-align-fit".into(),
+        locked,
+        Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fit, window, cx)),
+        cx,
+    ));
+
     let turned = !flat
         && item
             .place
             .rotation
             .iter()
             .any(|degrees| degrees.abs() > f32::EPSILON);
-
-    let mut align_tools: Vec<gpui::Stateful<Div>> = aligns.into_iter().collect();
-    align_tools.push(fill);
-    align_tools.push(fit);
-    let align = row(align_tools).when(turned, |d| {
+    let align = tool_row(align_tools).when(turned, |d| {
         d.child(
             div()
                 .w_full()
@@ -1484,7 +1520,7 @@ fn arrange_rows(
             rox_i18n::t!("canvas-order"),
             None,
             None,
-            row(order.into_iter().collect()),
+            tool_row(order_tools(cx)),
         ))
         .into_any_element()
 }
@@ -1970,7 +2006,7 @@ pub(crate) fn text_roles(color: &str) -> Vec<(String, SharedString)> {
 fn sync_pattern(panel: &mut CanvasPanel, window: &mut Window, cx: &mut Context<CanvasPanel>) {
     let selected = panel
         .selected
-        .as_ref()
+        .primary()
         .and_then(|id| panel.config.canvas.find(id))
         .and_then(|item| match &item.content {
             Content::Text { text, .. } => Some((item.id.clone(), text.clone())),
@@ -2353,12 +2389,11 @@ fn inert_readout(text: String) -> AnyElement {
         .into_any_element()
 }
 
-/// The nine anchors as a three by three grid. Switching keeps the item
-/// where it is.
-fn anchor_picker(
-    id: &str,
-    current: Anchor,
-    viewport: rox_canvas::Viewport,
+/// The nine anchors as a three by three grid. Switching keeps every item in
+/// `ids` where it is. None lights no anchor, for items on different ones.
+pub(super) fn anchor_picker(
+    ids: Vec<String>,
+    current: Option<Anchor>,
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     const ORDER: [Anchor; 9] = [
@@ -2379,8 +2414,8 @@ fn anchor_picker(
             .flex_row()
             .gap(px(2.))
             .children(row.iter().map(|&anchor| {
-                let id = id.to_string();
-                let lit = anchor == current;
+                let ids = ids.clone();
+                let lit = Some(anchor) == current;
 
                 div()
                     .id(SharedString::from(format!("canvas-anchor-{anchor:?}")))
@@ -2398,20 +2433,7 @@ fn anchor_picker(
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            let id = id.clone();
-                            this.change(
-                                |canvas| {
-                                    let Some(parent) = edit::parent_frame(canvas, &id, viewport)
-                                    else {
-                                        return;
-                                    };
-                                    if let Some(item) = canvas.find_mut(&id) {
-                                        item.place = edit::with_anchor(item, &parent, anchor);
-                                    }
-                                },
-                                window,
-                                cx,
-                            );
+                            this.anchor_all(ids.clone(), anchor, window, cx);
                         }),
                     )
             }))

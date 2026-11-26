@@ -16,6 +16,7 @@ pub(crate) mod image;
 pub(crate) mod looks;
 pub(crate) mod overlay;
 pub(crate) mod routes;
+pub(crate) mod selection;
 pub(crate) mod shader;
 pub(crate) mod slice;
 pub(crate) mod spectrum;

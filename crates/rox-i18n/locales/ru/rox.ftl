@@ -5037,3 +5037,21 @@ route-curve-ease-out = Плавный выход
 route-curve-ease-in-out = Плавные вход и выход
 route-curve-power = Степень
 unit-seconds = { $value } с
+
+## Canvas multi-selection
+
+canvas-key-select-all = Выбрать все элементы холста
+    .description = Выбрать все элементы рядом с выбранным или все элементы на площадке
+canvas-set-count = { $count ->
+    [one] Выбран { $count } элемент
+    [few] Выбрано { $count } элемента
+   *[many] Выбрано { $count } элементов
+}
+canvas-set-mixed = Разные
+canvas-set-visible = Видимость
+canvas-align-to-selection = Выровнять по выделению
+canvas-align-tip-stage = { $tool }, по площадке
+canvas-align-tip-group = { $tool }, по группе
+canvas-align-tip-selection = { $tool }, по границам выделения
+canvas-distribute-x = Распределить по горизонтали, с равными промежутками
+canvas-distribute-y = Распределить по вертикали, с равными промежутками

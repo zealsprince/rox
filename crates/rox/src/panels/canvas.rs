@@ -53,6 +53,7 @@ use crate::canvas::grid::{self, Grid};
 use crate::canvas::image::{self, Images};
 use crate::canvas::overlay::Inspector;
 use crate::canvas::routes::{self, Snapshot};
+use crate::canvas::selection::Selection;
 use crate::canvas::shader::{self as shader_item, Shaders};
 use crate::canvas::states::{self, Cases};
 use crate::canvas::target::{self, Pointer, Status as TargetStatus, Targets};
@@ -77,6 +78,8 @@ use rox_panel_api::windows::WorkspaceWindows;
 use rox_services::catalog::LibraryEvent;
 use rox_services::player::EqChanged;
 
+mod set;
+
 /// The registry name.
 pub const PANEL_NAME: &str = "canvas";
 
@@ -97,6 +100,7 @@ actions!(
         NudgeUpFar,
         NudgeDownFar,
         StepOut,
+        SelectAllItems,
     ]
 );
 
@@ -215,6 +219,8 @@ struct Gesture {
     /// by what it runs, not by its content kind alone.
     flat: bool,
     kind: GestureKind,
+    /// The rest of the selection, carried along by a move.
+    riders: Vec<set::Rider>,
 }
 
 enum GestureKind {
@@ -508,7 +514,12 @@ pub struct CanvasPanel {
     near_edge: Rc<Cell<bool>>,
     focus: FocusHandle,
     tab_panel: Option<WeakEntity<TabPanel>>,
-    pub(crate) selected: Option<String>,
+    pub(crate) selected: Selection,
+    /// The marquee being dragged on empty stage.
+    marquee: Option<set::Marquee>,
+    /// A press on one of several selected items that becomes a selection of
+    /// just that one if it lets go without moving.
+    collapse: Option<String>,
     history: History<Snapshot>,
     /// The routes as the history last saw them. The shared binding rows
     /// write `config.routes` directly, so a difference is an edit to record.
@@ -675,7 +686,9 @@ impl CanvasPanel {
             near_edge: Rc::default(),
             focus: cx.focus_handle(),
             tab_panel: None,
-            selected: None,
+            selected: Selection::default(),
+            marquee: None,
+            collapse: None,
             history: History::default(),
             seen_routes,
             motion: routes::Motion::default(),
@@ -875,11 +888,8 @@ impl CanvasPanel {
         self.build(keep, window, cx);
         self.inspector.reweigh();
 
-        if let Some(id) = &self.selected
-            && self.config.canvas.find(id).is_none()
-        {
-            self.selected = None;
-        }
+        let canvas = &self.config.canvas;
+        self.selected.retain(|id| canvas.find(id).is_some());
 
         self.save_soon(window, cx);
         cx.notify();
@@ -1118,7 +1128,7 @@ impl CanvasPanel {
         let preview = self
             .inspector
             .preview()
-            .filter(|(id, _)| active && self.selected.as_deref() == Some(*id));
+            .filter(|(id, _)| active && self.selected.primary() == Some(*id));
 
         let looks = canvas::looks::this_frame(&mut self.looks, self.design, preview, window);
 
@@ -1221,7 +1231,7 @@ impl CanvasPanel {
         let scoped = design && self.focus.is_focused(window);
         let mut context = gpui::KeyContext::default();
         context.add(KEY_CONTEXT);
-        if self.selected.is_some() {
+        if !self.selected.is_empty() {
             context.add(SELECTED_CONTEXT);
         }
 
@@ -1271,6 +1281,9 @@ impl CanvasPanel {
                 cx.listener(|this, _: &NudgeDownFar, window, cx| this.nudge([0., 10.], window, cx)),
             )
             .on_action(cx.listener(|this, _: &StepOut, window, cx| this.step_out(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectAllItems, window, cx| this.select_all(window, cx)),
+            )
             .when(!design, |d| {
                 d.on_mouse_down(
                     MouseButton::Right,
@@ -1674,7 +1687,7 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selected = id;
+        self.selected.set(id);
         self.activate(window, cx);
         cx.notify();
     }
@@ -1699,7 +1712,7 @@ impl CanvasPanel {
         if !self.design {
             return None;
         }
-        let id = self.selected.as_deref()?;
+        let id = self.selected.primary()?;
 
         let mut area = None;
         canvas::each_grid(
@@ -1746,8 +1759,9 @@ impl CanvasPanel {
             ACTIVE.set(None);
         }
 
-        self.selected = None;
+        self.selected.clear();
         self.gesture = None;
+        self.marquee = None;
         cx.notify();
     }
 
@@ -1758,10 +1772,12 @@ impl CanvasPanel {
     /// The handles and strips over the stage, painted after every item.
     fn chrome_layer(&self, active: bool, cx: &mut Context<Self>) -> AnyElement {
         let me = cx.entity().downgrade();
-        let selected = active
-            .then(|| self.selected.as_ref().and_then(|id| self.shape(id)))
+        let selected = (active && !self.selected.several())
+            .then(|| self.selected.primary().and_then(|id| self.shape(id)))
             .flatten()
             .cloned();
+        let members = self.set_shapes(active);
+        let marquee = self.marquee_rect();
 
         let paint_selected = selected.clone();
         let canvas = canvas(
@@ -1772,6 +1788,10 @@ impl CanvasPanel {
                     if shape.turns() {
                         paint_turn_handles(shape, bounds.origin, window);
                     }
+                }
+                set::paint_set(&members, bounds.origin, window);
+                if let Some(rect) = marquee {
+                    set::paint_marquee(rect, bounds.origin, window);
                 }
 
                 // A popover from an inspector picker floats outside the
@@ -1807,6 +1827,8 @@ impl CanvasPanel {
                                     this.gesture = None;
                                     cx.notify();
                                 }
+                            } else if this.marquee.is_some() {
+                                this.marquee_to(local, held, cx);
                             }
                         })
                         .ok();
@@ -1836,7 +1858,7 @@ impl CanvasPanel {
             .iter()
             .filter(|shape| shape.flat())
             .filter_map(|shape| {
-                let lit = active && self.selected.as_deref() == Some(shape.id.as_str());
+                let lit = active && self.selected.contains(&shape.id);
                 let flush = shape.edges()[1] < STRIP_H;
                 (lit || !flush).then(|| self.strip(shape, lit, cx))
             })
@@ -1934,9 +1956,7 @@ impl CanvasPanel {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     let local = local_point(event.position, this.bounds.get().origin);
-                    let target = this.choose(local, &chain);
-                    this.select(Some(target.clone()), window, cx);
-                    this.begin(&target, local, Begin::Move, cx);
+                    this.pick(local, &chain, event.modifiers, window, cx);
                 }),
             )
             .into_any_element()
@@ -2008,7 +2028,7 @@ impl CanvasPanel {
             && let Some(turn) = self.turn_handle_at(local)
         {
             cx.stop_propagation();
-            let id = self.selected.clone().unwrap_or_default();
+            let id = self.selected.primary().unwrap_or_default().to_string();
             self.begin(&id, local, Begin::Turn(turn), cx);
             return;
         }
@@ -2043,15 +2063,8 @@ impl CanvasPanel {
         }
 
         match hit {
-            Some(shape) => {
-                let target = self.choose(local, &shape.chain());
-                self.select(Some(target.clone()), window, cx);
-                self.begin(&target, local, Begin::Move, cx);
-            }
-            None => {
-                self.last_press = None;
-                self.select(None, window, cx);
-            }
+            Some(shape) => self.pick(local, &shape.chain(), event.modifiers, window, cx),
+            None => self.start_marquee(local, event.modifiers, window, cx),
         }
     }
 
@@ -2066,7 +2079,7 @@ impl CanvasPanel {
             .then(|| {
                 let at = chain
                     .iter()
-                    .position(|id| Some(id) == self.selected.as_ref())?;
+                    .position(|id| Some(id.as_str()) == self.selected.primary())?;
                 chain.get(at + 1).cloned()
             })
             .flatten();
@@ -2078,7 +2091,10 @@ impl CanvasPanel {
     /// Which turn handle of the selected item sits under the pointer: the
     /// ring turns about z, the right grip about y, the top grip about x.
     fn turn_handle_at(&self, local: [f32; 2]) -> Option<usize> {
-        let shape = self.shape(self.selected.as_deref()?)?;
+        if self.selected.several() {
+            return None;
+        }
+        let shape = self.shape(self.selected.primary()?)?;
         if !shape.turns() {
             return None;
         }
@@ -2113,8 +2129,15 @@ impl CanvasPanel {
             return;
         }
 
+        let riders = match begin {
+            Begin::Move => self.riders(id, cx),
+            _ => Vec::new(),
+        };
+        let skip: Vec<String> = riders.iter().map(|rider| rider.id.clone()).collect();
+        let start_box = self.start_box(&shape, &skip);
+
         let kind = match begin {
-            Begin::Move => GestureKind::Move(self.snap_lines(&shape, &parent, viewport)),
+            Begin::Move => GestureKind::Move(self.snap_lines(&shape, &skip, &parent, viewport)),
             Begin::Resize(edges) => GestureKind::Resize {
                 edges,
                 floor: self.floor(id, cx),
@@ -2143,15 +2166,22 @@ impl CanvasPanel {
             camera: self.config.canvas.camera,
             viewport,
             from: local,
-            start_box: shape.edges(),
+            start_box,
             flat,
             kind,
+            riders,
         });
     }
 
     /// The parent box's edges and center, and the edges of every flat
     /// sibling, as they sit on screen.
-    fn snap_lines(&self, moving: &Shape, parent: &Frame, viewport: Viewport) -> [Vec<f32>; 2] {
+    fn snap_lines(
+        &self,
+        moving: &Shape,
+        skip: &[String],
+        parent: &Frame,
+        viewport: Viewport,
+    ) -> [Vec<f32>; 2] {
         let mut xs = Vec::new();
         let mut ys = Vec::new();
 
@@ -2179,7 +2209,11 @@ impl CanvasPanel {
         }
 
         for sibling in &self.shapes {
-            if sibling.id == moving.id || sibling.groups != moving.groups || !sibling.flat() {
+            if sibling.id == moving.id
+                || skip.contains(&sibling.id)
+                || sibling.groups != moving.groups
+                || !sibling.flat()
+            {
                 continue;
             }
 
@@ -2215,6 +2249,7 @@ impl CanvasPanel {
         let delta = [local[0] - gesture.from[0], local[1] - gesture.from[1]];
         let g = gesture;
         let mut place = g.item.place;
+        let mut carried = Vec::new();
 
         match &g.kind {
             GestureKind::Move([xs, ys]) => {
@@ -2237,6 +2272,7 @@ impl CanvasPanel {
                     delta,
                     g.flat,
                 );
+                carried = set::carry(g, delta);
             }
 
             GestureKind::Resize { edges, floor } => {
@@ -2273,10 +2309,19 @@ impl CanvasPanel {
         if let Some(item) = self.config.canvas.find_mut(&id) {
             item.place = place;
         }
+        for (id, position) in carried {
+            if let Some(item) = self.config.canvas.find_mut(&id) {
+                item.place.position = position;
+            }
+        }
         cx.notify();
     }
 
     fn release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.marquee.take().is_some() {
+            cx.notify();
+            return;
+        }
         let Some(gesture) = self.gesture.take() else {
             return;
         };
@@ -2290,6 +2335,11 @@ impl CanvasPanel {
             canvas: self.saved(cx).canvas,
             routes,
         };
+        if let Some(id) = self.collapse.take()
+            && before == after
+        {
+            self.selected.set(Some(id));
+        }
         self.history.record(before, after, None, Instant::now());
 
         self.save_soon(window, cx);
@@ -2823,15 +2873,28 @@ impl CanvasPanel {
     }
 
     pub(crate) fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.take() else {
+        let ids = self.selected.ids().to_vec();
+        if ids.is_empty() {
             return;
-        };
+        }
+        self.selected.clear();
 
-        self.change(move |canvas| drop(edit::remove(canvas, &id)), window, cx);
+        self.change(
+            move |canvas| {
+                for id in &ids {
+                    drop(edit::remove(canvas, id));
+                }
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn group_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else {
+        if self.selected.several() {
+            return self.group_set(window, cx);
+        }
+        let Some(id) = self.selected.primary().map(str::to_string) else {
             return;
         };
 
@@ -2845,7 +2908,10 @@ impl CanvasPanel {
     }
 
     pub(crate) fn ungroup_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else {
+        if self.selected.several() {
+            return self.ungroup_set(window, cx);
+        }
+        let Some(id) = self.selected.primary().map(str::to_string) else {
             return;
         };
         if !matches!(
@@ -2892,7 +2958,14 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.selected.clone() else {
+        if self.selected.several() {
+            let order = match forward {
+                true => canvas::selection::Order::Forward,
+                false => canvas::selection::Order::Backward,
+            };
+            return self.order_set(order, window, cx);
+        }
+        let Some(id) = self.selected.primary().map(str::to_string) else {
             return;
         };
 
@@ -2926,7 +2999,14 @@ impl CanvasPanel {
 
     /// Bring to Front and Send to Back: past every sibling in paint order.
     pub(crate) fn end_depth(&mut self, front: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else {
+        if self.selected.several() {
+            let order = match front {
+                true => canvas::selection::Order::Front,
+                false => canvas::selection::Order::Back,
+            };
+            return self.order_set(order, window, cx);
+        }
+        let Some(id) = self.selected.primary().map(str::to_string) else {
             return;
         };
 
@@ -2967,7 +3047,13 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.selected.clone() else {
+        if self.selected.several() {
+            if let canvas::align::Arrange::Align(line) = arrange {
+                self.align_set(line, window, cx);
+            }
+            return;
+        }
+        let Some(id) = self.selected.primary().map(str::to_string) else {
             return;
         };
         let Some(item) = self.config.canvas.find(&id).filter(|item| !item.locked) else {
@@ -2996,12 +3082,18 @@ impl CanvasPanel {
         );
     }
 
-    /// Arrow keys: one unit in the parent's space, ten with shift.
+    /// Arrow keys: one unit in the parent's space, ten with shift, on every
+    /// selected item that isn't locked.
     fn nudge(&mut self, by: [f32; 2], window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else {
-            return;
-        };
-        if self.config.canvas.find(&id).is_none_or(|item| item.locked) {
+        let canvas = &self.config.canvas;
+        let ids: Vec<String> = self
+            .selected
+            .ids()
+            .iter()
+            .filter(|id| canvas.find(id).is_some_and(|item| !item.locked))
+            .cloned()
+            .collect();
+        if ids.is_empty() {
             return;
         }
 
@@ -3009,11 +3101,13 @@ impl CanvasPanel {
         self.change_keyed(
             Some("nudge"),
             |canvas| {
-                let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
-                    return;
-                };
-                if let Some(item) = canvas.find_mut(&id) {
-                    item.place.position = item.place.position.shifted(by, parent.size);
+                for id in &ids {
+                    let Some(parent) = edit::parent_frame(canvas, id, viewport) else {
+                        continue;
+                    };
+                    if let Some(item) = canvas.find_mut(id) {
+                        item.place.position = item.place.position.shifted(by, parent.size);
+                    }
                 }
             },
             window,
@@ -3021,9 +3115,13 @@ impl CanvasPanel {
         );
     }
 
-    /// Escape: out to the group holding the selection, then to nothing.
+    /// Escape: out to the group holding the selection, then to nothing. A
+    /// selection of several clears.
     fn step_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let parent = self.selected.as_ref().and_then(|id| {
+        if self.selected.several() {
+            return self.select(None, window, cx);
+        }
+        let parent = self.selected.primary().and_then(|id| {
             let mut path = edit::path_to(&self.config.canvas.items, id)?;
             path.pop();
             path.pop()

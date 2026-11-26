@@ -283,7 +283,7 @@ pub(crate) fn edit_selected(
     edit: impl FnOnce(&mut PanelShader),
     cx: &mut Context<CanvasPanel>,
 ) {
-    if let Some(id) = this.selected.clone() {
+    if let Some(id) = this.selected.primary().map(str::to_string) {
         edit_item(this, &id, key, edit, cx);
     }
 }
@@ -296,14 +296,14 @@ fn edit_source(
     edit: impl FnOnce(&mut PanelShader),
     cx: &mut Context<CanvasPanel>,
 ) {
-    if let Some(view) = this.selected.as_deref().and_then(|id| this.shaders.get(id)) {
+    if let Some(view) = this.selected.primary().and_then(|id| this.shaders.get(id)) {
         surface::note_error(view.entity_id(), None);
     }
     edit_selected(this, key, edit, cx);
 }
 
 fn selected_shader(this: &CanvasPanel) -> Option<(String, PanelShader)> {
-    let id = this.selected.clone()?;
+    let id = this.selected.primary().map(str::to_string)?;
     let shader = this.config.canvas.find(&id).and_then(of)?;
     Some((id, shader))
 }
@@ -412,7 +412,7 @@ pub(crate) fn choose_file(
     window: &mut Window,
     cx: &mut Context<CanvasPanel>,
 ) {
-    let Some(id) = this.selected.clone() else {
+    let Some(id) = this.selected.primary().map(str::to_string) else {
         return;
     };
 

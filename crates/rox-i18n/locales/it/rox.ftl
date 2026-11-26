@@ -5030,3 +5030,20 @@ route-curve-ease-out = Uscita morbida
 route-curve-ease-in-out = Entrata e uscita morbide
 route-curve-power = Esponente
 unit-seconds = { $value } s
+
+## Canvas multi-selection
+
+canvas-key-select-all = Seleziona tutti gli elementi della tela
+    .description = Seleziona tutti gli elementi accanto a quello selezionato, o tutti quelli del palco
+canvas-set-count = { $count ->
+    [one] Un elemento selezionato
+   *[other] { $count } elementi selezionati
+}
+canvas-set-mixed = Misto
+canvas-set-visible = Visibile
+canvas-align-to-selection = Allinea alla selezione
+canvas-align-tip-stage = { $tool }, rispetto al palco
+canvas-align-tip-group = { $tool }, rispetto al suo gruppo
+canvas-align-tip-selection = { $tool }, rispetto ai limiti della selezione
+canvas-distribute-x = Distribuisci in orizzontale, con spazi uguali
+canvas-distribute-y = Distribuisci in verticale, con spazi uguali

@@ -5064,3 +5064,20 @@ route-curve-ease-out = Salida suave
 route-curve-ease-in-out = Entrada y salida suaves
 route-curve-power = Exponente
 unit-seconds = { $value } s
+
+## Canvas multi-selection
+
+canvas-key-select-all = Seleccionar todos los elementos del lienzo
+    .description = Selecciona todos los elementos junto al seleccionado, o todos los del escenario
+canvas-set-count = { $count ->
+    [one] Un elemento seleccionado
+   *[other] { $count } elementos seleccionados
+}
+canvas-set-mixed = Mixto
+canvas-set-visible = Visible
+canvas-align-to-selection = Alinear a la selección
+canvas-align-tip-stage = { $tool }, respecto al escenario
+canvas-align-tip-group = { $tool }, respecto a su grupo
+canvas-align-tip-selection = { $tool }, respecto a los límites de la selección
+canvas-distribute-x = Distribuir horizontalmente, con espacios iguales
+canvas-distribute-y = Distribuir verticalmente, con espacios iguales

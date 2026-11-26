@@ -4968,3 +4968,20 @@ route-curve-ease-out = Sanft hinaus
 route-curve-ease-in-out = Sanft hinein und hinaus
 route-curve-power = Exponent
 unit-seconds = { $value } s
+
+## Canvas multi-selection
+
+canvas-key-select-all = Alle Canvas-Elemente auswählen
+    .description = Alle Elemente neben dem ausgewählten auswählen, oder alle auf der Bühne
+canvas-set-count = { $count ->
+    [one] Ein Element ausgewählt
+   *[other] { $count } Elemente ausgewählt
+}
+canvas-set-mixed = Gemischt
+canvas-set-visible = Sichtbar
+canvas-align-to-selection = An der Auswahl ausrichten
+canvas-align-tip-stage = { $tool }, an der Bühne
+canvas-align-tip-group = { $tool }, an der Gruppe
+canvas-align-tip-selection = { $tool }, an den Grenzen der Auswahl
+canvas-distribute-x = Horizontal verteilen, mit gleichen Abständen
+canvas-distribute-y = Vertikal verteilen, mit gleichen Abständen

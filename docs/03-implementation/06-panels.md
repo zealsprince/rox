@@ -452,6 +452,62 @@ and maximum under it, where an empty field clears the limit. A route on `x` or `
 its meaning on a fractional axis: its sway is units added on top of wherever the
 fraction puts the item.
 
+The editor can hold several items at once. The selection is one ordered set on the panel
+(`Selection`, `crates/rox/src/canvas/selection.rs`), and the last item picked is its
+primary: the inspector's single-item rows, the handles and Step Out read the primary, so
+a selection of one behaves as it always has. A selection lives inside one parent, the
+stage or one group, since a set drags, aligns and reorders in one parent's units and one
+paint order. Picking an item under another parent starts a new selection with it.
+
+- On the stage, Shift or Ctrl (Cmd on macOS) adds an item to the set or takes it out.
+  Both work there, since the stage has no row order to take a run along. Under a
+  modifier the press picks at the set's own level, so a set inside a group grows from
+  the stage. A plain press on one of several selected items keeps the set so the drag
+  moves them all, and letting go without moving leaves just that one.
+- In the inspector's tree the list modifiers apply, as in rox's lists: Shift takes the
+  run of siblings from the primary to the row, Ctrl or Cmd toggles a row, both add the
+  run to what's held. Every selected row is lit.
+- A drag on empty stage draws a marquee that picks every unlocked item whose projected
+  quad it touches, tested against the real quad by separating axes, so a tilted item
+  counts only where it draws. Touch rather than enclose: a marquee only starts on empty
+  stage, and a stage of large or tilted items leaves little room to start outside one.
+  A plain marquee picks among the stage's own items; under a modifier it adds to the set
+  among the set's siblings.
+- Select All (`canvas_select_all`, Ctrl+A, Cmd+A on macOS) takes every item in the
+  primary's parent, or on the stage with nothing selected. Escape clears a set of
+  several, and still steps out to the group from a single item.
+
+A set moves together in a drag, each item by the same distance on screen at its own
+depth and each axis in its own unit, so a fractional item writes a fraction and one in
+units writes units. The arrow keys nudge every item in the set, and Delete removes them
+all. Group wraps the set in one new group whose box is the one around their boxes before
+any turn, at the depth of the one nearest the viewer, with every child re-placed so
+nothing moves on screen (`edit::group_many`). Ungroup lifts every group in the set. The
+order tools move the set through its siblings' paint order together and keep its own
+order, changing only the depths that have to change (`selection::reordered`). Locked
+items in a set don't move. Each of these is one undo step. The set draws each item's
+outline and a box around them all, with the resize and turn handles hidden: a set
+doesn't resize or turn. The canvas has no copy, paste or duplicate for one item, so
+there's none for a set either.
+
+With two or more selected, the six align tools line the set up to its own bounds: left
+edges on the leftmost, middles on the middle of the span, and so on, by the same box
+before any turn the single-item tools use. With three or more, Distribute Horizontally
+and Distribute Vertically make the gaps between neighbours equal, neighbours taken in the
+order of their middles and the two outermost staying put. That's by gaps rather than by
+middles because items of different sizes read as evenly spaced when the space between
+them is even. Only positions move, a fractional axis written back as a fraction. With one
+item selected the tools keep their meaning against its parent's box, and every tool's
+tooltip says which it's using: the stage, the group, or the selection's bounds.
+
+The inspector for a set shows the count, the aligns and distributes, the order tools,
+and three rows the items share in the same sense: the anchor, the opacity and whether
+it's visible. Where the items differ the row says Mixed, and an edit on it goes to every
+item as one undo step, a slider drag merging into one. Changing the anchor keeps each item
+where it is. Position and size rows stay hidden, since each item keeps its own units or
+fractions and no one number stands for all of them. Group, Ungroup (while a group is in
+the set) and Delete follow. Selection is editor state and never saved or undone.
+
 `rox_canvas` does the placing. An item's transform is its parent frame's times its own,
 and it turns and scales about its centre whatever its anchor. A point at depth `z`
 scales by `focal / (focal - z)` about the view centre. Siblings paint back to front by
@@ -626,8 +682,10 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 `crates/rox/src/canvas/grid.rs` (a grid's dock area), `crates/rox/src/canvas/image.rs`
 (the decode, the quad and the nine patches), `crates/rox/src/canvas/slice.rs` (the
 nine-slice cut), `crates/rox/src/canvas/edit.rs` and `align.rs` (the editor's
-arithmetic), `crates/rox/src/canvas/overlay.rs` with `overlay/place_rows.rs` and
-`overlay/slice_rows.rs` (the inspector), `patches/gpui/e7-image-patch-inner-edges.patch`
+arithmetic), `crates/rox/src/canvas/selection.rs` (the selection and the set tools'
+arithmetic), `crates/rox/src/panels/canvas/set.rs` (the marquee and the set's edits),
+`crates/rox/src/canvas/overlay.rs` with `overlay/place_rows.rs`, `overlay/slice_rows.rs`
+and `overlay/set_rows.rs` (the inspector), `patches/gpui/e7-image-patch-inner-edges.patch`
 (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
 `crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock),

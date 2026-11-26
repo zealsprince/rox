@@ -23,7 +23,7 @@ pub(crate) const TURN_SNAP: f32 = 15.;
 
 /// How far Bring Forward and Send Back carry an item past the last sibling
 /// in that direction, in pixels of depth.
-const DEPTH_STEP: f32 = 10.;
+pub(crate) const DEPTH_STEP: f32 = 10.;
 
 /// How far a new item steps down and right off one already standing where
 /// it would go, in the parent's units.
@@ -571,6 +571,75 @@ pub(crate) fn group(canvas: &mut CanvasState, id: &str, levels_left: usize) -> O
             ..CanvasItem::default()
         },
     );
+
+    if !fits(canvas, levels_left) {
+        *canvas = before;
+        return None;
+    }
+
+    Some(group_id)
+}
+
+/// Wraps several siblings in one new group, each re-placed into it so
+/// nothing moves on screen. The group's box is the one around theirs before
+/// any turn, in the parent's units, at the depth of the one nearest the
+/// viewer, and it takes the first one's slot in the list. The group's id.
+/// None when they don't share one list, or past the nesting cap.
+pub(crate) fn group_many(
+    canvas: &mut CanvasState,
+    ids: &[String],
+    viewport: Viewport,
+    levels_left: usize,
+) -> Option<String> {
+    let first = ids.first()?;
+    if ids.len() == 1 {
+        return group(canvas, first, levels_left);
+    }
+
+    let parent = parent_frame(canvas, first, viewport)?;
+    let group_id = canvas.fresh_id("group");
+    let before = canvas.clone();
+
+    let (list, _) = siblings_mut(&mut canvas.items, first)?;
+    let picked = |item: &CanvasItem| ids.contains(&item.id);
+    if list.iter().filter(|item| picked(item)).count() != ids.len() {
+        return None;
+    }
+
+    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+    let mut z = f32::NEG_INFINITY;
+    for item in list.iter().filter(|item| picked(item)) {
+        let b = super::align::drawn_box(&item.place, parent.size, is_flat(&item.content));
+        lo = [lo[0].min(b[0]), lo[1].min(b[1])];
+        hi = [hi[0].max(b[0] + b[2]), hi[1].max(b[1] + b[3])];
+        z = z.max(item.place.position.z);
+    }
+
+    let mut wrapper = CanvasItem {
+        id: group_id.clone(),
+        place: Place {
+            anchor: Anchor::TopLeft,
+            position: Position::units([lo[0], lo[1], z]),
+            size: [Length::Units(hi[0] - lo[0]), Length::Units(hi[1] - lo[1])],
+            ..Place::default()
+        },
+        ..CanvasItem::default()
+    };
+    let inner = child_frame(&wrapper, &parent, &Live::default());
+
+    let at = list.iter().position(picked)?;
+    let (children, mut kept): (Vec<CanvasItem>, Vec<CanvasItem>) =
+        std::mem::take(list).into_iter().partition(picked);
+    let children = children
+        .into_iter()
+        .map(|mut child| {
+            child.place = reexpress(&child, &parent, &inner);
+            child
+        })
+        .collect();
+    wrapper.content = Content::Group { items: children };
+    kept.insert(at, wrapper);
+    *list = kept;
 
     if !fits(canvas, levels_left) {
         *canvas = before;
@@ -1339,6 +1408,49 @@ mod tests {
 
         group(&mut canvas, "g", MAX_DEPTH).expect("groups");
         assert!(same_corners(&grid_before, &on_screen(&canvas, "g")));
+    }
+
+    #[test]
+    fn grouping_several_leaves_each_where_it_was_on_screen() {
+        let mut tilted = image("tilted", [120., -40., -200.], [300., 200.]);
+        tilted.place.rotation = [10., 25., -5.];
+        let mut corner = image("corner", [-30., 20., 60.], [80., 120.]);
+        corner.place.anchor = Anchor::BottomRight;
+        let mut fraction = grid("g", [0., 0., 0.], [Length::Stage(0.25); 2]);
+        fraction.place.position.xy[0] = Length::Stage(-0.2);
+        let mut canvas = CanvasState {
+            items: vec![
+                image("left", [0., 0., 0.], [10., 10.]),
+                tilted,
+                corner,
+                fraction,
+            ],
+            ..CanvasState::default()
+        };
+        let ids = ["tilted", "corner", "g"].map(String::from);
+        let before = ids.clone().map(|id| on_screen(&canvas, &id));
+
+        let made = group_many(&mut canvas, &ids, VIEW, MAX_DEPTH).expect("groups");
+        let tops: Vec<&str> = canvas.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(tops, ["left", made.as_str()], "in the first one's slot");
+
+        for (id, was) in ids.iter().zip(&before) {
+            assert_eq!(
+                path_to(&canvas.items, id),
+                Some(vec![made.clone(), id.clone()])
+            );
+            assert!(same_corners(was, &on_screen(&canvas, id)), "{id} moved");
+        }
+        assert!(
+            canvas.find("g").unwrap().place.position.xy[0].is_fraction(),
+            "a fractional axis stays a fraction of the new box"
+        );
+
+        // Not one list: nothing changes.
+        let held = canvas.clone();
+        let split = ["left".to_string(), "g".to_string()];
+        assert_eq!(group_many(&mut canvas, &split, VIEW, MAX_DEPTH), None);
+        assert!(canvas == held);
     }
 
     #[test]

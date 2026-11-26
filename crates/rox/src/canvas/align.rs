@@ -36,7 +36,7 @@ impl Line {
 
     /// The axis it moves along, 0 for x, and where on that axis the item's
     /// box lands: 0 for the near edge, 0.5 the middle, 1 the far edge.
-    fn axis_and_end(self) -> (usize, f32) {
+    pub(crate) fn axis_and_end(self) -> (usize, f32) {
         match self {
             Line::Left => (0, 0.),
             Line::CenterX => (0, 0.5),
@@ -112,6 +112,21 @@ pub(crate) fn arranged(
     Some(out)
 }
 
+/// The item's drawn box in the parent's units: left, top, width, height.
+pub(crate) fn drawn_box(place: &Place, parent: [f32; 2], flat: bool) -> [f32; 4] {
+    let size = sizes(place, parent);
+    let scale = drawn_scale(place, flat);
+    let center = center(place, parent, size);
+
+    let drawn = [size[0] * scale, size[1] * scale];
+    [
+        center[0] - drawn[0] / 2.,
+        center[1] - drawn[1] / 2.,
+        drawn[0],
+        drawn[1],
+    ]
+}
+
 fn sizes(place: &Place, parent: [f32; 2]) -> [f32; 2] {
     place.size_in(parent)
 }
@@ -159,21 +174,6 @@ fn resized(length: Length, parent_axis: f32, units: f32) -> Length {
 mod tests {
     use super::*;
     use rox_canvas::Anchor;
-
-    /// The item's drawn box in the parent's units: left, top, width, height.
-    fn drawn_box(place: &Place, parent: [f32; 2], flat: bool) -> [f32; 4] {
-        let size = sizes(place, parent);
-        let scale = drawn_scale(place, flat);
-        let center = center(place, parent, size);
-
-        let drawn = [size[0] * scale, size[1] * scale];
-        [
-            center[0] - drawn[0] / 2.,
-            center[1] - drawn[1] / 2.,
-            drawn[0],
-            drawn[1],
-        ]
-    }
 
     const STAGE: [f32; 2] = [1000., 500.];
 

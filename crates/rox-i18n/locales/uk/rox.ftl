@@ -5059,3 +5059,21 @@ route-curve-ease-out = Плавний вихід
 route-curve-ease-in-out = Плавні вхід і вихід
 route-curve-power = Степінь
 unit-seconds = { $value } с
+
+## Canvas multi-selection
+
+canvas-key-select-all = Вибрати всі елементи полотна
+    .description = Вибрати всі елементи поруч із вибраним або всі елементи на майданчику
+canvas-set-count = { $count ->
+    [one] Вибрано { $count } елемент
+    [few] Вибрано { $count } елементи
+   *[many] Вибрано { $count } елементів
+}
+canvas-set-mixed = Різні
+canvas-set-visible = Видимість
+canvas-align-to-selection = Вирівняти за виділенням
+canvas-align-tip-stage = { $tool }, за майданчиком
+canvas-align-tip-group = { $tool }, за групою
+canvas-align-tip-selection = { $tool }, за межами виділення
+canvas-distribute-x = Розподілити по горизонталі, з рівними проміжками
+canvas-distribute-y = Розподілити по вертикалі, з рівними проміжками

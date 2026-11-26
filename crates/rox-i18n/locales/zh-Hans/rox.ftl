@@ -4824,3 +4824,17 @@ route-curve-ease-out = 缓出
 route-curve-ease-in-out = 缓入缓出
 route-curve-power = 指数
 unit-seconds = { $value } 秒
+
+## Canvas multi-selection
+
+canvas-key-select-all = 选择全部画布项目
+    .description = 选择与所选项目同级的全部项目,或舞台上的全部项目
+canvas-set-count = 已选择 { $count } 个项目
+canvas-set-mixed = 混合
+canvas-set-visible = 可见
+canvas-align-to-selection = 对齐到选区
+canvas-align-tip-stage = { $tool }(相对舞台)
+canvas-align-tip-group = { $tool }(相对所在组)
+canvas-align-tip-selection = { $tool }(相对选区边界)
+canvas-distribute-x = 水平等距分布
+canvas-distribute-y = 垂直等距分布

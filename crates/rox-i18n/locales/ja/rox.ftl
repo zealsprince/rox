@@ -4825,3 +4825,17 @@ route-curve-ease-out = イーズアウト
 route-curve-ease-in-out = イーズインアウト
 route-curve-power = 指数
 unit-seconds = { $value } 秒
+
+## Canvas multi-selection
+
+canvas-key-select-all = キャンバスのアイテムをすべて選択
+    .description = 選択中のアイテムと同じ階層のアイテム、またはステージ上のアイテムをすべて選択します
+canvas-set-count = { $count } 個のアイテムを選択中
+canvas-set-mixed = 混在
+canvas-set-visible = 表示
+canvas-align-to-selection = 選択範囲に揃える
+canvas-align-tip-stage = { $tool }(ステージ基準)
+canvas-align-tip-group = { $tool }(グループ基準)
+canvas-align-tip-selection = { $tool }(選択範囲の境界基準)
+canvas-distribute-x = 水平方向に等間隔で分布
+canvas-distribute-y = 垂直方向に等間隔で分布

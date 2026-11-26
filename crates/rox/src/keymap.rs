@@ -26,7 +26,7 @@ use rox_panels::lyrics::StampLine;
 
 use crate::panels::canvas::{
     DeleteItem, GroupItem, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight,
-    NudgeRightFar, NudgeUp, NudgeUpFar, Redo, StepOut, Undo, UngroupItem,
+    NudgeRightFar, NudgeUp, NudgeUpFar, Redo, SelectAllItems, StepOut, Undo, UngroupItem,
 };
 
 use crate::workspace::{
@@ -76,6 +76,9 @@ const UNDO: Option<&str> = Some("Canvas || QueueUndo || PlaylistsUndo");
 
 /// A design-mode canvas with an item selected.
 const CANVAS_ITEM: Option<&str> = Some("Canvas && CanvasSelected");
+
+/// A design-mode canvas holding its own focus, selection or not.
+const CANVAS: Option<&str> = Some("Canvas");
 
 /// The Keymap page draws one section per group, in this order.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -288,6 +291,7 @@ mod defaults {
     pub const CANVAS_REDO: &[&str] = &["cmd-shift-z"];
     pub const CANVAS_GROUP: &[&str] = &["cmd-g"];
     pub const CANVAS_UNGROUP: &[&str] = &["cmd-shift-g"];
+    pub const CANVAS_SELECT_ALL: &[&str] = &["cmd-a"];
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -327,6 +331,7 @@ mod defaults {
     pub const CANVAS_REDO: &[&str] = &["ctrl-shift-z", "ctrl-y"];
     pub const CANVAS_GROUP: &[&str] = &["ctrl-g"];
     pub const CANVAS_UNGROUP: &[&str] = &["ctrl-shift-g"];
+    pub const CANVAS_SELECT_ALL: &[&str] = &["ctrl-a"];
 }
 
 /// Page order within each group. A `LazyLock` because an action's name isn't
@@ -1466,6 +1471,16 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "canvas-key-step-out.description",
             Reach::Panel
         ),
+        command!(
+            "canvas_select_all",
+            "canvas-key-select-all",
+            Group::Editing,
+            CANVAS,
+            defaults::CANVAS_SELECT_ALL,
+            SelectAllItems,
+            "canvas-key-select-all.description",
+            Reach::Panel
+        ),
     ]
 });
 
@@ -1871,6 +1886,7 @@ mod tests {
         "canvas_nudge_up_far",
         "canvas_nudge_down_far",
         "canvas_step_out",
+        "canvas_select_all",
     ];
 
     /// The table is built once, before the saved language is applied, and

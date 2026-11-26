@@ -5060,3 +5060,20 @@ route-curve-ease-out = Sortie douce
 route-curve-ease-in-out = Entrée et sortie douces
 route-curve-power = Exposant
 unit-seconds = { $value } s
+
+## Canvas multi-selection
+
+canvas-key-select-all = Sélectionner tous les éléments du canevas
+    .description = Sélectionne tous les éléments à côté de celui sélectionné, ou tous ceux du plateau
+canvas-set-count = { $count ->
+    [one] Un élément sélectionné
+   *[other] { $count } éléments sélectionnés
+}
+canvas-set-mixed = Mixte
+canvas-set-visible = Visible
+canvas-align-to-selection = Aligner sur la sélection
+canvas-align-tip-stage = { $tool }, par rapport au plateau
+canvas-align-tip-group = { $tool }, par rapport à son groupe
+canvas-align-tip-selection = { $tool }, par rapport aux limites de la sélection
+canvas-distribute-x = Répartir horizontalement, à espaces égaux
+canvas-distribute-y = Répartir verticalement, à espaces égaux

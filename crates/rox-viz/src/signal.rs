@@ -27,8 +27,9 @@ pub const BAND_MAX_HZ: f32 = 20_000.0;
 /// Signals pool whole bands, so a short reactive window beats a fine one.
 pub const HUB_FFT: usize = 2048;
 
-/// Silence longer than this reads as stopped audio rather than the gap between
-/// pump ticks, so signals don't strobe on high-refresh displays.
+/// No fresh audio for longer than this reads as stopped audio rather than the
+/// gap between pump ticks, so signals don't strobe on high-refresh displays.
+/// Digital silence in a playing track is fresh audio.
 pub const SILENT_AFTER: f32 = 0.15;
 
 /// Advances closer than this are one frame asking twice: several panels read

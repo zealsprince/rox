@@ -163,9 +163,10 @@ impl Shared {
 }
 
 impl Writer {
-    /// A write for each fresh window of audio. Between windows the last
-    /// one holds, as a pool band's value does. Paused, stopped, or silent
-    /// past the hub's [`SILENT_AFTER`], it's zeros once.
+    /// A write for each fresh window of audio, digital silence included.
+    /// Between windows the last one holds, as a pool band's value does.
+    /// Paused, stopped, or with no fresh audio for the hub's
+    /// [`SILENT_AFTER`], it's zeros once.
     fn step(&mut self, feed: &AudioFeed, playing: bool, now: Instant) {
         let written = feed.written();
         let fresh = written != self.written;
@@ -312,6 +313,27 @@ mod tests {
 
         drop(lease);
         assert_eq!(shared.leases.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_silent_passage_in_a_playing_track_is_written_as_playing() {
+        let shared = shared();
+        let feed = AudioFeed::new();
+        let now = Instant::now();
+        let _lease = shared.lease();
+
+        // Digital silence is fresh audio: rows of zeros, the bit set, and
+        // the counter moving with each window.
+        feed.push(&vec![0.0; 4096]);
+        shared.step(&feed, true, now);
+        let first = read(shared);
+        assert!(first.playing);
+        assert!(first.log.iter().chain(&first.linear).all(|&v| v == 0.0));
+
+        feed.push(&vec![0.0; 1536]);
+        shared.step(&feed, true, now + Duration::from_millis(16));
+        let next = read(shared);
+        assert_eq!((next.seq, next.playing), (first.seq + 2, true));
     }
 
     #[test]

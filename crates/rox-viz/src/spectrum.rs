@@ -309,6 +309,180 @@ mod tests {
         );
     }
 
+    /// Noise from a fixed LCG, so the tests never flake: white, or pink
+    /// through Paul Kellet's refined filter, which holds -3 dB an octave to
+    /// within 0.05 dB above about 10 Hz.
+    fn noise(samples: usize, pink: bool) -> Vec<f32> {
+        let mut state = 0x9e37_79b9_u32;
+        let mut b = [0.0f32; 7];
+
+        (0..samples)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let white = (state >> 8) as f32 / (1 << 24) as f32 * 2.0 - 1.0;
+                if !pink {
+                    return white * 0.3;
+                }
+
+                b[0] = 0.99886 * b[0] + white * 0.055_517_9;
+                b[1] = 0.99332 * b[1] + white * 0.075_075_9;
+                b[2] = 0.96900 * b[2] + white * 0.153_852;
+                b[3] = 0.86650 * b[3] + white * 0.310_485_6;
+                b[4] = 0.55000 * b[4] + white * 0.532_952_2;
+                b[5] = -0.7616 * b[5] - white * 0.016_898;
+                let pink = b.iter().sum::<f32>() + white * 0.5362;
+                b[6] = white * 0.115_926;
+
+                // Keeps the whole row inside the window, about 0.57 at the
+                // bottom and 0.16 at the top.
+                pink * 0.02
+            })
+            .collect()
+    }
+
+    /// The log row and the FFT's power, each averaged over `windows`
+    /// back-to-back windows of noise at `rate`.
+    fn averaged(pink: bool, rate: u32, windows: usize) -> (Vec<f32>, Vec<f64>) {
+        let samples = noise(FFT * (windows + 1), pink);
+        let mut analyzer = Analyzer::new(FFT);
+        let mut rows = Rows::default();
+        let mut log = vec![0.0f32; LOG_BINS];
+        let mut power = vec![0.0f64; FFT / 2];
+
+        // The first window lets the filter settle.
+        for window in samples.as_chunks::<FFT>().0.iter().skip(1) {
+            let mags = analyzer.magnitudes(window);
+            for (p, &m) in power.iter_mut().zip(mags) {
+                *p += f64::from(m) * f64::from(m);
+            }
+
+            rows.fill(mags, rate);
+            for (sum, &v) in log.iter_mut().zip(rows.log()) {
+                *sum += v;
+            }
+        }
+
+        log.iter_mut().for_each(|v| *v /= windows as f32);
+        power.iter_mut().for_each(|p| *p /= windows as f64);
+        (log, power)
+    }
+
+    /// The least-squares slope of `row` per octave over the log bins `bins`.
+    fn slope_per_octave(row: &[f32], bins: std::ops::Range<usize>) -> f32 {
+        let points: Vec<(f32, f32)> = bins.map(|i| (log_centre(i).log2(), row[i])).collect();
+        let n = points.len() as f32;
+        let (mx, my) = points
+            .iter()
+            .fold((0.0, 0.0), |(x, y), &(px, py)| (x + px / n, y + py / n));
+
+        let (sxy, sxx) = points.iter().fold((0.0, 0.0), |(sxy, sxx), &(x, y)| {
+            (sxy + (x - mx) * (y - my), sxx + (x - mx) * (x - mx))
+        });
+        sxy / sxx
+    }
+
+    /// The first log bin at least an FFT bin wide: below it the row
+    /// interpolates one FFT bin, from it up it takes a peak over several.
+    fn crossover(rate: u32) -> usize {
+        let bin_hz = rate as f32 / FFT as f32;
+        (0..LOG_BINS)
+            .find(|&i| log_edge(i + 1) - log_edge(i) >= bin_hz)
+            .unwrap()
+    }
+
+    fn mean(values: &[f32]) -> f32 {
+        values.iter().sum::<f32>() / values.len() as f32
+    }
+
+    /// The guide's numbers for pink noise, measured. Under 40 Hz the window
+    /// holds less than two cycles, so the fits start there.
+    #[test]
+    fn pink_noise_falls_3_db_an_octave_below_the_crossover_and_half_that_above() {
+        // 3 dB in the 54 dB window.
+        const THREE_DB: f32 = 3.0 / 54.0;
+
+        assert_eq!((crossover(44_100), crossover(48_000)), (55, 57));
+        assert!((log_edge(55) - 389.1).abs() < 0.1 && (log_edge(57) - 433.5).abs() < 0.1);
+
+        for rate in [44_100, 48_000] {
+            let (log, power) = averaged(true, rate, 2000);
+            let cross = crossover(rate);
+            let start = log_bin_of(40.0);
+
+            // The input is pink: every octave from 62.5 Hz holds the same power.
+            let bin_hz = rate as f32 / FFT as f32;
+            let octaves: Vec<f64> = (0..8)
+                .map(|n| {
+                    let f = 62.5 * 2f32.powi(n);
+                    let (lo, hi) = (
+                        (f / bin_hz).ceil() as usize,
+                        (2.0 * f / bin_hz).ceil() as usize,
+                    );
+                    10.0 * power[lo..hi].iter().sum::<f64>().log10()
+                })
+                .collect();
+            let (quiet, loud) = octaves
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(lo, hi), &e| (lo.min(e), hi.max(e)));
+            assert!(loud - quiet < 1.0, "{rate}: octaves {octaves:?}");
+
+            // One FFT bin's level, interpolated, falls as pink noise's power
+            // per bin does.
+            let below = slope_per_octave(&log, start..cross);
+            assert!((below + THREE_DB).abs() < 0.005, "{rate}: {below} below");
+
+            // A peak over more FFT bins as the log bins widen makes up about
+            // half of it.
+            let above = slope_per_octave(&log, cross..LOG_BINS);
+            assert!(
+                (above + THREE_DB / 2.0).abs() < 0.005,
+                "{rate}: {above} above"
+            );
+
+            // The two slopes, measured from the crossover's edge, flatten it
+            // to within about 1.6 dB.
+            let at = log_edge(cross);
+            let flattened: Vec<f32> = (start..LOG_BINS)
+                .map(|i| {
+                    let slope = if i < cross { 0.056 } else { 0.028 };
+                    log[i] + slope * (log_centre(i) / at).log2()
+                })
+                .collect();
+            let level = mean(&flattened);
+            for (i, v) in (start..).zip(&flattened) {
+                assert!(
+                    (v - level).abs() < 0.035,
+                    "{rate}: bin {i} reads {v}, the mean {level}"
+                );
+            }
+
+            // One 3 dB slope across the whole row tips it up instead.
+            let tipped: Vec<f32> = (start..LOG_BINS)
+                .map(|i| log[i] + THREE_DB * (log_centre(i) / 1000.0).log2())
+                .collect();
+            let third = tipped.len() / 3;
+            let rise = mean(&tipped[2 * third..]) - mean(&tipped[..third]);
+            assert!(rise > 0.1, "{rate}: {rise}");
+        }
+    }
+
+    #[test]
+    fn white_noise_reads_higher_where_the_bins_are_wider() {
+        for rate in [44_100, 48_000] {
+            let (log, _) = averaged(false, rate, 500);
+
+            // Flat while a log bin reads one FFT bin.
+            let cross = crossover(rate);
+            let below = slope_per_octave(&log, log_bin_of(40.0)..cross);
+            assert!(below.abs() < 0.005, "{rate}: {below}");
+
+            // The top third reads about 7 dB over the bottom third.
+            let third = LOG_BINS / 3;
+            let rise = (mean(&log[2 * third..]) - mean(&log[..third])) * 54.0;
+            assert!((6.0..8.0).contains(&rise), "{rate}: {rise} dB");
+        }
+    }
+
     #[test]
     fn silence_is_zeros() {
         let mut rows = Rows::default();
@@ -342,5 +516,14 @@ mod tests {
         let last = log_bin_of(16_000.0);
         assert!(rows.log()[..last].iter().all(|&v| v == 1.0));
         assert!(rows.log()[last + 1..].iter().all(|&v| v == 0.0));
+
+        // A 22.05 kHz file on a device opened at its rate: bin 116 straddles
+        // 11,025 Hz and reads what's under it, and the linear row, which
+        // stops at 11,003.5 Hz, reads all of its bins.
+        rows.fill(&mags, 22_050);
+        assert_eq!(log_bin_of(11_025.0), 116);
+        assert!(rows.log()[..117].iter().all(|&v| v == 1.0));
+        assert!(rows.log()[117..].iter().all(|&v| v == 0.0));
+        assert!(rows.linear().iter().all(|&v| v == 1.0));
     }
 }

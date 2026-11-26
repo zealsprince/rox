@@ -310,7 +310,9 @@ class CoverBlock:
         self.seq = 0
 
     def write(self, pixels):
-        """Odd counter, the pixels, the even counter. Answers the even one."""
+        """Odd counter, the pixels, the even counter. Answers the even one.
+        None is the transparent square rox writes with no cover."""
+        pixels = pixels or bytes(COVER_SIZE * COVER_SIZE * 4)
         self.block.u64(COVER_SEQ, self.seq + 1)
         self.block.view[COVER_PIXELS:COVER_PIXELS + len(pixels)] = pixels
         self.seq += 2
@@ -342,40 +344,69 @@ def test_cover():
 
 class SpectrumBlock:
     """The spectrum mapping, which this end writes and every granted
-    renderer reads (`Spectrum::write` in spectrum.rs)."""
+    renderer reads (`Spectrum::write` in spectrum.rs, `Writer::step` in
+    rox/src/canvas/spectrum.rs). Like rox it writes zeros once when it's
+    made, then rows while the music plays, then zeros once when it stops,
+    and leaves the counter alone between."""
 
     def __init__(self):
-        block = self.block = Block("rox-spectrum", SPECTRUM_BYTES, True)
-        block.view[0:4] = SPECTRUM_MAGIC
-        block.u32(4, SPECTRUM_VERSION)
-        block.f32(SP_RATE, SPECTRUM_RATE)
-        block.u32(SP_LOG_BINS, LOG_BINS)
-        block.f32(SP_LOG_LOW_HZ, LOG_LOW_HZ)
-        block.f32(SP_LOG_HIGH_HZ, LOG_HIGH_HZ)
-        block.u32(SP_LINEAR_BINS, LINEAR_BINS)
-        block.f32(SP_LINEAR_BIN_HZ, LINEAR_BIN_HZ)
-        block.f32(SP_FLOOR_DB, FLOOR_DB)
-        block.f32(SP_MAX_DB, MAX_DB)
-        block.u32(SP_LOG_AT, ROW_LOG)
-        block.u32(SP_LINEAR_AT, ROW_LINEAR)
-        block.u32(SP_LOG_BYTES_AT, ROW_LOG_BYTES)
-        block.u32(SP_LINEAR_BYTES_AT, ROW_LINEAR_BYTES)
-        self.seq = 0
+        self.block = Block("rox-spectrum", SPECTRUM_BYTES, True)
 
-    def write(self, log_row, linear_row, playing):
-        block = self.block
-        block.u64(SP_SEQ, self.seq + 1)
-        struct.pack_into(f"<{LOG_BINS}f", block.view, ROW_LOG, *log_row)
-        struct.pack_into(f"<{LINEAR_BINS}f", block.view, ROW_LINEAR, *linear_row)
-        block.view[ROW_LOG_BYTES:ROW_LOG_BYTES + LOG_BINS] = bytes(round(v * 255) for v in log_row)
-        block.view[ROW_LINEAR_BYTES:ROW_LINEAR_BYTES + LINEAR_BINS] = bytes(
-            round(v * 255) for v in linear_row
-        )
-        block.u32(SP_FLAGS, PLAYING if playing else 0)
-        block.u32(SP_SAMPLE_RATE, 48000 if playing else 0)
-        block.u64(SP_STAMP_NS, now_ns())
+        # Everything from the stamp to the rows' end, built here and copied
+        # in with one slice assignment between the two counter stores.
+        self.page = bytearray(ROW_LINEAR_BYTES + LINEAR_BINS - SP_STAMP_NS)
+        put = lambda fmt, at, *values: struct.pack_into(fmt, self.page, at - SP_STAMP_NS, *values)
+        put("<f", SP_RATE, SPECTRUM_RATE)
+        put("<I", SP_LOG_BINS, LOG_BINS)
+        put("<f", SP_LOG_LOW_HZ, LOG_LOW_HZ)
+        put("<f", SP_LOG_HIGH_HZ, LOG_HIGH_HZ)
+        put("<I", SP_LINEAR_BINS, LINEAR_BINS)
+        put("<f", SP_LINEAR_BIN_HZ, LINEAR_BIN_HZ)
+        put("<f", SP_FLOOR_DB, FLOOR_DB)
+        put("<f", SP_MAX_DB, MAX_DB)
+        put("<I", SP_LOG_AT, ROW_LOG)
+        put("<I", SP_LINEAR_AT, ROW_LINEAR)
+        put("<I", SP_LOG_BYTES_AT, ROW_LOG_BYTES)
+        put("<I", SP_LINEAR_BYTES_AT, ROW_LINEAR_BYTES)
+        self.put = put
+
+        self.block.view[0:4] = SPECTRUM_MAGIC
+        self.block.u32(4, SPECTRUM_VERSION)
+        self.seq = 0
+        self.write(None, None, 0)
+
+    def write(self, log_row, linear_row, sample_rate):
+        """Rows while music plays, or None for zeros with the playing bit
+        clear."""
+        playing = log_row is not None
+        if not playing:
+            log_row, linear_row, sample_rate = [0.0] * LOG_BINS, [0.0] * LINEAR_BINS, 0
+
+        put = self.put
+        put(f"<{LOG_BINS}f", ROW_LOG, *log_row)
+        put(f"<{LINEAR_BINS}f", ROW_LINEAR, *linear_row)
+        start = ROW_LOG_BYTES - SP_STAMP_NS
+        self.page[start:start + LOG_BINS] = bytes(round(v * 255) for v in log_row)
+        start = ROW_LINEAR_BYTES - SP_STAMP_NS
+        self.page[start:start + LINEAR_BINS] = bytes(round(v * 255) for v in linear_row)
+        put("<I", SP_FLAGS, PLAYING if playing else 0)
+        put("<I", SP_SAMPLE_RATE, sample_rate)
+        put("<Q", SP_STAMP_NS, now_ns())
+
+        # Python has no fence. Three stores in program order, which x86-64
+        # keeps, are as near atomic as it gets.
+        view = self.block.view
+        struct.pack_into("<Q", view, SP_SEQ, self.seq + 1)
+        view[SP_STAMP_NS:SP_STAMP_NS + len(self.page)] = self.page
+        struct.pack_into("<Q", view, SP_SEQ, self.seq + 2)
+
         self.seq += 2
-        block.u64(SP_SEQ, self.seq)
+        self.playing = playing
+
+    def quiet(self):
+        """Zeros once, as rox writes them when the music stops."""
+        if self.playing:
+            self.write(None, None, 0)
 
 
 # ── The drive ──────────────────────────────────────────────────────────────
@@ -709,22 +740,40 @@ def run(args):
 
     stdin = process.stdin.fileno()
     os.set_blocking(stdin, False)
-    pending = bytearray()
+    # Whole lines with their messages. The first may be partly written.
+    pending = []
+    partly = [0]
 
     def send(message):
-        pending.extend(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+        pending.append((message, json.dumps(message, separators=(",", ":")).encode() + b"\n"))
 
     def flush():
         # rox never waits on a renderer's stdin: what doesn't fit waits.
         while pending:
             try:
-                n = os.write(stdin, pending)
+                n = os.write(stdin, pending[0][1][partly[0]:])
             except BlockingIOError:
                 return
             except BrokenPipeError:
                 pending.clear()
+                partly[0] = 0
                 return
-            del pending[:n]
+            partly[0] += n
+            if partly[0] == len(pending[0][1]):
+                pending.pop(0)
+                partly[0] = 0
+
+    def stale_for_pause():
+        # What rox drops at a pause (`Outbox::pause` in target.rs): waiting
+        # pointer events and signals, but for a line saying playback stopped,
+        # and never a line it began writing.
+        newest = next((m for m, _ in reversed(pending) if "signals" in m), None)
+        keep = pending[:1] if partly[0] else []
+        for message, line in pending[len(keep):]:
+            stale = "pointer" in message or ("signals" in message and (message is not newest or message["playing"]))
+            if not stale:
+                keep.append((message, line))
+        pending[:] = keep
 
     drive = Drive(args.seconds)
     pointer = pointer_events(args.seconds)
@@ -733,12 +782,15 @@ def run(args):
     settle_until = drive.stop + min(1.0, 0.1 * args.seconds)
     dumped = set()
 
+    # The first paint's lines in rox's order: the cover, transparent with
+    # nothing playing yet, goes ahead of the pool (`drive` in target.rs).
     send(hello)
+    if cover:
+        cover.write(None)
+        send({"cover": None})
     send({"pool": [] if args.empty_pool else POOL})
     if args.palette:
         send({"palette": PALETTE})
-    if cover:
-        send({"cover": None})  # nothing playing yet
     flush()
 
     started = time.monotonic()
@@ -757,7 +809,7 @@ def run(args):
         # and nothing is read until the resume.
         if not paused and pause_at <= t < resume_at:
             paused = True
-            pending.clear()
+            stale_for_pause()
             send({"pause": True})
             flush()
             time.sleep(0.01)
@@ -775,14 +827,19 @@ def run(args):
         dt, last_step = now - last_step, now
         values = drive.step(t, dt)
 
-        if cover and playing and not covered and not paused:
-            covered = True
-            send({"cover": cover.write(test_cover())})
+        # The cover follows the track, and waits out a pause as rox's does.
+        if cover and playing != covered and not paused:
+            covered = playing
+            square = cover.write(test_cover() if playing else None)
+            send({"cover": square if playing else None})
 
-        if spectrum and now >= next_spectrum:
+        # A target's pause doesn't stop it: rox writes for every session.
+        if spectrum and not playing:
+            spectrum.quiet()
+        elif spectrum and now >= next_spectrum:
             next_spectrum = now + 1 / SPECTRUM_RATE
             log_row, linear_row = drive.spectrum()
-            spectrum.write(log_row, linear_row, playing)
+            spectrum.write(log_row, linear_row, 48000)
 
         # Signals go with each paint while music plays, then for a moment
         # while they settle, saying playback stopped, then none.

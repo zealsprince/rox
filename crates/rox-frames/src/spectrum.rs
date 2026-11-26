@@ -12,8 +12,8 @@
 //!
 //! One mapping serves every renderer granted the spectrum, since they all
 //! want the same numbers and none can write them. Rows are only ever added
-//! after the ones here, with a higher [`VERSION`], so every offset below
-//! holds in a later layout.
+//! after the ones here, with a higher [`VERSION`]: the bin counts, edges,
+//! spacing, dB window and every offset below hold in a later layout.
 
 use std::ptr;
 use std::sync::atomic::{Ordering, fence};
@@ -52,8 +52,9 @@ pub mod header {
     pub const VERSION: usize = 4;
     /// u64: 0 never written, odd while rox writes, even once whole.
     pub const SEQ: usize = 8;
-    /// u64: `CLOCK_MONOTONIC` in nanoseconds when the write finished, the
-    /// clock a frame slot's stamp uses (`clock_ns`).
+    /// u64: [`crate::clock_ns`] when the write finished, the clock a frame
+    /// slot's stamp uses: `CLOCK_MONOTONIC` on Unix, the system clock since
+    /// the Unix epoch on Windows.
     pub const STAMP_NS: usize = 16;
     /// u32: bit 0 set while music plays.
     pub const FLAGS: usize = 24;
@@ -255,7 +256,10 @@ pub use reader::{Snapshot, SpectrumRead, SpectrumReader};
 mod reader {
     use std::sync::atomic::{Ordering, fence};
 
-    use super::{BYTES, LINEAR_BINS, LOG_BINS, MAGIC, PLAYING, header, rows};
+    use super::{
+        BYTES, FLOOR_DB, LINEAR_BIN_HZ, LINEAR_BINS, LOG_BINS, LOG_HIGH_HZ, LOG_LOW_HZ, MAGIC,
+        MAX_DB, PLAYING, header, rows,
+    };
     use crate::Error;
     use crate::layout::{load_u32, load_u64};
     use crate::map::{Handle, os};
@@ -309,18 +313,32 @@ mod reader {
 
     impl SpectrumReader {
         /// Maps `handle` read-only and checks it's a spectrum mapping of
-        /// this version or a later one.
+        /// this version or a later one. Every version keeps version 1's
+        /// rows, offsets, edges and window, so a header that names others
+        /// isn't one rox wrote.
         pub fn open(handle: Handle<'_>) -> Result<SpectrumReader, Error> {
             let view = os::map_readable_prefix(handle, BYTES)?;
             let base = view.base();
 
             // SAFETY: the view is BYTES long, which holds the header. rox
-            // may write the counter meanwhile, never the header around it.
+            // may write the counter meanwhile, never the fields checked here.
             let matches = unsafe {
+                let u32_is = |at, want: usize| load_u32(base, at) == want as u32;
+                let f32_is = |at, want: f32| load_u32(base, at) == want.to_bits();
+
                 std::ptr::read_volatile(base.add(header::MAGIC).cast::<[u8; 4]>()) == MAGIC
                     && load_u32(base, header::VERSION) >= 1
-                    && load_u32(base, header::LOG_BINS) == LOG_BINS as u32
-                    && load_u32(base, header::LINEAR_BINS) == LINEAR_BINS as u32
+                    && u32_is(header::LOG_BINS, LOG_BINS)
+                    && u32_is(header::LINEAR_BINS, LINEAR_BINS)
+                    && f32_is(header::LOG_LOW_HZ, LOG_LOW_HZ)
+                    && f32_is(header::LOG_HIGH_HZ, LOG_HIGH_HZ)
+                    && f32_is(header::LINEAR_BIN_HZ, LINEAR_BIN_HZ)
+                    && f32_is(header::FLOOR_DB, FLOOR_DB)
+                    && f32_is(header::MAX_DB, MAX_DB)
+                    && u32_is(header::LOG_AT, rows::LOG)
+                    && u32_is(header::LINEAR_AT, rows::LINEAR)
+                    && u32_is(header::LOG_BYTES_AT, rows::LOG_BYTES)
+                    && u32_is(header::LINEAR_BYTES_AT, rows::LINEAR_BYTES)
             };
             if !matches {
                 return Err(Error::Mismatch);
@@ -497,6 +515,29 @@ mod tests {
         assert_eq!((bin_hz, floor, top), (21.533_203, -66.0, -12.0));
     }
 
+    #[test]
+    fn a_header_naming_other_rows_is_refused() {
+        for (at, other) in [
+            (header::LOG_BINS, 64),
+            (header::LOG_LOW_HZ, 30f32.to_bits()),
+            (header::LINEAR_AT, 1024),
+            (header::FLOOR_DB, (-100f32).to_bits()),
+        ] {
+            let mut spectrum = Spectrum::create().unwrap();
+            assert!(SpectrumReader::open(spectrum.child_handle()).is_ok());
+
+            // SAFETY: a header field inside the writable view.
+            unsafe { store_u32(spectrum.view.base_mut(), at, other) };
+            assert!(
+                matches!(
+                    SpectrumReader::open(spectrum.child_handle()),
+                    Err(Error::Mismatch)
+                ),
+                "field {at}"
+            );
+        }
+    }
+
     fn reader_base(reader: &SpectrumReader) -> *const u8 {
         reader.view_base()
     }
@@ -513,6 +554,38 @@ mod tests {
         });
         assert_eq!(read, SpectrumRead::Torn, "the counter moved under the copy");
         assert_eq!(reader.read(&mut got), SpectrumRead::Whole(4));
+    }
+
+    /// How long a reader can find the counter odd: the whole of a write,
+    /// from the odd store to the even one. The guide quotes this, so run it
+    /// in release: `cargo test --release -p rox-frames --lib -- --ignored
+    /// --nocapture write_window`.
+    #[test]
+    #[ignore = "a timing, for the guide"]
+    fn write_window() {
+        let mut spectrum = Spectrum::create().unwrap();
+        let (log, linear) = (ramp::<LOG_BINS>(), ramp::<LINEAR_BINS>());
+        let mut took: Vec<u128> = (0..100_000)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                spectrum.write(Some(Rows {
+                    log: &log,
+                    linear: &linear,
+                    sample_rate: 48_000,
+                }));
+                started.elapsed().as_nanos()
+            })
+            .collect();
+
+        took.sort_unstable();
+        let at = |q: f64| took[((took.len() - 1) as f64 * q) as usize];
+        eprintln!(
+            "Spectrum::write: median {} ns, 99th {} ns, 99.99th {} ns, max {} ns",
+            at(0.5),
+            at(0.99),
+            at(0.9999),
+            took[took.len() - 1]
+        );
     }
 
     #[test]

@@ -377,7 +377,7 @@ slots. Offsets are bytes from the start of the block or the slot.
 | Slot offset | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | seq | u64 | The frame counter: 0 never written, odd while written, even when whole |
-| 8 | stamp_ns | u64 | The renderer's clock when the frame was finished, in nanoseconds |
+| 8 | stamp_ns | u64 | The renderer's clock when the frame was finished, in nanoseconds: `CLOCK_MONOTONIC` on Unix, the system clock since the Unix epoch on Windows |
 | 16 | width | u32 | The frame's width, which has to equal the header's |
 | 20 | height | u32 | The frame's height, which has to equal the header's |
 | 24 to 63 | | | Unused |
@@ -527,10 +527,10 @@ granted session starts and keeps it until it quits (`lease`,
 |---|---|---|---|
 | 0 | magic | 4 bytes | `RXS1` |
 | 4 | version | u32 | 1 |
-| 8 | seq | u64 | The write counter: odd while rox writes, even when whole |
-| 16 | stamp_ns | u64 | `CLOCK_MONOTONIC` in nanoseconds when the write finished, the clock a slot's `stamp_ns` uses |
-| 24 | flags | u32 | Bit 0 set while music plays |
-| 28 | sample_rate | u32 | The rate of the audio the FFT ran on, 0 with nothing playing |
+| 8 | seq | u64 | The write counter: 0 never written, odd while rox writes, even when whole |
+| 16 | stamp_ns | u64 | rox's clock when the write finished, in nanoseconds: `CLOCK_MONOTONIC` on Linux and macOS, the system clock since the Unix epoch on Windows, the clock a slot's `stamp_ns` uses (`clock_ns`, `rox-frames/src/lib.rs`) |
+| 24 | flags | u32 | Bit 0 set when the rows are music, clear on the zeros rox writes when it stops |
+| 28 | sample_rate | u32 | The output device's rate, which the FFT ran at, 0 when the playing bit is clear |
 | 32 | rate | f32 | 62.5, the most writes a second |
 | 36 | log_bins | u32 | 128 |
 | 40 | log_low | f32 | 20.0, the log row's lowest edge in Hz |
@@ -549,9 +549,13 @@ granted session starts and keeps it until it quits (`lease`,
 | 2688 | log bytes | 128 u8 | The log row as bytes |
 | 2816 | linear bytes | 512 u8 | The linear row as bytes |
 
-The rows end at 3,328. A later layout only adds rows after these and keeps every offset
-above, with a higher version, so check `version` is at least 1, `magic` is `RXS1` and
-the block is at least 4,096 bytes long, and read the offsets from the header.
+The rows end at 3,328. Version 1 always has these bin counts, edges, spacing, dB window
+and offsets. A later version may only add rows after 3,328, with a higher `version`, and
+never changes any of them. So check `magic` is `RXS1`, `version` is at least 1 and the
+block is at least 4,096 bytes long. Then read the counts, edges and offsets from the
+header anyway, so that what the renderer draws against is what the block says, and
+refuse a block whose header names other values than the ones the renderer was written
+for: rox didn't write it. `SpectrumReader::open` does that, and answers `Mismatch`.
 
 ### The rows
 
@@ -578,29 +582,56 @@ frequency `f` lands in bin `floor(128 * ln(f / 20) / ln(1000))`:
 | 127 | 18949.3 Hz | 20000.0 Hz | 19467.5 Hz |
 
 The FFT under it is the pool's: 2048 points of the mono mix with a Hann window, so at
-48 kHz an FFT bin is 23.4 Hz wide (`HUB_FFT`, `rox-viz/src/signal.rs`). A log bin at
-least that wide, from about 420 Hz up at 48 kHz and 390 Hz at 44.1 kHz, reads the
-loudest of the FFT bins whose centres fall inside it, a peak as a pool band's is. Below
-that, several log bins share one FFT bin, and each reads a parabola fitted in dB through
-the three FFT bins nearest its centre, so the row moves smoothly instead of in 23 Hz
-steps (`Rows::fill`, `rox-viz/src/spectrum.rs`). That's interpolation, not resolution: a
-tone at 100 Hz peaks in its own bin, 29, and lights its neighbours for about 45 Hz either
-side. Under about 40 Hz the window holds less than two cycles of the tone, and anything
-there reads as one hump around 35 Hz.
+48 kHz an FFT bin is 23.4 Hz wide (`HUB_FFT`, `rox-viz/src/signal.rs`). The FFT runs at
+the output device's rate, the header's `sample_rate`, not the file's. A log bin at least
+an FFT bin wide reads the loudest of the FFT bins whose centres fall in `[from, to)`, a
+peak as a pool band's is. That's every bin from 57, at 433 Hz, up at 48 kHz, and from
+55, at 389 Hz, at 44.1 kHz: the crossover. Below it, several log bins share one FFT bin,
+and each reads a parabola fitted in dB through the three FFT bins nearest its centre, so
+the row moves smoothly instead of in 23 Hz steps (`Rows::fill`,
+`rox-viz/src/spectrum.rs`). That's interpolation, not resolution: a tone at 100 Hz peaks
+in its own bin, 29, and lights its neighbours for about 45 Hz either side. Under about 40
+Hz the window holds less than two cycles of the tone, and anything there reads as one
+hump around 35 Hz.
 
-A peak reads a sine at its own level whatever the bin's width, and it reads noise higher
-in a wide bin than in a narrow one. White noise reads about 9 dB higher in the top third
-of the row than in the bottom third, and pink noise, which carries the same energy in
-every octave, falls about 2 dB an octave, 0.65 at the bottom of the row to 0.26 at the top
-in rox's own measurement. A renderer that wants pink noise flat can add `0.056 * log2(f
-/ 1000)` to bin `f`'s value, 3 dB an octave in this window.
+Nothing reads above the audio's Nyquist frequency, half of `sample_rate`. A log bin whose
+lower edge is at or above it reads 0, and one that straddles it takes its peak from the FFT
+bins below it. In shared mode the device runs at the mixer's rate, or the one pinned in
+rox's output settings, and rox resamples every file to it. So a 44.1 kHz file on a 48 kHz
+device and a 22.05 kHz file on one both read at 48 kHz: every bin up to 20 kHz is read,
+and those above a 22.05 kHz file's 11,025 Hz read whatever the resampler leaves there,
+near 0 but not held to it. In exclusive mode, with no rate pinned, rox opens the device at
+the file's rate where the device takes it. A 22.05 kHz file's `sample_rate` is then
+22,050: bin 116, from 10,466 to 11,046 Hz, reads up to 11,025 Hz, and bins 117 to 127 read
+exactly 0.
+
+A peak reads a sine at its own level whatever the bin's width, but it reads noise higher
+in a wide bin than in a narrow one, since the loudest of several noisy FFT bins sits above
+a typical one. rox measures both, averaged over hundreds of windows
+(`pink_noise_falls_3_db_an_octave_below_the_crossover_and_half_that_above` and
+`white_noise_reads_higher_where_the_bins_are_wider`, `rox-viz/src/spectrum.rs`).
+White noise reads flat below the crossover, and about 7 dB higher in the top third of the
+row than in the bottom third. Pink noise carries the same energy in every octave, so each
+FFT bin holds 3 dB less power an octave up. Below the crossover a log bin reads one FFT
+bin's level, and the row falls the full 3 dB an octave. Above it the peak takes in twice
+as many FFT bins each octave, which makes up about half of that, and the row falls about
+1.5 dB an octave: nearer 0.8 dB up to 2 kHz and 1.8 dB from there.
+
+To flatten pink noise, take the crossover's edge `c`, 433 Hz at 48 kHz or 389 Hz at 44.1
+kHz, and add `0.056 * log2(f / c)` to bin `f`'s value below it and `0.028 * log2(f / c)`
+from it up, 3 dB and 1.5 dB an octave in this window. That holds every bin from 40 Hz up
+within 0.035 of the row's mean, under 2 dB. No single slope flattens it. A 3 dB slope
+across the whole row leaves the top third more than 0.1 above the bottom third, over 5
+dB.
 
 The linear row is the layout ShaderToy-style audio shaders read: 512 bins of 44,100 /
-2048 = 21.533 Hz each, from 0 Hz. Bin `j` is the magnitude at `j * 21.533` Hz, so bin 0
-is DC, bin 46 is 990.5 Hz and bin 511 is 11,003.5 Hz. At 44.1 kHz that's the hub's FFT
-bins exactly. At any other rate rox interpolates between the two FFT bins either side, in
-magnitude, so the row means the same frequencies on every device. What it doesn't match is
-the dB window: a WebAudio `AnalyserNode` maps -100 to -30 dB onto its bytes. A shader
+2048 = 21.533 Hz each, from 0 Hz. Bin `j` is the magnitude at exactly `j * 21.533` Hz, a
+reading at one frequency, not a peak over a width, so bin 0 is DC, bin 46 is 990.5 Hz and
+bin 511 is 11,003.5 Hz. At 44.1 kHz that's the hub's FFT bins exactly. At any other rate
+rox interpolates between the two FFT bins either side, in magnitude, so the row means the
+same frequencies on every device. A bin past the audio's Nyquist frequency reads 0, which
+never happens at 22,050 Hz and up, since the row stops at 11,003.5 Hz. What it doesn't
+match is the dB window: a WebAudio `AnalyserNode` maps -100 to -30 dB onto its bytes. A shader
 written for that reads `(dB + 100) / 70`, where `dB = -66 + 54 * value`.
 
 Both rows are each FFT as it is, unsmoothed. A bar that falls as fast as the music does
@@ -616,13 +647,25 @@ the flags, the rate and the stamp, then the even counter after it, with a releas
 after each counter store (`Spectrum::write`). There's no line on the wire: read it
 whenever you draw.
 
-1. Read `seq`. If it's odd, rox is writing: read again.
+1. Read `seq`. If it's 0, nothing was written: draw silence, as for zeros with the
+   playing bit clear. If it's odd, rox is writing: read again.
 2. Copy what you need, from the header's flags to the rows.
 3. Read `seq` again. If it moved, the copy is torn: throw it away and read again. If it's
    the same even number, the copy is one whole write.
 
-A write takes rox tens of microseconds and comes about every 16 ms, so a retry or two
-always finds a whole one.
+Under rox a reader never finds 0. rox writes zeros once with the playing bit clear when
+it makes the block, before any renderer is started with it, so the first counter a
+renderer reads is 2 or higher (`Shared::create`, `rox/src/canvas/spectrum.rs`). The
+counter never goes back to 0 either: when the last granted session ends, rox writes zeros
+at the next even counter. A 0 means a block nothing has written, which only another host
+can hand over.
+
+From the odd counter to the even one a write takes rox about a microsecond: 1.1 to 1.4
+microseconds at the median and under 2.1 in 99 writes of 100, in a release build on a
+Ryzen 9 5950X (`write_window`, `rox-frames/src/spectrum.rs`, an ignored test that prints
+it). A write comes at most every 16 ms. A read that takes `r` microseconds is torn about
+once in `16,000 / (1.3 + r)` tries, and the retry after it lands well past the write, so
+a retry or two finds a whole one.
 
 `rox_frames::spectrum::SpectrumReader` does that in Rust. `read` fills a `Snapshot`, both
 rows as f32 and as bytes with the counter, the stamp, the rate and the playing bit, and
@@ -639,7 +682,9 @@ import mmap, os, struct
 spectrum = mmap.mmap(int(os.environ["ROX_SPECTRUM_FD"]), 0, prot=mmap.PROT_READ)
 magic, version = struct.unpack_from("<4sI", spectrum, 0)
 assert magic == b"RXS1" and version >= 1 and len(spectrum) >= 4096
+log_bins, low, high = struct.unpack_from("<Iff", spectrum, 36)
 (log_at,) = struct.unpack_from("<I", spectrum, 64)
+assert (log_bins, low, high) == (128, 20.0, 20000.0)
 
 def log_row():
     """128 values from 0 to 1, or None if rox was writing all three times."""
@@ -647,7 +692,7 @@ def log_row():
         (seq,) = struct.unpack_from("<Q", spectrum, 8)
         if seq & 1:
             continue
-        row = struct.unpack_from("<128f", spectrum, log_at)
+        row = struct.unpack_from(f"<{log_bins}f", spectrum, log_at)
         if struct.unpack_from("<Q", spectrum, 8)[0] == seq:
             return row
     return None
@@ -667,12 +712,24 @@ of those showing, the spectrum costs rox no FFT of its own. The audio comes from
 the volume control: at volume 0 the spectrum still moves, as the signals do.
 
 rox writes it only while a session granted it runs. With none, a pump tick costs one
-atomic load and no FFT. When music pauses, stops, or has been silent for 0.15 s, rox
-writes zeros once with the playing bit clear and then leaves the block alone, so the
-counter stops. The first fresh audio after that is written at once. A paused target's
-renderer doesn't read it, and rox goes on writing while any granted session runs. When
-the last one ends, rox leaves zeros behind with the playing bit clear, so the next
-renderer to start never reads old music as playing.
+atomic load and no FFT. With music playing, each fresh window of audio is a write, quiet
+or not. When the player pauses or stops, or no fresh audio has reached the visualizers
+for 0.15 s (`SILENT_AFTER`), rox writes zeros once with the playing bit clear and then
+leaves the block alone, so the counter stops (`Writer::step`). The first fresh audio after
+that is written at once. What a renderer reads:
+
+- Paused or stopped, or at the end of the queue: zeros with the bit clear, and a counter
+  that stays put until the music goes on.
+- A silent passage in a playing track: the bit set and the counter moving at the usual
+  rate, with rows at or near 0. Digital silence is still audio coming through the output,
+  so rox goes on writing it.
+- Between two tracks of one queue: nothing changes, since the next track's first frame
+  follows the last one's. If the output runs dry for longer than 0.15 s, as a slow source
+  can make it, that reads as zeros with the bit clear until the next window comes.
+
+A paused target's renderer doesn't read it, and rox goes on writing while any granted
+session runs. When the last one ends, rox leaves zeros behind with the playing bit clear,
+so the next renderer to start never reads old music as playing.
 
 The handle a renderer gets can only read, on the cover's terms: a `memfd` named
 `rox-spectrum` with `F_SEAL_FUTURE_WRITE` on Linux 5.1 and later, a second read-only open
@@ -963,8 +1020,8 @@ between 0 and 1, and the output is `x * x * (3 - 2 * x)`. A threshold of 0 passe
 value as it is. The gate applies to every kind but the trigger and the beat, a total
 included.
 
-Once the audio has been silent for 0.15 s (`SILENT_AFTER`), a band and the level fall
-to 0 at their falling rate, an onset's average falls at 2 a second and it re-arms, a
+Once no fresh audio has reached the visualizers for 0.15 s (`SILENT_AFTER`), as when
+playback pauses or stops, a band and the level fall to 0 at their falling rate, an onset's average falls at 2 a second and it re-arms, a
 beat's average falls at 10 a second and it re-arms, a trigger re-arms, and a pulse
 finishes its decay. Between two readings of the audio a band
 holds its value: the hub only takes a new FFT when the player has handed the visualizers
@@ -1523,11 +1580,19 @@ it runs the command as given. It makes the frame mapping, and with `--cover` and
 synthetic spectrum, lends them from fd 3 up in rox's order with rox's environment, and
 writes `hello`, a pool of one signal of each kind (`--empty-pool` for none), and
 `signals` lines about 60 a second from a scripted drive: a rest, a bass swell, then beats
-at 120 a minute, then the music stopping. With `--palette` it sends a `palette` line, and
-with `--cover` a `cover` line once the music starts. Partway through it pauses the
-renderer for half a second and reads nothing meanwhile, and it sends pointer moves, a
-press and release, a scroll and a leave. At the end it closes stdin and kills the
-renderer's process group 200 ms later.
+at 120 a minute, then the music stopping. With `--palette` it sends a `palette` line.
+With `--cover` it writes the transparent square and sends `{"cover":null}` ahead of the
+pool, as rox does with nothing playing, then the test picture and its counter once the
+music starts, and the transparent square and `null` again when it stops. With
+`--spectrum` it writes the block as rox does: zeros once when it makes it, rows with the
+playing bit 62.5 times a second while the music plays, then zeros once when it stops, and
+nothing between, so the counter stands still at rest. Each write builds the whole page
+first and copies it in with one slice assignment between the two counter stores, which
+holds the counter odd for about half a microsecond. Partway through it pauses the
+renderer for half a second and reads nothing meanwhile, dropping the pointer events and
+`signals` lines still waiting as rox does, and it sends pointer moves, a press and
+release, a scroll and a leave. At the end it closes stdin and kills the renderer's
+process group 200 ms later.
 
 It copies the newest announce once a display frame, as rox does, and reports frames
 copied, distinct pictures among them, torn and refused frames, lines read, announces and
@@ -1543,8 +1608,9 @@ Its layout numbers are copied from `rox-frames` and its limits from the render t
 Tests hold each copy to the code it came from (`crates/rox-frames/tests/standin.rs`,
 `the_stand_in_starts_a_renderer_as_rox_does` in `rox-services/src/renderers.rs`,
 `the_stand_in_holds_a_renderer_to_these_limits` in `rox/src/canvas/target.rs` and
-`the_stand_in_passes_the_same_names` in `rox-plugins/src/env.rs`), and one runs it against
-the bars example and wants frames with nothing refused.
+`the_stand_in_passes_the_same_names` in `rox-plugins/src/env.rs`). One runs it against
+the bars example and wants frames with nothing refused, and another watches its spectrum
+and cover mappings through a run and wants them written as rox writes them.
 
 ## Costs
 

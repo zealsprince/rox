@@ -149,6 +149,142 @@ fn python3() -> Option<&'static str> {
         .map(|_| "python3")
 }
 
+/// A renderer that draws nothing and watches the spectrum and the cover the
+/// way the guide reads them, until stdin closes. What it sees goes to the
+/// file named in its argument, a line for each change: `spectrum <seq>
+/// <flags> <nonzero>`, `square <seq> <nonzero>` for the cover mapping, and
+/// `cover <counter or null>` for each cover line.
+#[cfg(unix)]
+const WATCHER: &str = r#"
+import json, mmap, os, select, struct, sys
+
+spectrum = mmap.mmap(int(os.environ["ROX_SPECTRUM_FD"]), 0, prot=mmap.PROT_READ)
+cover = mmap.mmap(int(os.environ["ROX_COVER_FD"]), 0, prot=mmap.PROT_READ)
+seen, last = [], {}
+
+def whole(view, at, start, end):
+    while True:
+        (seq,) = struct.unpack_from("<Q", view, at)
+        if seq & 1:
+            continue
+        copy = bytes(view[start:end])
+        if struct.unpack_from("<Q", view, at)[0] == seq:
+            return seq, copy
+
+def look():
+    seq, page = whole(spectrum, 8, 16, 3328)
+    (flags,) = struct.unpack_from("<I", page, 8)
+    note("spectrum", f"spectrum {seq} {flags} {int(any(page[112:]))}")
+
+    seq, pixels = whole(cover, 16, 64, 64 + 256 * 256 * 4)
+    note("square", f"square {seq} {int(any(pixels))}")
+
+def note(what, now):
+    if last.get(what) != now:
+        seen.append(now)
+        last[what] = now
+
+stdin = sys.stdin.buffer
+while True:
+    look()
+    if select.select([stdin], [], [], 0.005)[0]:
+        line = stdin.readline()
+        if not line:
+            break
+        message = json.loads(line)
+        if "cover" in message and "hello" not in message:
+            seen.append(f"cover {json.dumps(message['cover'])}")
+
+with open(sys.argv[1], "w") as out:
+    out.write("\n".join(seen) + "\n")
+"#;
+
+/// The stand-in writes the spectrum as rox does: zeros once when it's made,
+/// rows with the playing bit while its drive plays, zeros once when it
+/// stops, and nothing between. Its cover mapping follows the track the same
+/// way, the transparent square named `null`.
+#[cfg(unix)]
+#[test]
+fn the_stand_in_writes_the_spectrum_and_the_cover_as_rox_does() {
+    let Some(python) = python3() else {
+        eprintln!("skipped: no python3 on PATH to run the stand-in");
+        return;
+    };
+
+    let seen_at = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("standin-watcher.txt");
+    let _ = std::fs::remove_file(&seen_at);
+
+    // A rest to 0.48 s, music to 3.6 s, a pause from 2.4 s to 2.9 s.
+    let out = Command::new(python)
+        .arg(examples().join("standin.py"))
+        .args([
+            "--seconds",
+            "4",
+            "--size",
+            "16x16",
+            "--spectrum",
+            "--cover",
+            "--",
+        ])
+        .args([python, "-c", WATCHER])
+        .arg(&seen_at)
+        .output()
+        .expect("the stand-in starts");
+    let seen = std::fs::read_to_string(&seen_at).unwrap_or_else(|_| {
+        panic!(
+            "the watcher wrote nothing: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let lines: Vec<Vec<&str>> = seen.lines().map(|line| line.split(' ').collect()).collect();
+
+    // (seq, playing, nonzero) for each spectrum the watcher saw change.
+    let spectrum: Vec<(u64, bool, bool)> = lines
+        .iter()
+        .filter(|words| words[0] == "spectrum")
+        .map(|w| (w[1].parse().unwrap(), w[2] == "1", w[3] == "1"))
+        .collect();
+
+    // The rest: zeros written once, the counter stopped.
+    assert_eq!(spectrum[0], (2, false, false), "{seen}");
+
+    // The music: the counter moves with the playing bit set.
+    let played: Vec<u64> = spectrum
+        .iter()
+        .filter(|&&(_, playing, _)| playing)
+        .map(|&(seq, ..)| seq)
+        .collect();
+    assert!(played.len() > 50, "{seen}");
+    assert!(played.windows(2).all(|w| w[1] > w[0]), "{seen}");
+    assert!(
+        spectrum
+            .iter()
+            .all(|&(_, playing, nonzero)| playing == nonzero),
+        "rows only while it plays: {seen}"
+    );
+
+    // The stop: zeros once, the counter stopped again.
+    let after = spectrum
+        .iter()
+        .rposition(|&(_, playing, _)| playing)
+        .unwrap();
+    let rest = &spectrum[after + 1..];
+    assert_eq!(rest.len(), 1, "{seen}");
+    assert_eq!(rest[0].0, played.last().unwrap() + 2, "{seen}");
+
+    // The cover: transparent and null before the music, the picture while
+    // it plays, then transparent and null again.
+    let said = |what: &str| -> Vec<String> {
+        lines
+            .iter()
+            .filter(|words| words[0] == what)
+            .map(|words| words[1..].join(" "))
+            .collect()
+    };
+    assert_eq!(said("cover"), ["null", "4", "null"], "{seen}");
+    assert_eq!(said("square"), ["2 0", "4 1", "6 0"], "{seen}");
+}
+
 #[cfg(unix)]
 #[test]
 fn the_bars_example_runs_against_the_stand_in() {

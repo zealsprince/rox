@@ -1262,6 +1262,7 @@ mod tests {
             content: Content::Image {
                 asset: "play".into(),
                 fit: ImageFit::Contain,
+                slice: None,
             },
             hover: Some(Look {
                 asset: "lit".into(),

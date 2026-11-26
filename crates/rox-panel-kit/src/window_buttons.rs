@@ -22,6 +22,17 @@ pub fn maximize(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
     }
 }
 
+/// A press on the empty part of a self-drawn titlebar: a double press
+/// maximizes, any other starts the window move. The click count is read
+/// first because a move grab on the first press would swallow the second.
+pub fn titlebar_press(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
+    if event.click_count >= 2 {
+        window.zoom_window();
+    } else {
+        window.start_window_move();
+    }
+}
+
 pub fn maximize_tip(window: &Window) -> &'static str {
     if !cfg!(target_os = "macos") {
         rox_i18n::t_static("window-controls-maximize")

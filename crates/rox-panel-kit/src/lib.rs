@@ -59,7 +59,8 @@ pub mod ui;
 
 mod window_buttons;
 pub use window_buttons::{
-    icon_button, icon_controls, maximize, maximize_icon, maximize_tip, traffic_lights,
+    icon_button, icon_controls, maximize, maximize_icon, maximize_tip, titlebar_press,
+    traffic_lights,
 };
 
 mod window_chrome;

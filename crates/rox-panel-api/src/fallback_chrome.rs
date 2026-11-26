@@ -15,7 +15,7 @@ use gpui::{
 };
 use rox_core::settings::{self, ChromeSide, ChromeStyle};
 use rox_design::{palette, tokens};
-use rox_panel_kit::{chrome_missing, icon_controls, resize_grips, traffic_lights};
+use rox_panel_kit::{chrome_missing, icon_controls, resize_grips, titlebar_press, traffic_lights};
 
 const BAR_HEIGHT: gpui::Pixels = px(32.);
 
@@ -98,14 +98,7 @@ fn titlebar(
         .text_sm()
         .text_color(palette::text_muted())
         .truncate()
-        .on_mouse_down(MouseButton::Left, |event, window, _| {
-            // A move grab on the first press would swallow the maximize double-click.
-            if event.click_count >= 2 {
-                window.zoom_window();
-            } else {
-                window.start_window_move();
-            }
-        })
+        .on_mouse_down(MouseButton::Left, titlebar_press)
         .child(title);
 
     div()

@@ -808,28 +808,26 @@ impl Workspace {
             .bg(palette::bg_menubar())
             .border_b_1()
             .border_color(palette::border())
+            // The whole bar is the window's drag handle, so a decorations-off
+            // window still moves by it. A press only gets here from empty
+            // space and plain text: every control is wrapped in `bar_control`.
+            .cursor_grab()
+            .on_mouse_down(MouseButton::Left, rox_panel_kit::titlebar_press)
             .when(!native_menus, |d| d.child(self.menubar_capture(cx)))
             .children(self.traffic_lights(window, cx))
-            .children(self.mini_button(cx))
+            .children(self.mini_button(cx).map(bar_control))
             .when(!native_menus && self.menubar_collapsed, |d| {
-                d.child(self.collapsed_button(cx))
+                d.child(bar_control(self.collapsed_button(cx)))
             })
             .when(!native_menus && !self.menubar_collapsed, |d| {
                 // Only worked out while shown, so the common frame skips the lookups.
                 let letters = self.menubar_keys.then(mnemonics).unwrap_or_default();
                 d.children(MENUS.iter().enumerate().map(|(i, menu)| {
                     let letter = letters.get(i).cloned().flatten().map(|(range, _)| range);
-                    self.menu_button(i, menu, letter, cx)
+                    bar_control(self.menu_button(i, menu, letter, cx))
                 }))
             })
-            // A drag handle, so a decorations-off window still moves by its menu bar.
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .cursor_grab()
-                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
-            )
+            .child(div().flex_1().h_full())
             .child(self.library_status(window, cx))
     }
 
@@ -909,7 +907,7 @@ impl Workspace {
                 .flex_none()
                 .gap(tokens::SPACE_SM)
                 .px(tokens::SPACE_MD)
-                .children(rox_panel_kit::traffic_lights(window, close)),
+                .children(rox_panel_kit::traffic_lights(window, close).map(bar_control)),
         )
     }
 
@@ -960,11 +958,11 @@ impl Workspace {
                 }),
             )
             .when_some(crate::startup::updates::available(), |d, version| {
-                d.child(self.update_chip(version, cx))
+                d.child(bar_control(self.update_chip(version, cx)))
             })
             .when_some(
                 Some(crate::catalog::chip_count()).filter(|&count| count > 0),
-                |d, count| d.child(self.catalog_chip(count)),
+                |d, count| d.child(bar_control(self.catalog_chip(count))),
             )
             .when(!status.is_empty(), |d| {
                 let library = self.state.library.clone();
@@ -990,10 +988,22 @@ impl Workspace {
                         .child(status),
                 )
             })
+            // The badge itself is a readout and drags like the text beside it;
+            // only its X is a control.
             .when_some(busy, |d, label| {
                 // Tabular digits, so the ticking count never changes the badge width.
                 let mut badge = div()
-                    .px(tokens::SPACE_SM)
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .items_center()
+                    .gap(tokens::SPACE_XS)
+                    .pl(tokens::SPACE_SM)
+                    .pr(if scanning {
+                        CHIP_CLOSE_INSET
+                    } else {
+                        tokens::SPACE_SM
+                    })
                     .py(px(2.))
                     .rounded_full()
                     .bg(palette::accent())
@@ -1003,12 +1013,20 @@ impl Workspace {
                     .text_style()
                     .get_or_insert_with(Default::default)
                     .font_features = Some(FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
-                d.child(badge.child(label))
+
+                let library = self.state.library.clone();
+                d.child(badge.child(label).when(scanning, |badge| {
+                    badge.child(chip_close(
+                        Some(panel::Tip::keyed(
+                            "menubar-stop-scan",
+                            rox_i18n::t!("menubar-stop-scan-tip"),
+                        )),
+                        move |cx| library.update(cx, |library, cx| library.abort_scan(cx)),
+                    ))
+                }))
             })
-            // The abort stands in the rescan's slot while a scan runs, so it never
-            // jumps.
             .when(buttons.rescan && can_rescan && idle, |d| {
-                d.child(panel::icon_control_sized(
+                d.child(bar_control(panel::icon_control_sized(
                     icons::REFRESH_CW,
                     px(12.),
                     palette::text_muted(),
@@ -1019,24 +1037,14 @@ impl Workspace {
                             .update(cx, |library, cx| library.rescan(cx));
                     },
                     cx,
-                ))
+                )))
             })
-            .when(scanning, |d| {
-                d.child(panel::icon_control_sized(
-                    icons::CLOSE,
-                    px(12.),
-                    palette::text_muted(),
-                    panel::Tip::keyed("menubar-stop-scan", rox_i18n::t!("menubar-stop-scan-tip")),
-                    |this: &mut Workspace, cx| {
-                        this.state
-                            .library
-                            .update(cx, |library, cx| library.abort_scan(cx));
-                    },
-                    cx,
-                ))
+            .when(buttons.tasks, |d| {
+                d.child(bar_control(crate::tasks_window::control(cx)))
             })
-            .when(buttons.tasks, |d| d.child(crate::tasks_window::control(cx)))
-            .when(buttons.sleep, |d| d.child(self.sleep_control(cx)))
+            .when(buttons.sleep, |d| {
+                d.child(bar_control(self.sleep_control(cx)))
+            })
             // The occluding layer under the popup closes it on an outside click.
             .when_some(self.status_menu.as_ref(), |d, (at, menu, _)| {
                 d.child(
@@ -2234,7 +2242,8 @@ fn menubar_chip(
         .flex_row()
         .items_center()
         .gap(tokens::SPACE_XS)
-        .px(tokens::SPACE_SM)
+        .pl(tokens::SPACE_SM)
+        .pr(CHIP_CLOSE_INSET)
         .py(px(2.))
         .rounded_full()
         .bg(palette::accent())
@@ -2244,26 +2253,59 @@ fn menubar_chip(
         .hover(|d| d.bg(palette::accent_hover()))
         .on_mouse_down(MouseButton::Left, open)
         .child(label)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
-                    cx.stop_propagation();
-                    dismiss(cx);
-                    cx.refresh_windows();
-                })
-                // The chip's text color doesn't reach the svg.
-                .child(
-                    svg()
-                        .path(icons::CLOSE)
-                        .size(px(10.))
-                        .flex_none()
-                        .text_color(palette::text_on_accent()),
-                ),
-        );
+        .child(chip_close(None, dismiss));
 
     tip.apply(chip)
+}
+
+/// A chip's end padding when [`chip_close`] closes it: the X's own padding
+/// makes up the rest, so the glyph sits as far in as the label's start.
+const CHIP_CLOSE_INSET: Pixels = px(4.);
+
+/// The X at an accent chip's trailing edge, a click target of its own, with
+/// the padding past the glyph as its hit area. The chip trims its end
+/// padding to make room: negative margins on the X lay the chip out too
+/// narrow in gpui and the label spills past its end.
+fn chip_close(tip: Option<panel::Tip>, on_press: impl Fn(&mut App) + 'static) -> AnyElement {
+    let ink = palette::text_on_accent();
+
+    let close = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .p(px(3.))
+        .rounded_full()
+        .cursor_pointer()
+        .hover(move |d| d.bg(gpui::Rgba { a: 0.2, ..ink }))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx: &mut App| {
+            cx.stop_propagation();
+            on_press(cx);
+            cx.refresh_windows();
+        })
+        // The chip's text color doesn't reach the svg.
+        .child(
+            svg()
+                .path(icons::CLOSE)
+                .size(px(10.))
+                .flex_none()
+                .text_color(ink),
+        );
+
+    match tip {
+        Some(tip) => tip.apply(close).into_any_element(),
+        None => close.into_any_element(),
+    }
+}
+
+/// Every control on the menubar goes in one of these. The bar itself starts
+/// a window move on a left press, and gpui hands a press to every hitbox
+/// under the pointer, so a control left unwrapped also drags the window.
+/// Stopping here, after the control's own handlers ran, keeps it a click.
+fn bar_control(control: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(control)
 }
 
 /// The Alt tap tracker behind the menubar pin: two quick taps pin a hidden

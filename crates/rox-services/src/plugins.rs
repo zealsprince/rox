@@ -43,6 +43,7 @@ use rox_net::providers::{LyricsCandidate, MetadataCandidate, TrackQuery};
 use rox_playback::continuation::{self, Pick};
 use rox_playback::plugin::{Opened, ReadAt};
 use rox_plugins::manifest::{Manifest, ProviderDomain, RendererCap, SourceCap};
+use rox_plugins::sandbox::Folder;
 use rox_plugins::{
     Host, HostConfig, Loaded, Options, Origin, Status, Stream, loader, package, wire,
 };
@@ -485,14 +486,17 @@ pub fn apply(cx: &mut App) {
     // Changed on disk. A Missing record keeps its switch: deleting the old
     // folder is how many people update a plugin. So does a Developer mode
     // folder that can't load, since it can't run and a save mid-edit is how
-    // that happens.
+    // that happens. A renderer approved as another tier than it runs as now
+    // goes off too, since the sandbox it was approved for isn't there or
+    // its manifest asks for more.
     let changed: Vec<String> = records
         .iter()
         .filter(|record| record.enabled)
         .filter(|record| {
             folder(&record.id).is_some_and(|folder| {
-                !settings::plugin_approved(&record.id, &folder.hash)
-                    && !(developing(&record.id) && !folder.runs())
+                let moved = !settings::plugin_approved(&record.id, &folder.hash)
+                    && !(developing(&record.id) && !folder.runs());
+                moved || !crate::renderers::sandbox_approved(folder, Some(record))
             })
         })
         .map(|record| record.id.clone())
@@ -843,14 +847,26 @@ fn watch(cx: &mut App) -> bool {
 /// machine's approvals, and the record keeps the manifest for the next
 /// diff. Creates the record the first time.
 pub fn approve(folder: &Loaded, cx: &mut App) {
-    record_approval(folder);
+    record_approval(folder, None);
     apply(cx);
 }
 
-/// The approval's writes, without the [`apply`] that follows them.
-fn record_approval(folder: &Loaded) {
+/// [`approve`] from an enable card, recording the renderer's tier as the
+/// card read it out (ADR 38), so the yes stands for exactly what it said.
+pub fn approve_as(folder: &Loaded, sandbox: Option<String>, cx: &mut App) {
+    record_approval(folder, sandbox);
+    apply(cx);
+}
+
+/// The approval's writes, without the [`apply`] that follows them. A
+/// renderer's tier is `sandbox`, or what it runs as now.
+fn record_approval(folder: &Loaded, sandbox: Option<String>) {
     let Some(manifest) = folder.manifest.as_ref() else {
         return;
+    };
+    let sandbox = match &manifest.capabilities.renderer {
+        Some(cap) => sandbox.unwrap_or_else(|| crate::renderers::tier(cap).key()),
+        None => String::new(),
     };
 
     settings::approve_plugin(&folder.id, &folder.hash);
@@ -887,6 +903,7 @@ fn record_approval(folder: &Loaded) {
         record.label = label;
         record.hash = hash;
         record.approved_manifest = document;
+        record.sandbox = sandbox;
     });
 }
 
@@ -907,6 +924,10 @@ fn redevelop(records: &[PluginRecord], folders: &[Loaded]) -> bool {
         if !folder.runs() || settings::plugin_approved(&record.id, &folder.hash) {
             continue;
         }
+        // A renderer whose tier moved goes to the card, which says how.
+        if !crate::renderers::sandbox_approved(folder, Some(record)) {
+            continue;
+        }
 
         // Any change to the manifest goes to the card, so only its other
         // files are approved here.
@@ -924,7 +945,7 @@ fn redevelop(records: &[PluginRecord], folders: &[Loaded]) -> bool {
             record.id,
             folder.hash
         );
-        record_approval(folder);
+        record_approval(folder, None);
         approved = true;
     }
 
@@ -1118,6 +1139,13 @@ pub enum Grant {
     Cover,
     /// It gets the music's frequency magnitudes, never the audio.
     Spectrum,
+    /// A sandboxed renderer reaches the network: TCP and UDP, never a unix
+    /// socket.
+    Network,
+    /// It reads the folders in rox's library.
+    ReadLibrary,
+    /// It reads the user's folders its manifest names.
+    ReadFolders,
 }
 
 pub fn grants(manifest: &Manifest) -> Vec<Grant> {
@@ -1131,6 +1159,9 @@ pub fn grants(manifest: &Manifest) -> Vec<Grant> {
 
 fn renderer_grants(cap: &RendererCap) -> Vec<Grant> {
     let asks_signals = cap.signals.iter().any(|signal| signal.kind().is_some());
+    let folders = cap.access.folders();
+    let library = folders.contains(&Folder::Library);
+    let named = folders.iter().any(|folder| *folder != Folder::Library);
 
     [
         (Grant::MusicSignals, true),
@@ -1139,6 +1170,9 @@ fn renderer_grants(cap: &RendererCap) -> Vec<Grant> {
         (Grant::Palette, cap.palette),
         (Grant::Cover, cap.cover),
         (Grant::Spectrum, cap.spectrum),
+        (Grant::Network, cap.access.network),
+        (Grant::ReadLibrary, library),
+        (Grant::ReadFolders, named),
     ]
     .into_iter()
     .filter(|(_, asked)| *asked)
@@ -1162,8 +1196,10 @@ pub enum Change {
     /// A `provider.*` domain declared that the approved manifest didn't.
     ProviderAdded(ProviderDomain),
     /// A renderer asks for something the approved manifest didn't: a grant
-    /// it didn't have, or other signals than it asked for before.
+    /// it didn't have, or other signals or folders than it asked for before.
     Grant(Grant),
+    /// A renderer asks to run outside the sandbox, or no longer does.
+    Unconfined(bool),
 }
 
 /// Compares the manifests as written, so a capability this build doesn't
@@ -1293,10 +1329,17 @@ pub fn changes(approved: &Value, now: &Value) -> Vec<Change> {
                 .into_iter()
                 .filter(|grant| match grant {
                     Grant::WantedSignals => !had.contains(grant) || was.signals != is.signals,
+                    Grant::ReadFolders => {
+                        !had.contains(grant) || was.access.folders() != is.access.folders()
+                    }
                     _ => !had.contains(grant),
                 })
                 .map(Change::Grant),
         );
+
+        if was.unconfined != is.unconfined {
+            found.push(Change::Unconfined(is.unconfined));
+        }
     }
 
     found
@@ -3513,6 +3556,42 @@ mod tests {
         for (renderer, want) in cases {
             assert_eq!(grants_of(renderer.clone()), want, "{renderer}");
         }
+    }
+
+    #[test]
+    fn a_sandboxed_renderers_asks_are_grants_and_unconfined_a_change() {
+        let doc = |renderer: Value| folder_of("bars", json!({ "renderer": renderer })).document;
+        let bare = doc(json!({ "label": "B" }));
+        let pictures = doc(json!({ "label": "B", "access": { "read": ["pictures"] } }));
+
+        assert_eq!(
+            changes(
+                &bare,
+                &doc(json!({ "label": "B", "access": { "network": true, "read": ["library"] } }))
+            ),
+            [
+                Change::Grant(Grant::Network),
+                Change::Grant(Grant::ReadLibrary)
+            ]
+        );
+        assert_eq!(
+            changes(&bare, &pictures),
+            [Change::Grant(Grant::ReadFolders)]
+        );
+
+        // Another folder than before asks again; a name this rox doesn't
+        // know grants nothing, so it doesn't.
+        let more = doc(json!({ "label": "B", "access": { "read": ["pictures", "videos"] } }));
+        assert_eq!(
+            changes(&pictures, &more),
+            [Change::Grant(Grant::ReadFolders)]
+        );
+        let unknown = doc(json!({ "label": "B", "access": { "read": ["pictures", "holograms"] } }));
+        assert!(changes(&pictures, &unknown).is_empty());
+
+        let loose = doc(json!({ "label": "B", "unconfined": true }));
+        assert_eq!(changes(&bare, &loose), [Change::Unconfined(true)]);
+        assert_eq!(changes(&loose, &bare), [Change::Unconfined(false)]);
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "id": "sandbox-probe",
+  "name": "Sandbox Probe",
+  "version": "1.0.0",
+  "api": 1,
+  "entry": {
+    "script": { "path": "probe.py", "interpreter": "python3" }
+  },
+  "meta": {
+    "author": "rox",
+    "description": "A test renderer that tries to leave the sandbox and logs what stopped it. It never draws."
+  },
+  "capabilities": {
+    "renderer": { "label": "Sandbox Probe" }
+  }
+}

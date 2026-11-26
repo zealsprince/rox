@@ -28,6 +28,9 @@ async-channel = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Already in the tree, same 2.x line.
 url = "2"
+# The user's named folders for a renderer's read asks. Same line as
+# rox-core's.
+dirs = "5"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

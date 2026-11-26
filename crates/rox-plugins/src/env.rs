@@ -3,9 +3,10 @@
 //! happened to be started with, so a package gets a fixed list of variables
 //! from it and nothing else.
 //!
-//! This is no sandbox. A package still runs as the user, reads their files
+//! This is no sandbox. A plugin still runs as the user, reads their files
 //! and reaches their session bus, which is what the card says it can do. The
-//! list only keeps what rox was handed from being handed on.
+//! list only keeps what rox was handed from being handed on. What confines a
+//! renderer is [`crate::sandbox`], which drops more of these for one.
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;

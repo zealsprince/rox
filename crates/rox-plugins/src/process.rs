@@ -13,6 +13,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::env;
+#[cfg(target_os = "linux")]
+use crate::sandbox;
 
 /// Without it every plugin start pops a console window.
 #[cfg(windows)]
@@ -91,8 +93,34 @@ pub fn spawn_with(
     extra: Extra,
 ) -> Result<(Process, Pipes), String> {
     env::prepare(&mut command, Some(dir));
-    start(kind, id, command, dir, extra)
+    start(kind, id, command, dir, extra, None)
 }
+
+/// [`spawn_with`], confined by `profile` with Landlock's rules at `abi`
+/// (ADR 38). Its caches, temp files and home point at the profile's cache
+/// folder. When the sandbox can't be applied the child never runs, the
+/// failure is noted with [`sandbox::note_failure`], and nothing is started
+/// in its place.
+#[cfg(target_os = "linux")]
+pub fn spawn_confined(
+    kind: &'static str,
+    id: &str,
+    mut command: Command,
+    dir: &Path,
+    extra: Extra,
+    profile: &sandbox::Profile,
+    abi: u32,
+) -> Result<(Process, Pipes), String> {
+    env::prepare(&mut command, Some(dir));
+    profile.environment(&mut command)?;
+    start(kind, id, command, dir, extra, Some((profile, abi)))
+}
+
+/// What confines a child: a profile and the Landlock ABI to build it at.
+#[cfg(target_os = "linux")]
+type Confine<'a> = Option<(&'a sandbox::Profile, u32)>;
+#[cfg(not(target_os = "linux"))]
+type Confine<'a> = Option<std::marker::PhantomData<&'a ()>>;
 
 /// [`spawn_with`] once the environment is set.
 fn start(
@@ -101,6 +129,7 @@ fn start(
     mut command: Command,
     dir: &Path,
     extra: Extra,
+    confine: Confine,
 ) -> Result<(Process, Pipes), String> {
     command
         .current_dir(dir)
@@ -132,9 +161,43 @@ fn start(
         fds => unix::lend(&mut command, fds)?,
     };
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("could not start: {e}"))?;
+    // After the lend closure, so the lent handles are in place first, and
+    // the sandbox's own fds are numbered past where they land.
+    #[cfg(target_os = "linux")]
+    let sandbox = match confine {
+        Some((profile, abi)) => {
+            let past = unix::FD + lent.len() as std::os::fd::RawFd;
+            let prepared = sandbox::prepare(profile, abi, past).inspect_err(|why| {
+                sandbox::note_failure(why);
+            })?;
+            prepared.install(&mut command);
+            Some(prepared)
+        }
+        None => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = confine;
+
+    let spawned = command.spawn();
+
+    #[cfg(target_os = "linux")]
+    if spawned.is_err()
+        && let Some(why) = sandbox.as_ref().and_then(sandbox::Prepared::failure)
+    {
+        sandbox::note_failure(&why);
+        return Err(format!("the sandbox couldn't be applied: {why}"));
+    }
+
+    let mut child = spawned.map_err(|e| format!("could not start: {e}"))?;
+
+    #[cfg(target_os = "linux")]
+    if let Some(sandbox) = &sandbox {
+        log::info!(
+            "{kind} {id}: sandboxed at Landlock ABI {}: {}",
+            sandbox.abi(),
+            sandbox.granted.join(", ")
+        );
+    }
 
     #[cfg(windows)]
     let job = match job::Job::adopt(&child) {
@@ -644,7 +707,7 @@ mod tests {
         let escape: Vec<String> = escape.iter().map(|name| name.to_string()).collect();
         env::prepare_from(&mut command, Some(&dir), parent, &escape);
 
-        let (mut process, pipes) = start("plugin", tag, command, &dir, Extra::None).unwrap();
+        let (mut process, pipes) = start("plugin", tag, command, &dir, Extra::None, None).unwrap();
         let mut out = String::new();
         let mut stdout = pipes.stdout;
         stdout.read_to_string(&mut out).unwrap();

@@ -6,7 +6,8 @@ into instead on Linux, the lines it reads and writes, and the rules that stop it
 makes [ADR 37](../02-architecture/decisions/37-adr-render-targets.md) concrete, with its
 amendments of 2026-11-16 (renderers are listed apart from plugins), 2026-11-23 (shared
 memory is rox's own channel), 2026-11-25 (a GPU texture, Linux first) and 2026-11-26 (a
-page and a switch of their own, and the Renderer panel). Underneath, a renderer is the package of
+page and a switch of their own, and the Renderer panel). A renderer runs in the sandbox of
+[ADR 38](../02-architecture/decisions/38-adr-renderer-sandbox.md) on Linux. Underneath, a renderer is the package of
 [ADR 30](../02-architecture/decisions/30-adr-plugins.md) under its renderer amendment:
 the same folder or `.roxp`, the same hash and the same approval, so
 [10-plugins.md](10-plugins.md) holds for everything this doc doesn't say otherwise. The
@@ -25,7 +26,9 @@ mapping is layout version 1 behind `RXC1` (`rox-frames/src/cover.rs`), and the s
 mapping is layout version 1 behind `RXS1` (`rox-frames/src/spectrum.rs`). The manifest
 is plugin API 1 (`SUPPORTED_API`, `rox-plugins/src/manifest.rs`). `rox-frames` uses
 libc 0.2 on Unix (0.2.186 in rox's lockfile, 0.2.190 in the plasma example's) and
-windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
+windows-sys 0.61 (0.61.2) on Windows. The sandbox speaks Landlock's ABI 1 to 6 and was
+run at ABI 7 on Linux 6.18 (`sandbox.rs`, `rox-plugins/src`), with its seccomp filter
+written for x86_64 and aarch64. What [A GPU renderer](#a-gpu-renderer) and
 [A GPU texture](#a-gpu-texture) say of wgpu was read in wgpu, wgpu-core and wgpu-hal
 30.0.2, which rox doesn't depend on. The texture comes from blade-graphics 0.7.1, vendored with
 `patches/blade-graphics/a0-shared-textures.patch`, through gpui's
@@ -217,6 +220,14 @@ A runtime that needs flags gets a launcher of its own in `bin`. With
 exec deno run --allow-env --allow-read "$1"
 ```
 
+In the sandbox the launcher runs, since it's in the package, and so does whatever it
+starts from the system's folders. A `deno` the user installed in their home, as deno's
+own installer does under `~/.deno`, is found on the path and then refused: only the
+interpreter the manifest names is let run from outside the system's folders, as that one
+file. A Deno renderer gets `DENO_DIR` in its cache folder. A Python renderer runs on the
+system's Python, and one in a virtual environment or a pyenv under home finds its
+binary and none of its libraries.
+
 On Windows the launcher would be `bin/run-deno.cmd`, found through `PATHEXT`, ending in
 `deno run --allow-env --allow-read %*`. Rust's standard library starts a `.cmd` through
 `cmd.exe`. That's read from the lookup and the standard library's documentation, and
@@ -253,6 +264,7 @@ starts with](#what-a-native-renderer-starts-with) has the whole of it. On top of
 | Variable | Value |
 |---|---|
 | `ROX_RENDER_API` | `1` |
+| `ROX_CACHE_DIR` | Its [cache folder](#the-cache-folder), on every platform and in every tier |
 | `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | The target's size in pixels |
 | `ROX_FRAMES_FD` | `3`, on Unix only |
 | `ROX_COVER_FD` | `4`, on Unix only, and only for a renderer granted the cover |
@@ -1109,7 +1121,8 @@ follow the playing track's cover. A renderer granted the palette gets a new `pal
 line whenever a cover brings other colours, which tells it the album changed, and gets
 that cover's own two colours as `art_primary` and `art_secondary`. It isn't told which
 album. Its card line says so: the theme's colours follow the cover when song theming is
-on. It runs with the user's permissions, unsandboxed, as a plugin does, and the card says so.
+on. On Linux it runs in [the sandbox](#the-sandbox) unless its manifest asks to run
+unconfined, and elsewhere with the user's permissions, and the card says which.
 
 A manifest that gains a grant is a changed manifest. The renderer switches off, and its
 card lists the new grant under "Changed since you last switched it on" (`Change::Grant`).
@@ -1120,6 +1133,181 @@ it lists a plugin, and never includes it (`named_renderers`, `target.rs`). An
 exported object carries the pool signals its routes read, and the ones those totals
 follow, but not the pool a render target's renderer reads (`lift`, `rox/src/objects.rs`).
 Placed in another rox, the renderer reads that rox's pool.
+
+## The sandbox
+
+On Linux a renderer runs confined unless its manifest asks to run unconfined
+([ADR 38](../02-architecture/decisions/38-adr-renderer-sandbox.md)). rox applies the
+sandbox in the child between fork and exec, so the renderer and everything it starts
+run inside it from their first instruction: no_new_privs, a seccomp filter, then a
+Landlock ruleset (`Prepared::install`, `rox-plugins/src/sandbox.rs`). There's nothing to
+link and nothing to call. A renderer finds out it's confined when an open or a socket
+fails with `EACCES` or `EPERM`.
+
+### What a confined renderer reaches
+
+| | Reaches | Why |
+|---|---|---|
+| Its package folder | Read and run | Its own code. Never written: a write would change its hash |
+| Its cache folder | Read and write, nothing in it runs | See [The cache folder](#the-cache-folder) |
+| The interpreter its manifest names | Run, as one file | The `python3` or launcher the entry resolved to, when it's outside the package |
+| `/nix/store`, `/run/opengl-driver`, `/usr`, `/lib`, `/lib64`, `/lib32`, `/libx32`, `/bin`, `/sbin`, `/opt`, `/app` | Read and run | The system's libraries and programs, wherever the distro keeps them. NixOS keeps them in the store and names the GPU driver at `/run/opengl-driver`; a Flatpak runtime under `/usr` and `/app` |
+| `/etc/ld.so.cache`, `ld.so.preload`, `ld.so.conf` and `ld.so.conf.d`, `localtime`, `vulkan`, `glvnd`, `egl`, `drirc`, `OpenCL`, `fonts` | Read | What the loader, the Vulkan loader, Mesa and fontconfig read. Not `passwd`, `machine-id` or `hostname` |
+| `/sys/devices/system/cpu`, `/dev/urandom`, `/dev/random` | Read | Core counts for thread pools, and randomness |
+| `/dev/null`, `/dev/zero`, `/dev/full` | Read, write, ioctl | A shell redirect and most runtimes open them |
+| Each `/dev/dri/renderD*` | Read, write, ioctl | The GPU. Without ioctl a Vulkan driver falls back to software |
+| `/dev/dri` | Listed | How libdrm finds the render nodes. The card nodes aren't opened |
+| The sysfs folder of each render node's PCI device | Read | Where Mesa and libdrm read the GPU's vendor and bus |
+| `/dev/nvidia*`, `/proc/driver/nvidia` | Read and write; read | NVIDIA's proprietary driver. Listed when present, and never run on one |
+| The handles rox lends | Whatever they are | Inherited, never opened by path, so the rules don't reach them |
+
+Everything else is refused: the user's home, rox's data folder, another package's
+folder, `/tmp`, `/dev/shm`, `/run`, and all of `/proc`, the renderer's own entries
+included. A path that isn't on this system is skipped. A rule follows symlinks, so it
+lands on what the path names. The paths are opened, the rules added and the filter
+built before the fork, and the child makes three system calls on them.
+
+The seccomp filter answers `socket(2)` with `EACCES` for every family, so there's no
+TCP, no UDP, no netlink and no unix socket, by path or by abstract name. The session bus
+and the display server are unix sockets, so neither is reachable. `io_uring_setup`
+answers `EPERM`, since a ring could make a socket past the filter, and so do `keyctl`,
+`add_key` and `request_key`, since the user's session keyring isn't a file. A system
+call from another architecture's table kills the renderer.
+
+Landlock also refuses a TCP bind or connect (ABI 4), a connect to an abstract unix
+socket made outside the sandbox, and a signal to any process outside it, rox included
+(ABI 6). `ptrace` of rox, and with it `process_vm_readv`, is refused at every ABI.
+
+The display, session bus and runtime folder variables are dropped from the
+environment: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` and
+`XDG_RUNTIME_DIR`, with `TEMP` and `TMP` (`Profile::environment`). The rules would stop
+them anyway, and a library that sees them tries and logs a failure.
+
+A renderer's log line says what it got:
+
+```
+renderer roxr-ember: sandboxed at Landlock ABI 7: Run /…/roxr-ember, Run /nix/store, …
+renderer roxr-ember: started at 1280x720, lent a texture, sandboxed
+```
+
+### The cache folder
+
+`<data>/renderer-cache/<id>`, made before every start, outside the package so a write
+there never changes its hash. Its path is `ROX_CACHE_DIR`, in every tier and on every
+platform, so a renderer written for the sandbox runs the same outside it. For a
+sandboxed renderer rox also points what programs write on their own there:
+
+| Variable | Value |
+|---|---|
+| `HOME` | The cache folder |
+| `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `cache`, `config`, `data` and `state` under it |
+| `TMPDIR` | `tmp` under it, emptied at each start |
+| `MESA_SHADER_CACHE_DIR` | `cache/mesa_shader_cache` under it |
+| `__GL_SHADER_DISK_CACHE_PATH` | `cache/nvidia` under it |
+| `DENO_DIR` | `cache/deno` under it |
+
+So the GPU driver's shader cache is the renderer's own, and starts cold the first time
+it runs. Nothing in the folder runs: a renderer can't write a program there and start
+it, though an interpreter can still read a script from it. The folder stays when the
+renderer is removed.
+
+### The asks
+
+A renderer asks for more under `capabilities.renderer`. Each ask is a grant: its card
+names it, and a manifest that adds one is a changed manifest that switches the renderer
+off until the user approves it again.
+
+```json
+"renderer": {
+  "label": "Gallery",
+  "access": { "network": true, "read": ["library", "pictures"] }
+}
+```
+
+| Key | What it reaches | The card says |
+|---|---|---|
+| `access.network` | TCP and UDP sockets to any address, this machine's included. Name lookups and TLS read `/etc/resolv.conf`, `hosts`, `nsswitch.conf`, `ssl` and the rest | Can use the network: it can connect to any computer, on the internet, on your local network or this one. It still can't reach your desktop or its session bus. |
+| `access.read: ["library"]` | Every folder in rox's library, read-only | Can read the files in your library's folders, without changing them. |
+| `access.read: ["music", "pictures", "videos", "documents", "downloads"]` | The user's standard folders as XDG names them, read-only | Can read these folders of yours, without changing them: Pictures. |
+| `unconfined: true` | Everything the user can, as before the sandbox | See [The tiers](#the-tiers) |
+
+`network` is a bool, `read` a list of names, and anything else refuses the manifest. A
+name rox doesn't know is skipped, so a renderer written for a later rox loads with what
+this one can name, and its card names only that. A renderer that asks for `unconfined`
+can't also ask under `access`.
+
+The network ask is the internet families and nothing else. The filter still answers
+`EACCES` for a unix socket, so the session bus, the display server, a local database on
+a unix socket and systemd's resolver socket stay out of reach, and a name lookup goes
+through `/etc/resolv.conf`. Any service on this machine that listens on a TCP or UDP
+port is reachable, as it is to any program the user runs.
+
+The library is read when the renderer starts. A folder added to the library while it
+runs reaches it at its next start. A folder removed stays readable until then, since
+Landlock adds rules and never takes one back. A folder that would hold more than the
+card says is never granted, with a log line: the user's home, anything above it, and
+anything holding or inside rox's data folder. An XDG folder set to home itself, which
+`xdg-user-dirs` does when the folder is missing, is one of those.
+
+### The tiers
+
+What a renderer runs as is its tier (`Tier`, `sandbox.rs`). Its card reads it out, the
+Renderers page marks it beside the version, and the approval records it.
+
+| Tier | When | The card says |
+|---|---|---|
+| Sandboxed | Linux with Landlock and seccomp, and no `unconfined` | Runs in a sandbox. It can use the graphics card and its own cache, and can't read your files or reach the network. With an ask: Runs in a sandbox. It can use the graphics card and its own cache, and reaches only what's listed below. |
+| Unconfined | The manifest says `"unconfined": true` | Asks to run outside the sandbox, as a program on this computer with your permissions. It can read and change your files, use the network, and reach your desktop and the other programs you run. |
+| Your permissions | macOS and Windows | It runs as a program on this computer with your permissions. rox has no sandbox for renderers on this system. |
+| Your permissions | Linux that can't sandbox: no Landlock, Landlock off, no seccomp, or applying it failed this session | rox can't sandbox it on this system: the kernel has no Landlock. If you switch it on, it runs as a program with your permissions. (or: Landlock is switched off in the kernel; the kernel can't filter what a program asks of it; rox couldn't sandbox it: the reason, until rox quits) |
+
+A kernel older than the newest Landlock still sandboxes, with the rules it knows. Before
+ABI 6 a renderer can send signals to rox and the user's other programs, and before ABI
+3 it can empty a file the user can write by calling `truncate`. The card adds a line for
+each: "This system's kernel is too old to stop it sending signals to rox and your other
+programs." and "This system's kernel is too old to stop it emptying files you can
+change." Network and unix sockets are the filter's on every ABI.
+
+The approval records the tier as the card read it, every ask and every gap in it
+(`PluginRecord::sandbox`). The gate refuses a renderer whose recorded tier isn't the one
+its manifest and this system give it now, and it switches off and asks again. That
+covers a manifest that adds an ask or `unconfined`, which changes its hash anyway; a
+kernel that gains or loses a Landlock ABI; and a sandbox that couldn't be applied. A
+renderer approved as sandboxed is never started unconfined in its place. When the
+apply fails, the renderer doesn't start, every sandboxed renderer stays off for the rest
+of the session, and its card says why. A renderer approved before the sandbox existed
+recorded no tier: it was approved to run with the user's permissions, and runs as its
+manifest and this system allow now, which is at most that.
+
+### Testing it confined
+
+Run it in rox on Linux. Its `sandboxed at Landlock ABI` line lists every rule it got,
+and what it was refused comes back to it as `EACCES` or `EPERM` and usually reaches its
+stderr in rox's log. `tests/fixtures/sandbox-probe` in `rox-plugins` is a renderer that
+tries every way out and logs what stopped it, and `tests/sandbox.rs` runs it confined.
+A debug build of rox reads `ROX_SANDBOX_SIMULATE`: `no-landlock`, `landlock-off`,
+`no-seccomp` and `abi=N` show the card and the gate a lesser system gets, and
+`apply-fails` fails the apply for real in the child. A release build never reads it.
+
+### What breaks
+
+A renderer written before the sandbox can need changes:
+
+- Config, a cache or a font it keeps in the user's home. Its home is the cache folder
+  now, so what it writes there works and what it expects to find there isn't.
+- An interpreter environment under home: a virtual environment, a pyenv, a `deno` from
+  its own installer, a `node_modules` outside the package. Vendor it into the package.
+- A local service: a unix socket of any kind, the session bus, a portal, a notification,
+  a keyring. TCP on this machine needs `access.network`.
+- A window of its own on the display: there's no display to reach.
+- `/tmp` and `/dev/shm`: use `TMPDIR`.
+- Files it reads from the user's folders: ask under `access.read`.
+- A helper it runs from home or from a Program Folder outside the system's folders.
+
+What the sandbox does not stop: a renderer hanging or resetting the GPU, which takes
+rox's device with it; learning that a path exists, and its size, through `stat`;
+drawing anything it likes in its own target; using as much CPU and memory as the user
+may; and, granted the network, reaching any port on this machine.
 
 ## Platforms
 
@@ -1254,9 +1442,9 @@ publishing stops getting signals, and they start again with its next frame.
 
 The process starts in the package's folder in an environment built from an empty one,
 and nothing else of rox's reaches it (`prepare`, `rox-plugins/src/env.rs`; `spawn_with`,
-`rox-plugins/src/process.rs`; `launch`, `rox-services/src/renderers.rs`). It isn't a
-sandbox: the renderer runs as the user, as a plugin does. It only keeps a token or key
-rox was started with from being handed on.
+`rox-plugins/src/process.rs`; `launch`, `rox-services/src/renderers.rs`). The list only
+keeps a token or key rox was started with from being handed on. What confines a renderer
+is [the sandbox](#the-sandbox), which also changes some of these for a sandboxed one.
 
 | Variable | Where it comes from |
 |---|---|
@@ -1264,7 +1452,7 @@ rox was started with from being handed on.
 | Names listed in `ROX_PLUGIN_ENV` | rox's own value, while a developer [passes more](10-plugins.md#passing-more-while-testing) |
 | `PATH` | The plugin search path: the package's `bin` folder, the Program Folders, then rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`) |
 | `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED`, `PYTHONUTF8` | `1` each |
-| `ROX_RENDER_API`, `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | rox, always |
+| `ROX_RENDER_API`, `ROX_CACHE_DIR`, `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | rox, always |
 | `ROX_FRAMES_FD`, `ROX_COVER_FD`, `ROX_TEXTURE_FD`, `ROX_SPECTRUM_FD` | rox, on Unix, each only when that handle is lent. The [Lifecycle](#lifecycle) table has their values |
 
 The GPU variables pass through as rox has them and rox adds none of its own:
@@ -1520,8 +1708,10 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 
 | Line | Meaning |
 |---|---|
-| `renderer <id>: started at <w>x<h>` | The process runs and `hello` went |
-| `renderer <id>: started at <w>x<h>, lent a texture` | The same, with the GPU texture lent |
+| `renderer <id>: started at <w>x<h>, <tier>` | The process runs and `hello` went, in that tier: `sandboxed` and its asks and gaps, `unconfined`, or `permissions` |
+| `renderer <id>: started at <w>x<h>, lent a texture, <tier>` | The same, with the GPU texture lent |
+| `renderer <id>: sandboxed at Landlock ABI <n>: <rules>` | Every rule the sandbox added |
+| `sandbox: couldn't be applied, renderers stay off until approved again: <why>` | The apply failed, and the renderer didn't start |
 | `render target <id>: no texture from the canvas, this session uses shared memory` | The canvas didn't make the texture within 2 s |
 | `canvas: no GPU texture at <w>x<h>, shared memory it is: <why>` | The window couldn't make one, for the target's life |
 | `render target <id>: moved window, starting again` | The target was lent a texture and its canvas moved to another window, by Pop Out or Dock Back, so it starts again with a texture made there. A session on the slots carries on through either, with the same process |
@@ -1568,7 +1758,8 @@ renderer off and on starts the new code.
 A renderer can't run without a block rox made. `examples/renderers/standin.py` plays
 rox's part, so a renderer can be run and checked outside rox. It's a development tool:
 it grants the renderer everything its flags ask for, with no enable card and no
-approval, so run it only on a renderer you trust. It's Python's standard library alone,
+approval, and runs it unconfined, so run it only on a renderer you trust. Test the
+sandbox in rox ([Testing it confined](#testing-it-confined)). It's Python's standard library alone,
 on Linux and macOS:
 
 ```sh
@@ -1580,7 +1771,8 @@ Given a folder, it starts the renderer from its `plugin.json` as rox would, the
 interpreter looked up in its `bin`, then each `--program-folder`, then `PATH`. After `--`
 it runs the command as given. It makes the frame mapping, and with `--cover` and
 `--spectrum` the cover mapping with a test picture and the spectrum mapping with a
-synthetic spectrum, lends them from fd 3 up in rox's order with rox's environment, and
+synthetic spectrum, lends them from fd 3 up in rox's order with rox's environment, a
+`ROX_CACHE_DIR` under the temp folder included, and
 writes `hello`, a pool of one signal of each kind (`--empty-pool` for none), and
 `signals` lines about 60 a second from a scripted drive: a rest, a bass swell, then beats
 at 120 a minute, then the music stopping. With `--palette` it sends a `palette` line.
@@ -1692,6 +1884,15 @@ and a restart reuses it. The texture is the image's dedicated allocation in VRAM
 at 1920x1080 and 33 MB at 3840x2160 (`allocation_size`), and a renderer's import shares
 it rather than adding another.
 
+The sandbox was measured 2026-11-26 on the same machine, in a release build, each
+renderer run confined and unconfined in turn in a Renderer panel at 1280x720 for 30 s
+at a time. Every one drew at the same rate either way: Ember 60 frames a second into
+the texture with the same simulate and draw times, Plasma 60, Three Field and Aero 60
+with the same render times, and Bars its 30. Starting confined took 0.2 to 0.4 ms more
+for `sh -c true` and 0.2 to 1.1 ms more for `python3 -c pass`, as medians of 30 starts
+(`what_starting_confined_costs`, `rox-plugins/tests/sandbox.rs`). A renderer's first
+start compiles its shaders into its own cache folder.
+
 ## Reference
 
 The shared memory is `crates/rox-frames`: `layout.rs` (the offsets, `Spec`, the ranges),
@@ -1706,7 +1907,10 @@ The package side is `crates/rox-services/src/renderers.rs` (the listing, the gat
 `asks`, `start`, `Session`, the exit count, `enforce`, and the wanted signals' matching)
 on top of `crates/rox-plugins`: `manifest.rs` (`capabilities.renderer`, `check_renderer`,
 `check_wanted`, the entry and the interpreter table), `process.rs` (the spawn, fd 3 and up,
-the Windows handles, stderr, `never_block`) and `host.rs` (`BACKOFF`, `CRASH_WINDOW`). The
+the Windows handles, stderr, `never_block`, `spawn_confined`), `sandbox.rs` (`Access`,
+`Tier`, `Support`, `Profile`, the ruleset and the filter) and `host.rs` (`BACKOFF`,
+`CRASH_WINDOW`). The tier's gate and the read asks' folders are `sandbox_holds` and
+`read_folders` in `renderers.rs`. The
 approval card's grants are `grants` in `crates/rox-services/src/plugins.rs`, with the
 re-approval diff in `changes`.
 

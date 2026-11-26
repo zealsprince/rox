@@ -230,6 +230,13 @@ pub fn plugin_data_dir(id: &str) -> PathBuf {
     data_dir().join("plugin-data").join(id)
 }
 
+/// A renderer's cache folder, the one place a sandboxed renderer writes
+/// (ADR 38). Outside its package, whose hash a write would change. Not
+/// created here.
+pub fn renderer_cache_dir(id: &str) -> PathBuf {
+    data_dir().join("renderer-cache").join(id)
+}
+
 /// Unpacked packages, rebuilt from the plugins folder and safe to delete.
 /// Kept outside it so unpacking doesn't wake the plugins watch.
 pub fn plugin_cache_dir() -> PathBuf {
@@ -2233,6 +2240,10 @@ pub struct PluginRecord {
     pub hash: String,
     /// The manifest at the last approval, for the diff a re-approval shows.
     pub approved_manifest: serde_json::Value,
+    /// What a renderer was approved to run as, in the sandbox's words
+    /// (ADR 38). Empty for a plugin, and for a renderer approved before the
+    /// sandbox, which runs as its manifest and this system now allow.
+    pub sandbox: String,
     /// Off by default: a plugin row never scrobbles unless this is on.
     pub scrobble: bool,
     /// Off by default: rox never asks the plugin for lyrics unless this is on.
@@ -4318,6 +4329,7 @@ mod tests {
             label: "Demo".into(),
             hash: "ab12".into(),
             approved_manifest: serde_json::json!({ "id": "demo", "api": 0 }),
+            sandbox: "sandboxed network".into(),
             scrobble: true,
             lyrics: true,
             metadata: true,

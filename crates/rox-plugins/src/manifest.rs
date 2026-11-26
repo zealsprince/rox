@@ -121,6 +121,14 @@ pub struct RendererCap {
     /// it isn't a grant either.
     #[serde(default)]
     pub rests: bool,
+    /// What it reaches past the sandbox's defaults (ADR 38): the network,
+    /// folders to read. Each is a grant.
+    #[serde(default)]
+    pub access: crate::sandbox::Access,
+    /// Runs with the user's permissions, outside the sandbox, and the card
+    /// says so in stronger words.
+    #[serde(default)]
+    pub unconfined: bool,
 }
 
 /// One signal a renderer asks for. Matched against the pool by kind and
@@ -457,6 +465,15 @@ fn check_renderer(manifest: &Manifest) -> Result<(), String> {
         return Err(format!(
             "{FILE}: a renderer declares nothing else, and this one declares {}",
             also.join(", ")
+        ));
+    }
+
+    // Outside the sandbox it reaches everything, so an ask would be a card
+    // line that means nothing.
+    let access = &renderer.access;
+    if renderer.unconfined && (access.network || !access.read.is_empty()) {
+        return Err(format!(
+            "{FILE}: a renderer that runs unconfined asks for nothing under access"
         ));
     }
 
@@ -1741,6 +1758,40 @@ mod tests {
         );
 
         for bad in [r#""rests": "yes""#, r#""rests": 1"#, r#""rests": null"#] {
+            let err = renderer_asking(bad).unwrap_err();
+            assert!(err.contains("plugin.json"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_renderer_asks_past_the_sandbox_or_out_of_it() {
+        use crate::sandbox::Folder;
+
+        let plain = renderer_asking(r#""palette": true"#).unwrap();
+        assert_eq!(plain.access, crate::sandbox::Access::default());
+        assert!(!plain.unconfined, "sandboxed unless it asks");
+
+        let cap =
+            renderer_asking(r#""access": { "network": true, "read": ["pictures", "library"] }"#)
+                .unwrap();
+        assert!(cap.access.network);
+        assert_eq!(cap.access.folders(), [Folder::Library, Folder::Pictures]);
+
+        // A folder a later rox may know loads here, granted nothing.
+        let later = renderer_asking(r#""access": { "read": ["holograms"] }"#).unwrap();
+        assert!(later.access.folders().is_empty());
+
+        assert!(renderer_asking(r#""unconfined": true"#).unwrap().unconfined);
+        let both =
+            renderer_asking(r#""unconfined": true, "access": { "network": true }"#).unwrap_err();
+        assert!(both.contains("asks for nothing under access"), "{both}");
+
+        for bad in [
+            r#""unconfined": "yes""#,
+            r#""access": { "network": 1 }"#,
+            r#""access": { "read": "pictures" }"#,
+            r#""access": true"#,
+        ] {
             let err = renderer_asking(bad).unwrap_err();
             assert!(err.contains("plugin.json"), "{bad}: {err}");
         }

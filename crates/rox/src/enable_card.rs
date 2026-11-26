@@ -7,12 +7,18 @@
 //!
 //! Only [`EnableCard::accept`] approves, and only a Switch On press on a card
 //! calls it. Building a card approves nothing.
+//!
+//! A renderer's card says what it runs as (ADR 38): in the sandbox, with
+//! what it asks for past it; outside it, because it asks to; or with the
+//! user's permissions, because this system can't sandbox it. The approval
+//! records exactly that tier.
 
 use gpui::{App, Div, SharedString, div, prelude::*};
 use rox_core::settings::{PluginRecord, Settings};
 use rox_design::{palette, tokens};
 use rox_plugins::Loaded;
 use rox_plugins::manifest::{Manifest, ProviderDomain};
+use rox_plugins::sandbox::{Folder, Tier, Unavailable};
 use rox_services::plugins::{self as host, Change, Grant, Since};
 
 /// What the confirm reads out. The package and what changed are read once,
@@ -26,6 +32,11 @@ pub(crate) struct EnableCard {
     manifest: Manifest,
     /// What moved since the last approval. None for a first one.
     since: Option<Since>,
+    /// What a renderer runs as here, read when the card opened: what
+    /// Switch On approves. None for a plugin.
+    tier: Option<Tier>,
+    /// The tier its last approval recorded, when it recorded one.
+    approved_tier: Option<String>,
 }
 
 impl EnableCard {
@@ -44,12 +55,42 @@ impl EnableCard {
                 )
             });
 
+        let tier = manifest
+            .capabilities
+            .renderer
+            .as_ref()
+            .map(rox_services::renderers::tier);
+        let approved_tier = record
+            .map(|record| record.sandbox.clone())
+            .filter(|sandbox| !sandbox.is_empty());
+
         Some(EnableCard {
             name: manifest.name.clone(),
             folder,
             manifest,
             since,
+            tier,
+            approved_tier,
         })
+    }
+
+    /// How it runs: as a plugin does, or a renderer's tier and what this
+    /// system can't stop.
+    pub(crate) fn runs(&self) -> Vec<SharedString> {
+        match &self.tier {
+            None => vec![rox_i18n::t!("settings-plugins-card-runs")],
+            Some(tier) => tier_lines(tier),
+        }
+    }
+
+    /// Whether a grant is worth a line: the asks past the sandbox mean
+    /// nothing to a renderer that runs outside it.
+    fn says(&self, grant: Grant) -> bool {
+        let access = matches!(
+            grant,
+            Grant::Network | Grant::ReadLibrary | Grant::ReadFolders
+        );
+        !access || self.tier.as_ref().is_some_and(Tier::sandboxed)
     }
 
     /// Who made it and what it says it is, above the dialog's body.
@@ -124,6 +165,7 @@ impl EnableCard {
         lines.extend(
             host::grants(manifest)
                 .into_iter()
+                .filter(|grant| self.says(*grant))
                 .map(|grant| grant_line(grant, manifest)),
         );
 
@@ -160,13 +202,31 @@ impl EnableCard {
         match &self.since {
             Some(Since::Declared(changes)) => {
                 lines.push(rox_i18n::t!("settings-plugins-card-changed"));
-                lines.extend(changes.iter().map(|change| change_line(change, manifest)));
+                lines.extend(
+                    changes
+                        .iter()
+                        .filter(|change| match change {
+                            Change::Grant(grant) => self.says(*grant),
+                            _ => true,
+                        })
+                        .map(|change| change_line(change, manifest)),
+                );
             }
             Some(Since::Manifest) => {
                 lines.push(rox_i18n::t!("settings-plugins-card-manifest-changed"))
             }
             Some(Since::Files) => lines.push(rox_i18n::t!(files)),
             Some(Since::Nothing) | None => {}
+        }
+
+        // The same files, approved for another tier than this system gives
+        // them now.
+        let moved = match (&self.approved_tier, &self.tier) {
+            (Some(was), Some(now)) => *was != now.key(),
+            _ => false,
+        };
+        if moved && !matches!(self.since, Some(Since::Declared(_))) {
+            lines.push(rox_i18n::t!("settings-plugins-card-sandbox-changed"));
         }
 
         lines
@@ -209,7 +269,7 @@ impl EnableCard {
             .gap(tokens::SPACE_MD)
             .child(div().child(self.title()))
             .children(self.lead().into_iter().map(line))
-            .child(line(rox_i18n::t!("settings-plugins-card-runs")))
+            .children(self.runs().into_iter().map(line))
             .children(self.lines().into_iter().map(line))
     }
 
@@ -217,8 +277,70 @@ impl EnableCard {
     /// switches the package on, as the settings switch does. Never called
     /// but from that press.
     pub(crate) fn accept(self, cx: &mut App) {
-        host::approve(&self.folder, cx);
+        let tier = self.tier.as_ref().map(Tier::key);
+        host::approve_as(&self.folder, tier, cx);
     }
+}
+
+/// A renderer's tier as the card reads it out. Only what this system
+/// enforces is promised: an older kernel's gaps get a line each.
+fn tier_lines(tier: &Tier) -> Vec<SharedString> {
+    match tier {
+        Tier::Sandboxed {
+            network,
+            folders,
+            gaps,
+        } => {
+            let mut lines = vec![match *network || !folders.is_empty() {
+                true => rox_i18n::t!("settings-plugins-card-sandboxed-asks"),
+                false => rox_i18n::t!("settings-plugins-card-sandboxed"),
+            }];
+            if gaps.signals {
+                lines.push(rox_i18n::t!("settings-plugins-card-gap-signals"));
+            }
+            if gaps.truncate {
+                lines.push(rox_i18n::t!("settings-plugins-card-gap-truncate"));
+            }
+            lines
+        }
+
+        Tier::Unconfined => vec![rox_i18n::t!("settings-plugins-card-unconfined")],
+
+        Tier::Permissions(why) => vec![match why {
+            Unavailable::Platform => rox_i18n::t!("settings-plugins-card-host"),
+            Unavailable::NoLandlock => rox_i18n::t!("settings-plugins-card-no-sandbox-kernel"),
+            Unavailable::LandlockOff => rox_i18n::t!("settings-plugins-card-no-sandbox-off"),
+            Unavailable::NoSeccomp => rox_i18n::t!("settings-plugins-card-no-sandbox-seccomp"),
+            Unavailable::Failed(error) => rox_i18n::t!(
+                "settings-plugins-card-no-sandbox-failed",
+                error = error.as_str()
+            ),
+        }],
+    }
+}
+
+/// The user's folders a renderer asks to read, past the library, named as
+/// the card names them.
+fn folder_list(manifest: &Manifest) -> String {
+    let folders = manifest
+        .capabilities
+        .renderer
+        .as_ref()
+        .map(|cap| cap.access.folders())
+        .unwrap_or_default();
+
+    folders
+        .into_iter()
+        .filter_map(|folder| match folder {
+            Folder::Library => None,
+            Folder::Music => Some(rox_i18n::t!("settings-plugins-folder-music")),
+            Folder::Pictures => Some(rox_i18n::t!("settings-plugins-folder-pictures")),
+            Folder::Videos => Some(rox_i18n::t!("settings-plugins-folder-videos")),
+            Folder::Documents => Some(rox_i18n::t!("settings-plugins-folder-documents")),
+            Folder::Downloads => Some(rox_i18n::t!("settings-plugins-folder-downloads")),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn grant_line(grant: Grant, manifest: &Manifest) -> SharedString {
@@ -232,6 +354,12 @@ fn grant_line(grant: Grant, manifest: &Manifest) -> SharedString {
         Grant::Palette => rox_i18n::t!("settings-plugins-card-renderer-palette"),
         Grant::Cover => rox_i18n::t!("settings-plugins-card-renderer-cover"),
         Grant::Spectrum => rox_i18n::t!("settings-plugins-card-renderer-spectrum"),
+        Grant::Network => rox_i18n::t!("settings-plugins-card-access-network"),
+        Grant::ReadLibrary => rox_i18n::t!("settings-plugins-card-access-library"),
+        Grant::ReadFolders => rox_i18n::t!(
+            "settings-plugins-card-access-folders",
+            folders = folder_list(manifest)
+        ),
     }
 }
 
@@ -286,6 +414,8 @@ fn change_line(change: &Change, manifest: &Manifest) -> SharedString {
         // The card lists every grant above. Under the changes it says the
         // new one again, worded the same.
         Change::Grant(grant) => grant_line(*grant, manifest),
+        Change::Unconfined(true) => rox_i18n::t!("settings-plugins-change-unconfined-on"),
+        Change::Unconfined(false) => rox_i18n::t!("settings-plugins-change-unconfined-off"),
     }
 }
 
@@ -496,6 +626,7 @@ mod tests {
         let everything: Vec<String> = card
             .lines()
             .into_iter()
+            .chain(card.runs())
             .chain(again.lines())
             .chain(redescribed.lines())
             .chain(asks.lines())
@@ -506,6 +637,140 @@ mod tests {
         assert!(
             everything.iter().all(|line| !line.contains("plugin")),
             "{everything:?}"
+        );
+    }
+
+    fn renderer_with(capabilities: Value) -> Loaded {
+        let document = json!({
+            "id": "bars", "name": "Bars", "version": "2", "api": 1,
+            "entry": { "script": { "path": "draw.py", "interpreter": "python3" } },
+            "capabilities": { "renderer": capabilities },
+        });
+        let mut renderer = folder(&[]);
+        renderer.manifest = Some(rox_plugins::manifest::parse(&document.to_string()).unwrap());
+        renderer.document = document;
+        renderer
+    }
+
+    fn sandboxed(network: bool, folders: Vec<Folder>, abi: u32) -> Tier {
+        Tier::Sandboxed {
+            network,
+            folders,
+            gaps: rox_plugins::sandbox::Gaps::of_abi(abi),
+        }
+    }
+
+    #[test]
+    fn a_renderers_card_says_what_it_runs_as() {
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+
+        assert_eq!(
+            tier_lines(&sandboxed(false, Vec::new(), 7)),
+            [SharedString::from(
+                "Runs in a sandbox. It can use the graphics card and its own cache, \
+                 and can't read your files or reach the network."
+            )]
+        );
+
+        // An older kernel's card says what it can't stop, one line each.
+        assert_eq!(
+            tier_lines(&sandboxed(false, Vec::new(), 2)),
+            [
+                rox_i18n::t!("settings-plugins-card-sandboxed"),
+                rox_i18n::t!("settings-plugins-card-gap-signals"),
+                rox_i18n::t!("settings-plugins-card-gap-truncate"),
+            ]
+        );
+
+        assert_eq!(
+            tier_lines(&Tier::Unconfined),
+            [rox_i18n::t!("settings-plugins-card-unconfined")]
+        );
+        assert_eq!(
+            tier_lines(&Tier::Permissions(Unavailable::Platform)),
+            [rox_i18n::t!("settings-plugins-card-host")]
+        );
+        assert_eq!(
+            tier_lines(&Tier::Permissions(Unavailable::Failed("EPERM".into()))),
+            [SharedString::from(
+                "rox couldn't sandbox it: EPERM. If you switch it on, it runs as a \
+                 program with your permissions until rox quits."
+            )]
+        );
+    }
+
+    #[test]
+    fn each_ask_is_a_line_only_where_the_sandbox_holds() {
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let renderer = renderer_with(json!({
+            "label": "Bars",
+            "access": { "network": true, "read": ["videos", "library", "pictures"] },
+        }));
+
+        let mut card = EnableCard::of(renderer, None).unwrap();
+        card.tier = Some(sandboxed(true, vec![Folder::Library, Folder::Pictures], 7));
+        assert_eq!(
+            card.runs(),
+            [rox_i18n::t!("settings-plugins-card-sandboxed-asks")]
+        );
+        let lines = card.lines();
+        assert_eq!(
+            lines[lines.len() - 3..],
+            [
+                rox_i18n::t!("settings-plugins-card-access-network"),
+                rox_i18n::t!("settings-plugins-card-access-library"),
+                SharedString::from(
+                    "Can read these folders of yours, without changing them: Pictures, Videos."
+                ),
+            ]
+        );
+
+        // Outside the sandbox the asks mean nothing, so they aren't said.
+        card.tier = Some(Tier::Permissions(Unavailable::NoLandlock));
+        let unsandboxed = card.lines();
+        assert_eq!(unsandboxed.len(), lines.len() - 3, "{unsandboxed:?}");
+        assert_eq!(
+            card.runs(),
+            [rox_i18n::t!("settings-plugins-card-no-sandbox-kernel")]
+        );
+    }
+
+    #[test]
+    fn the_same_files_approved_as_another_tier_say_so() {
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let renderer = renderer_with(json!({ "label": "Bars" }));
+        let approved = PluginRecord {
+            approved_manifest: renderer.document.clone(),
+            sandbox: "sandboxed".into(),
+            ..record(true, "beef")
+        };
+
+        let mut card = EnableCard::of(renderer.clone(), Some(&approved)).unwrap();
+        card.tier = Some(Tier::Permissions(Unavailable::LandlockOff));
+        assert_eq!(
+            card.lines().last(),
+            Some(&rox_i18n::t!("settings-plugins-card-sandbox-changed"))
+        );
+
+        card.tier = Some(sandboxed(false, Vec::new(), 7));
+        assert!(
+            !card
+                .lines()
+                .contains(&rox_i18n::t!("settings-plugins-card-sandbox-changed"))
+        );
+
+        // A manifest that now asks to run unconfined says that instead.
+        let loose = renderer_with(json!({ "label": "Bars", "unconfined": true }));
+        let card = EnableCard::of(loose, Some(&approved)).unwrap();
+        assert!(
+            card.lines()
+                .contains(&rox_i18n::t!("settings-plugins-change-unconfined-on")),
+            "{:?}",
+            card.lines()
+        );
+        assert_eq!(
+            card.runs(),
+            [rox_i18n::t!("settings-plugins-card-unconfined")]
         );
     }
 }

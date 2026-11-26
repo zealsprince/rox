@@ -14,6 +14,12 @@
 //! spectrum's when it asks for the music's spectrum. Restarting is the render
 //! target's job, on the plugin host's schedule through [`due`] and
 //! [`note_exit`].
+//!
+//! A renderer runs in the sandbox unless its manifest asks to run unconfined
+//! (ADR 38). What it runs as is its [`Tier`], and the gate holds it to the
+//! tier its approval recorded: one approved as sandboxed never runs when
+//! the sandbox can't be applied, and stays off until the user says yes to
+//! what this system can give it.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
@@ -29,6 +35,7 @@ use rox_core::settings::{self, PluginRecord, Settings};
 use rox_plugins::host::{BACKOFF, CRASH_WINDOW};
 use rox_plugins::manifest::{RendererCap, SignalKind, WantedSignal};
 use rox_plugins::process::{self, Extra, Lent, Process};
+use rox_plugins::sandbox::{self, Support, Tier};
 use rox_plugins::{Loaded, manifest};
 use rox_viz::signal::{Signal, Source};
 
@@ -72,7 +79,8 @@ pub enum Refused {
     Broken(String),
     /// The package doesn't declare `renderer`.
     NotRenderer,
-    /// Never approved, or changed on disk since.
+    /// Never approved, changed on disk since, or approved to run as another
+    /// tier than its manifest and this system give it now.
     NotApproved,
     /// Approved and switched off.
     Off,
@@ -141,6 +149,37 @@ fn listed(
         .collect()
 }
 
+/// What a renderer with these asks runs as on this system now.
+pub fn tier(cap: &RendererCap) -> Tier {
+    tier_in(cap, &sandbox::support())
+}
+
+fn tier_in(cap: &RendererCap, support: &Support) -> Tier {
+    Tier::of(cap.unconfined, &cap.access, support)
+}
+
+/// Whether `record`'s approval covers the tier `cap` runs as now. An
+/// approval from before the sandbox recorded none: it was given for a
+/// renderer running with the user's permissions, and whatever this system
+/// gives it now is at most that.
+fn sandbox_holds(record: &PluginRecord, cap: &RendererCap, support: &Support) -> bool {
+    record.sandbox.is_empty() || record.sandbox == tier_in(cap, support).key()
+}
+
+/// [`sandbox_holds`] for the settings page and the switch, which raise the
+/// card when it doesn't. True for anything that isn't a renderer.
+pub fn sandbox_approved(folder: &Loaded, record: Option<&PluginRecord>) -> bool {
+    let Some(cap) = folder
+        .manifest
+        .as_ref()
+        .and_then(|m| m.capabilities.renderer.as_ref())
+    else {
+        return true;
+    };
+
+    record.is_none_or(|record| sandbox_holds(record, cap, &sandbox::support()))
+}
+
 /// The gate, read from what's on disk and in the records now. Every start
 /// passes through it, and so does every running session when the plugins
 /// apply.
@@ -154,6 +193,7 @@ fn check<'a>(
     folders: &'a [Loaded],
     records: &[PluginRecord],
     approved: &dyn Fn(&str, &str) -> bool,
+    support: &Support,
 ) -> Result<&'a Loaded, Refused> {
     // The first row for an id is the one that holds it, as in the scan.
     let folder = folders
@@ -164,15 +204,21 @@ fn check<'a>(
     let Some(manifest) = folder.manifest.as_ref().filter(|_| folder.runs()) else {
         return Err(Refused::Broken(folder.error.clone().unwrap_or_default()));
     };
-    if !manifest.is_renderer() {
+    let Some(cap) = manifest.capabilities.renderer.as_ref() else {
         return Err(Refused::NotRenderer);
-    }
+    };
 
     if !approved(&folder.id, &folder.hash) {
         return Err(Refused::NotApproved);
     }
-    if !records.iter().any(|r| r.id == id && r.enabled) {
+    let Some(record) = records.iter().find(|r| r.id == id && r.enabled) else {
         return Err(Refused::Off);
+    };
+
+    // Approved as sandboxed and the sandbox can't be applied here now, or
+    // the other way round: the user's yes was for another tier.
+    if !sandbox_holds(record, cap, support) {
+        return Err(Refused::NotApproved);
     }
 
     Ok(folder)
@@ -183,7 +229,13 @@ fn check<'a>(
 pub fn refusal(id: &str) -> Option<Refused> {
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let gate = check(id, &folders, &records, &settings::plugin_approved);
+    let gate = check(
+        id,
+        &folders,
+        &records,
+        &settings::plugin_approved,
+        &sandbox::support(),
+    );
 
     match gate {
         Err(refused) => Some(refused),
@@ -203,7 +255,14 @@ pub fn forgive(id: &str) {
 pub fn asks(id: &str) -> Option<RendererCap> {
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let folder = check(id, &folders, &records, &settings::plugin_approved).ok()?;
+    let folder = check(
+        id,
+        &folders,
+        &records,
+        &settings::plugin_approved,
+        &sandbox::support(),
+    )
+    .ok()?;
 
     folder.manifest.as_ref()?.capabilities.renderer.clone()
 }
@@ -270,7 +329,8 @@ pub fn start(
 
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let folder = check(id, &folders, &records, &settings::plugin_approved)?;
+    let support = sandbox::support();
+    let folder = check(id, &folders, &records, &settings::plugin_approved, &support)?;
 
     if due(id).is_none() {
         return Err(Refused::Stopped);
@@ -292,7 +352,10 @@ pub fn start(
 
     // A renderer that can't start counts as one that exits, as a plugin's
     // failed start does, so a broken one stops rather than looping.
-    let started = launch(folder, handle, cover, spectrum, texture, width, height);
+    let tier = tier_in(&asks, &support);
+    let started = launch(
+        folder, &tier, handle, cover, spectrum, texture, width, height,
+    );
     if started.is_err() {
         note_exit(id);
     }
@@ -309,10 +372,14 @@ pub fn start(
         live.push(Arc::downgrade(&run));
     }
 
-    match asks.gpu {
-        true => log::info!("renderer {id}: started at {width}x{height}, lent a texture"),
-        false => log::info!("renderer {id}: started at {width}x{height}"),
-    }
+    let lent = match asks.gpu {
+        true => ", lent a texture",
+        false => "",
+    };
+    log::info!(
+        "renderer {id}: started at {width}x{height}{lent}, {}",
+        tier.key()
+    );
 
     Ok(Session {
         id: id.to_string(),
@@ -327,8 +394,10 @@ type Launched = (Process, ChildStdin, ChildStdout);
 
 /// Spawn and `hello`. The command is the plugin entry's own: the same
 /// interpreter lookup, the same folder checks.
+#[allow(clippy::too_many_arguments)]
 fn launch(
     folder: &Loaded,
+    tier: &Tier,
     handle: Lent,
     cover: Option<Lent>,
     spectrum: Option<Lent>,
@@ -341,7 +410,13 @@ fn launch(
     };
 
     let mut command = manifest::entry_for(manifest, &folder.dir)?;
+
+    // Every renderer gets the folder, sandboxed or not, so one written for
+    // the sandbox runs the same outside it.
+    let cache = settings::renderer_cache_dir(&folder.id);
+    std::fs::create_dir_all(&cache).map_err(|e| format!("cache folder: {e}"))?;
     command
+        .env("ROX_CACHE_DIR", &cache)
         .env("ROX_RENDER_API", API.to_string())
         .env("ROX_FRAMES_WIDTH", width.to_string())
         .env("ROX_FRAMES_HEIGHT", height.to_string());
@@ -369,13 +444,7 @@ fn launch(
         }
     }
 
-    let (mut process, pipes) = process::spawn_with(
-        "renderer",
-        &folder.id,
-        command,
-        &folder.dir,
-        Extra::Handles(lent),
-    )?;
+    let (mut process, pipes) = spawn(folder, tier, &cache, command, Extra::Handles(lent))?;
     let mut stdin = pipes.stdin;
 
     let mut hello = json!({
@@ -400,6 +469,121 @@ fn launch(
     }
 
     Ok((process, stdin, pipes.stdout))
+}
+
+/// Starts the renderer as `tier` says: confined by its profile, or as a
+/// program with the user's permissions when its approval says so. A
+/// sandboxed tier is never started any other way.
+#[cfg(target_os = "linux")]
+fn spawn(
+    folder: &Loaded,
+    tier: &Tier,
+    cache: &std::path::Path,
+    command: std::process::Command,
+    extra: Extra,
+) -> Result<(Process, process::Pipes), String> {
+    let Tier::Sandboxed {
+        network, folders, ..
+    } = tier
+    else {
+        return process::spawn_with("renderer", &folder.id, command, &folder.dir, extra);
+    };
+
+    let Support::Sandbox { abi, .. } = sandbox::support() else {
+        return Err("the sandbox can't be applied here".into());
+    };
+
+    let reads = read_folders(folders);
+    let program = std::path::PathBuf::from(command.get_program());
+    let profile = sandbox::Profile::renderer(&folder.dir, &program, cache, &reads, *network);
+
+    process::spawn_confined(
+        "renderer",
+        &folder.id,
+        command,
+        &folder.dir,
+        extra,
+        &profile,
+        abi,
+    )
+}
+
+/// No sandbox off Linux: [`sandbox::support`] answers Platform there, so
+/// every tier but Unconfined is Permissions and runs as today.
+#[cfg(not(target_os = "linux"))]
+fn spawn(
+    folder: &Loaded,
+    tier: &Tier,
+    _cache: &std::path::Path,
+    command: std::process::Command,
+    extra: Extra,
+) -> Result<(Process, process::Pipes), String> {
+    if tier.sandboxed() {
+        return Err("the sandbox can't be applied here".into());
+    }
+
+    process::spawn_with("renderer", &folder.id, command, &folder.dir, extra)
+}
+
+/// The folders a renderer's read asks name, as this system has them when
+/// it starts: the library's folders from the settings, the rest from the
+/// user's XDG folders. A running renderer keeps what it started with; a
+/// folder added to the library reaches it at its next start, and one
+/// removed stays readable until then, since Landlock adds rules and never
+/// takes one back.
+#[cfg(target_os = "linux")]
+fn read_folders(folders: &[sandbox::Folder]) -> Vec<std::path::PathBuf> {
+    use sandbox::Folder;
+
+    let home = dirs::home_dir().and_then(|home| home.canonicalize().ok());
+    let data = settings::data_dir().canonicalize().ok();
+
+    let mut reads = Vec::new();
+    for folder in folders {
+        let named: Vec<std::path::PathBuf> = match folder {
+            Folder::Library => Settings::load().library_roots,
+            Folder::Music => dirs::audio_dir().into_iter().collect(),
+            Folder::Pictures => dirs::picture_dir().into_iter().collect(),
+            Folder::Videos => dirs::video_dir().into_iter().collect(),
+            Folder::Documents => dirs::document_dir().into_iter().collect(),
+            Folder::Downloads => dirs::download_dir().into_iter().collect(),
+        };
+
+        for path in named {
+            match readable(&path, home.as_deref(), data.as_deref()) {
+                Some(path) => reads.push(path),
+                None => log::warn!(
+                    "renderer: not granting {} for {}: it holds the home or rox's data folder",
+                    path.display(),
+                    folder.key()
+                ),
+            }
+        }
+    }
+
+    reads
+}
+
+/// `path` as a read grant, or None when granting it would grant more than
+/// the folder the card named. A user folder that xdg-user-dirs set to home
+/// itself, or a library folder at home or above it, would hand over every
+/// file the user has, and one around or inside rox's data folder its
+/// accounts and approvals.
+#[cfg(target_os = "linux")]
+fn readable(
+    path: &std::path::Path,
+    home: Option<&std::path::Path>,
+    data: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let path = path.canonicalize().ok()?;
+
+    let holds_home = home.is_some_and(|home| home.starts_with(&path));
+    let near_data = data.is_some_and(|data| data.starts_with(&path) || path.starts_with(data));
+    if holds_home || near_data {
+        return None;
+    }
+
+    Some(path)
 }
 
 /// Where each lent handle lands in a renderer on Unix. The order is fixed:
@@ -631,7 +815,9 @@ fn wait_after(times: &mut VecDeque<Instant>, now: Instant) -> Option<Duration> {
 pub(crate) fn enforce(cx: &mut App) {
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let passes = |id: &str| check(id, &folders, &records, &settings::plugin_approved).is_ok();
+    let support = sandbox::support();
+    let passes =
+        |id: &str| check(id, &folders, &records, &settings::plugin_approved, &support).is_ok();
 
     forget_exits(&passes);
 
@@ -884,6 +1070,121 @@ mod tests {
         false
     }
 
+    use rox_plugins::sandbox::{Gaps, Unavailable};
+
+    /// A system that sandboxes with every rule.
+    fn full() -> Support {
+        Support::Sandbox {
+            abi: 7,
+            gaps: Gaps::default(),
+        }
+    }
+
+    #[test]
+    fn an_approval_holds_for_the_tier_it_was_given() {
+        let folders = [renderer("bars")];
+        let approved_as = |sandbox: &str| PluginRecord {
+            sandbox: sandbox.into(),
+            ..record("bars", true)
+        };
+        let gate = |record: PluginRecord, support: &Support| {
+            check("bars", &folders, &[record], &all_approved, support).map(|_| ())
+        };
+        let lost = Support::Unavailable(Unavailable::NoLandlock);
+        let failed = Support::Unavailable(Unavailable::Failed("EPERM".into()));
+        let older = Support::Sandbox {
+            abi: 3,
+            gaps: Gaps::of_abi(3),
+        };
+
+        assert_eq!(gate(approved_as("sandboxed"), &full()), Ok(()));
+
+        // Approved as sandboxed, and the sandbox is gone or failed: it
+        // stays off rather than run with the user's permissions.
+        assert_eq!(
+            gate(approved_as("sandboxed"), &lost),
+            Err(Refused::NotApproved)
+        );
+        assert_eq!(
+            gate(approved_as("sandboxed"), &failed),
+            Err(Refused::NotApproved)
+        );
+
+        // What the kernel can stop moved, either way: a fresh yes.
+        assert_eq!(
+            gate(approved_as("sandboxed"), &older),
+            Err(Refused::NotApproved)
+        );
+        assert_eq!(
+            gate(approved_as("permissions"), &full()),
+            Err(Refused::NotApproved)
+        );
+        assert_eq!(gate(approved_as("permissions"), &lost), Ok(()));
+
+        // An approval from before the sandbox runs as whatever it gets now.
+        for support in [full(), lost, older] {
+            assert_eq!(gate(approved_as(""), &support), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_asks_more_is_another_tier() {
+        let asking = package(
+            "bars",
+            json!({ "renderer": { "label": "Bars", "access": { "network": true } } }),
+        );
+        let loose = package(
+            "bars",
+            json!({ "renderer": { "label": "Bars", "unconfined": true } }),
+        );
+        let sandboxed = PluginRecord {
+            sandbox: "sandboxed".into(),
+            ..record("bars", true)
+        };
+
+        for folder in [asking, loose] {
+            assert_eq!(
+                check(
+                    "bars",
+                    &[folder],
+                    std::slice::from_ref(&sandboxed),
+                    &all_approved,
+                    &full()
+                )
+                .map(|_| ()),
+                Err(Refused::NotApproved)
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_grant_never_holds_home_or_the_data_folder() {
+        let root = std::env::temp_dir().join(format!("rox-renderers-read-{}", std::process::id()));
+        let home = root.join("home");
+        let data = home.join(".local/share/rox");
+        let music = home.join("Music");
+        for dir in [&data, &music] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let (home, data, music) = (
+            home.canonicalize().unwrap(),
+            data.canonicalize().unwrap(),
+            music.canonicalize().unwrap(),
+        );
+
+        let grant = |path: &std::path::Path| readable(path, Some(&home), Some(&data));
+        assert_eq!(grant(&music), Some(music.clone()));
+        assert_eq!(grant(&home), None, "home itself, as xdg-user-dirs can set");
+        assert_eq!(grant(&root), None, "above home");
+        assert_eq!(grant(std::path::Path::new("/")), None);
+        assert_eq!(grant(&data.join("..")), None, "around the data folder");
+        assert_eq!(grant(&data), None);
+        assert_eq!(grant(&root.join("missing")), None, "not there");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn only_renderer_packages_are_listed() {
         let folders = [
@@ -920,7 +1221,7 @@ mod tests {
         let off = [record("bars", false)];
 
         let gate = |id, records: &[PluginRecord], approved: &dyn Fn(&str, &str) -> bool| {
-            check(id, &folders, records, approved).map(|folder| folder.id.clone())
+            check(id, &folders, records, approved, &full()).map(|folder| folder.id.clone())
         };
 
         assert_eq!(gate("bars", &on, &all_approved), Ok("bars".into()));
@@ -946,7 +1247,7 @@ mod tests {
         let mut broken = renderer("bars");
         broken.error = Some("entry draw.sh is missing".into());
         assert_eq!(
-            check("bars", &[broken], &on, &all_approved).map(|_| ()),
+            check("bars", &[broken], &on, &all_approved, &full()).map(|_| ()),
             Err(Refused::Broken("entry draw.sh is missing".into()))
         );
     }
@@ -963,18 +1264,25 @@ mod tests {
         let folders = [renderer("bars")];
         let on = [record("bars", true)];
         assert_eq!(
-            check("bars", &folders, &on, &all_approved).map(|folder| folder.id.as_str()),
+            check("bars", &folders, &on, &all_approved, &full()).map(|folder| folder.id.as_str()),
             Ok("bars"),
             "its own switch and its approval are the whole gate"
         );
 
         // Still nothing runs without both.
         assert_eq!(
-            check("bars", &folders, &on, &none_approved).map(|_| ()),
+            check("bars", &folders, &on, &none_approved, &full()).map(|_| ()),
             Err(Refused::NotApproved)
         );
         assert_eq!(
-            check("bars", &folders, &[record("bars", false)], &all_approved).map(|_| ()),
+            check(
+                "bars",
+                &folders,
+                &[record("bars", false)],
+                &all_approved,
+                &full()
+            )
+            .map(|_| ()),
             Err(Refused::Off)
         );
     }
@@ -1065,7 +1373,7 @@ mod tests {
         let on = [record(id, true)];
         let off = [record(id, false)];
         let passes = |kept: &str, records: &[PluginRecord]| {
-            kept != id || check(kept, &folders, records, &all_approved).is_ok()
+            kept != id || check(kept, &folders, records, &all_approved, &full()).is_ok()
         };
 
         forget_exits(&|kept| passes(kept, &on));
@@ -1287,6 +1595,7 @@ done
         folder.dir = dir.clone();
         let (mut process, stdin, mut stdout) = launch(
             &folder,
+            &Tier::Unconfined,
             frames.as_fd(),
             cover.then(|| cover_file.as_fd()),
             spectrum.then(|| spectrum_file.as_fd()),

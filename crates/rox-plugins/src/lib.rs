@@ -16,6 +16,7 @@ pub mod loader;
 pub mod manifest;
 pub mod package;
 pub mod process;
+pub mod sandbox;
 pub mod search;
 pub mod stream;
 pub mod wire;

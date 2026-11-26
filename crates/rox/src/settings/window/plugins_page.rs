@@ -341,6 +341,17 @@ fn standing(
     }
 }
 
+/// A renderer's tier on its row: one word, the card says the rest.
+fn tier_mark(tier: &rox_plugins::sandbox::Tier) -> SharedString {
+    use rox_plugins::sandbox::Tier;
+
+    match tier {
+        Tier::Sandboxed { .. } => rox_i18n::t!("settings-plugins-tier-sandboxed"),
+        Tier::Unconfined => rox_i18n::t!("settings-plugins-tier-unconfined"),
+        Tier::Permissions(_) => rox_i18n::t!("settings-plugins-tier-permissions"),
+    }
+}
+
 impl Standing {
     fn text(&self) -> SharedString {
         match self {
@@ -615,8 +626,11 @@ impl SettingsWindow {
             return;
         };
 
-        // This exact folder was approved before: switching on asks nothing.
-        if settings::plugin_approved(id, &folder.hash) {
+        // This exact folder was approved before, as the tier it runs as
+        // now when it's a renderer: switching on asks nothing.
+        let approved = settings::plugin_approved(id, &folder.hash)
+            && rox_services::renderers::sandbox_approved(&folder, self.record(id));
+        if approved {
             host::approve(&folder, cx);
             self.plugin_page.open.insert(id.to_string());
             self.refresh_plugins(cx);
@@ -920,7 +934,10 @@ impl SettingsWindow {
                 id.to_string(),
             ),
         };
-        let approved = folder.is_some_and(|f| settings::plugin_approved(id, &f.hash));
+        let approved = folder.is_some_and(|f| {
+            settings::plugin_approved(id, &f.hash)
+                && rox_services::renderers::sandbox_approved(f, record)
+        });
         let standing = standing(folder, record, approved, host::status(id));
         let on = record.is_some_and(|r| r.enabled) && folder.is_some_and(Loaded::runs);
         // A renderer has no source, providers or config rows to unfold.
@@ -932,6 +949,12 @@ impl SettingsWindow {
             .and_then(|f| f.manifest.as_ref())
             .map(|m| m.version.clone())
             .unwrap_or_default();
+
+        // What a renderer runs as here, beside its version (ADR 38).
+        let tier = folder
+            .and_then(|f| f.manifest.as_ref())
+            .and_then(|m| m.capabilities.renderer.as_ref())
+            .map(|cap| tier_mark(&rox_services::renderers::tier(cap)));
 
         // Only a switched-on plugin has details to fold. The rest keep the
         // chevron's width so every name lines up.
@@ -984,6 +1007,15 @@ impl SettingsWindow {
                         .text_xs()
                         .text_color(palette::text_muted())
                         .child(version),
+                )
+            })
+            .when_some(tier, |d, tier| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(palette::text_muted())
+                        .child(tier),
                 )
             })
             .child(

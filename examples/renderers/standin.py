@@ -655,6 +655,12 @@ def parse_announce(line):
     return None
 
 
+def cache_dir():
+    path = os.path.join(tempfile.gettempdir(), "rox-standin-cache")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def run(args):
     width, height = args.size
     frames = Frames(width, height)
@@ -668,6 +674,9 @@ def run(args):
         "ROX_FRAMES_WIDTH": str(width),
         "ROX_FRAMES_HEIGHT": str(height),
         "ROX_FRAMES_FD": str(FIRST_FD),
+        # rox makes one per renderer under its data folder. This one is kept
+        # between runs, as rox's is, and nothing confines the renderer to it.
+        "ROX_CACHE_DIR": cache_dir(),
     }
     hello = {"hello": API, "width": width, "height": height, "handle": 0}
     if cover:

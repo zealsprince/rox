@@ -118,7 +118,7 @@ pub struct RendererCap {
 /// band, never by name, since a name is the user's to change.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct WantedSignal {
-    /// `band`, `level`, `onset`, `trigger` or `aggregate`. A kind this rox
+    /// `band`, `level`, `onset`, `beat`, `trigger` or `aggregate`. A kind this rox
     /// doesn't know is skipped, so a renderer written for a later rox loads.
     pub kind: String,
     /// The band in Hz, for the kinds that listen to one.
@@ -148,13 +148,14 @@ pub enum SignalKind {
     Band,
     Level,
     Onset,
+    Beat,
     Trigger,
     Aggregate,
 }
 
 impl SignalKind {
     pub fn listens_to_a_band(self) -> bool {
-        matches!(self, Self::Band | Self::Onset | Self::Trigger)
+        matches!(self, Self::Band | Self::Onset | Self::Beat | Self::Trigger)
     }
 }
 
@@ -165,6 +166,7 @@ impl WantedSignal {
             "band" => Some(SignalKind::Band),
             "level" => Some(SignalKind::Level),
             "onset" => Some(SignalKind::Onset),
+            "beat" => Some(SignalKind::Beat),
             "trigger" => Some(SignalKind::Trigger),
             "aggregate" => Some(SignalKind::Aggregate),
             _ => None,

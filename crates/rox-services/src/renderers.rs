@@ -651,6 +651,7 @@ fn wanted_source(wanted: &WantedSignal) -> Option<Source> {
     match wanted.kind()? {
         SignalKind::Band => band().map(|(lo, hi)| Source::Band { lo, hi }),
         SignalKind::Onset => band().map(|(lo, hi)| Source::Onset { lo, hi }),
+        SignalKind::Beat => band().map(|(lo, hi)| Source::Beat { lo, hi }),
         SignalKind::Trigger => band().map(|(lo, hi)| Source::Trigger { lo, hi }),
         SignalKind::Level => Some(Source::Level),
         SignalKind::Aggregate => None,

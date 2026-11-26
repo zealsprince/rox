@@ -4541,6 +4541,7 @@ dictionary-summary-lindera-ipadic = Il dizionario giapponese dietro alle letture
 
 workspace-shipped-default = (Predefinito)
 workspace-shipped-default-blurb = Com'è rox appena installato: superfici traslucide sopra il desktop, nessuna cornice di finestra, tinta dalla copertina disattivata. Il punto di partenza da cui ogni altro look qui si allontana.
+workspace-shipped-aero-blurb = Una mattina di sole azzurro cielo disegnata su un'unica tela: pannelli di vetro sopra nuvole e colline verdi, pulsanti in gel, bolle che salgono con la musica, un'aurora che respira con i medi e un sole che lampeggia sul battito. La modalità scura la trasforma in notte.
 workspace-shipped-catrox-blurb = La skin di foobar2000 che ha dato il via a tutto, ricostruita: una resa circolare della copertina come CD, i campi dei metadati lungo la sinistra, e tracce raggruppate per album con i pallini di valutazione.
 workspace-shipped-critters-blurb = Tutta l'app come una stampa a 1 bit: un dithering ordinato su ogni superficie, toni che si schiacciano con i bassi profondi, e un muro di rumore che si contorce con il brano. Ispirato a Critters for Sale.
 workspace-shipped-diffuse-blurb = Solo l'album in riproduzione: la copertina e la scheda di riproduzione come un unico gruppo che riempie la finestra, superfici trasparenti sullo sfondo, senza giunture. Libreria, coda e testo aspettano in un cassetto sul bordo destro e scivolano sopra la musica quando si passa sulla maniglia. Monocromatico, così il colore arriva dalle copertine.

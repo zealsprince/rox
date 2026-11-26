@@ -58,6 +58,33 @@ fn saved_shape_validates_and_required_fields_bite() {
     );
 }
 
+/// A shipped look written by a generator rather than exported from the app
+/// still has to be a file the schema accepts.
+#[test]
+fn every_shipped_workspace_validates() {
+    let validator = jsonschema::validator_for(&workspace_schema()).expect("schema compiles");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../rox/assets/workspaces");
+
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).expect("the shipped folder reads") {
+        let path = entry.expect("an entry reads").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+
+        let text = std::fs::read_to_string(&path).expect("a shipped file reads");
+        let file: serde_json::Value = serde_json::from_str(&text).expect("a shipped file parses");
+        let errors: Vec<String> = validator
+            .iter_errors(&file)
+            .map(|err| err.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{}: {errors:?}", path.display());
+        checked += 1;
+    }
+
+    assert!(checked > 0);
+}
+
 /// Not a test: rewrites the committed schema after a bundle shape change.
 /// `cargo test -p rox-core --test workspace_schema -- --ignored regenerate`
 #[test]

@@ -125,35 +125,43 @@ These all ship in the box, one click away on the welcome window or in settings:
 <table>
   <tr>
     <th width="50%">(Default / NekoRoX)</th>
-    <th width="50%">CaTRoX</th>
+    <th width="50%">Aero</th>
   </tr>
   <tr>
     <td valign="top"><img src="crates/rox/assets/workspaces/Default_Dark.png" alt="Default" width="100%"></td>
-    <td valign="top"><img src="crates/rox/assets/workspaces/CaTRoX_Dark.png" alt="CaTRoX" width="100%"></td>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Aero_Light.png" alt="Aero" width="100%"></td>
   </tr>
   <tr>
+    <th>CaTRoX</th>
     <th>Critters</th>
-    <th>Diffuse</th>
   </tr>
   <tr>
+    <td valign="top"><img src="crates/rox/assets/workspaces/CaTRoX_Dark.png" alt="CaTRoX" width="100%"></td>
     <td valign="top"><img src="crates/rox/assets/workspaces/Critters_Dark.png" alt="Critters" width="100%"></td>
-    <td valign="top"><img src="crates/rox/assets/workspaces/Diffuse_Dark.png" alt="Diffuse" width="100%"></td>
   </tr>
   <tr>
+    <th>Diffuse</th>
     <th>Foobar</th>
-    <th>Llama (WinAmp)</th>
   </tr>
   <tr>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Diffuse_Dark.png" alt="Diffuse" width="100%"></td>
     <td valign="top"><img src="crates/rox/assets/workspaces/Foobar_Light.png" alt="Foobar" width="100%"></td>
-    <td valign="top"><img src="crates/rox/assets/workspaces/Llama_Dark.png" alt="Llama" width="100%"></td>
   </tr>
   <tr>
+    <th>Llama (WinAmp)</th>
     <th>Metro</th>
-    <th>Phosphor</th>
   </tr>
   <tr>
+    <td valign="top"><img src="crates/rox/assets/workspaces/Llama_Dark.png" alt="Llama" width="100%"></td>
     <td valign="top"><img src="crates/rox/assets/workspaces/Metro_Dark.png" alt="Metro" width="100%"></td>
+  </tr>
+  <tr>
+    <th>Phosphor</th>
+    <th></th>
+  </tr>
+  <tr>
     <td valign="top"><img src="crates/rox/assets/workspaces/Phosphor_Dark.png" alt="Phosphor" width="100%"></td>
+    <td></td>
   </tr>
 </table>
 

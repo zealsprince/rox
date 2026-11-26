@@ -4338,6 +4338,7 @@ dictionary-summary-lindera-ipadic = 漢字の読みを支える日本語辞書�
 ## Shipped workspaces
 workspace-shipped-default = (既定)
 workspace-shipped-default-blurb = rox の素の見た目。デスクトップの上に半透明の面、ウィンドウ枠なし、曲テーマはオフ。ここにある他の見た目は、すべてここから離れていったもの。
+workspace-shipped-aero-blurb = 一枚のキャンバスに描いた、晴れた空色の朝。雲と緑の丘に重なるガラスのパネル、ジェルのボタン、音楽に合わせて昇る泡、中音域で呼吸するオーロラ、ビートで光る太陽。ダークモードでは夜になる。
 workspace-shipped-catrox-blurb = すべての始まりだった foobar2000 のスキンを作り直したもの。カバーを円形の CD として描き、メタデータの項目を左に並べ、アルバムごとにまとめた曲にレーティングの点を添える。
 workspace-shipped-critters-blurb = アプリ全体を 1 ビットの印刷物にしたもの。すべての面に規則的なディザをかけ、階調はサブベースで潰れ、ノイズの壁が曲に合わせてうねる。Critters for Sale より。
 workspace-shipped-diffuse-blurb = 再生中のアルバムだけ。カバーと再生カードをひとつのグループにしてウィンドウを埋め、背景の上に透明な面を継ぎ目なく置く。ライブラリ、キュー、歌詞は右端のドロワーで待ち、ハンドルにカーソルを乗せると音楽の上に滑り出す。モノクロなので、色はカバーが担う。

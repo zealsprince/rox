@@ -304,7 +304,13 @@ from the look and survives only in that backup.
 Shipped workspaces are JSON in `crates/rox/assets/workspaces/`, the manifest of an
 archive on its own, with their files in a sibling `<Stem>/assets/` folder. Both are
 embedded through `rox_design::assets`, and applying one checks each file against its
-table entry the way an archive's are checked.
+table entry the way an archive's are checked. Aero is the one written by a script rather
+than exported: a single canvas filling the window, generated with its images by
+`scripts/workspaces/aero_workspace.py` and `aero_assets.py`. It draws every canvas item
+kind, follows playback, shuffle, repeat and the theme through cases, and routes a beat,
+three bands and three running totals, so it doubles as the canvas's test bed, with
+tests in `workspaces.rs` holding it to one canvas, its assets, a beat and the weight
+limits.
 
 ## Panel presets
 

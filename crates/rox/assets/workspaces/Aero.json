@@ -1,0 +1,4013 @@
+{
+  "version": 2,
+  "name": "Aero",
+  "layouts": [
+    {
+      "name": "Aero",
+      "dump": {
+        "version": 1,
+        "center": {
+          "panel_name": "StackPanel",
+          "children": [
+            {
+              "panel_name": "TabPanel",
+              "children": [
+                {
+                  "panel_name": "canvas",
+                  "children": [],
+                  "info": {
+                    "panel": {
+                      "version": 1,
+                      "stage": {
+                        "width": 1920.0,
+                        "height": 1080.0,
+                        "fit": "anchor"
+                      },
+                      "camera": {
+                        "fov": 35.0,
+                        "parallax": 22.0
+                      },
+                      "items": [
+                        {
+                          "id": "sky-box",
+                          "name": "Sky",
+                          "place": {
+                            "anchor": "center",
+                            "position": [
+                              0.0,
+                              -40.0,
+                              -420.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 1.36
+                              },
+                              {
+                                "stage": 1.36
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "group",
+                            "items": [
+                              {
+                                "id": "sky",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1
+                                    },
+                                    {
+                                      "stage": 1
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "sky_day",
+                                  "fit": "cover"
+                                },
+                                "state": "app.theme",
+                                "cases": [
+                                  {
+                                    "when": "dark",
+                                    "visible": true,
+                                    "opacity": 1.0,
+                                    "asset": "sky_night"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "rays",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    1.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1
+                                    },
+                                    {
+                                      "stage": 1
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "shader",
+                                  "shader": {
+                                    "enabled": true,
+                                    "source": "",
+                                    "name": "Aero Rays",
+                                    "path": null,
+                                    "routes": [
+                                      {
+                                        "enabled": true,
+                                        "signal": 2,
+                                        "target": "slot0",
+                                        "from": 0.0,
+                                        "to": 1.0
+                                      },
+                                      {
+                                        "enabled": true,
+                                        "signal": 4,
+                                        "target": "slot1",
+                                        "from": 0.0,
+                                        "to": 1.0
+                                      }
+                                    ],
+                                    "run_when_idle": false
+                                  }
+                                }
+                              },
+                              {
+                                "id": "sun",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top_left",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 0.66
+                                    },
+                                    {
+                                      "stage": 0.06
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "group",
+                                  "items": [
+                                    {
+                                      "id": "flare",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          2.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "units": 820
+                                          },
+                                          {
+                                            "units": 820
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 0.6,
+                                      "content": {
+                                        "kind": "image",
+                                        "asset": "flare",
+                                        "fit": "contain"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "state": "app.theme",
+                                "cases": [
+                                  {
+                                    "when": "dark",
+                                    "visible": true,
+                                    "opacity": 0.3
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          "sway": {
+                            "position": [
+                              18.0,
+                              6.0,
+                              0.0
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ]
+                          }
+                        },
+                        {
+                          "id": "aurora",
+                          "name": "Aurora",
+                          "place": {
+                            "anchor": "center",
+                            "position": [
+                              0.0,
+                              0.0,
+                              -340.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 1.2
+                              },
+                              {
+                                "stage": 1.2
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "group",
+                            "items": [
+                              {
+                                "id": "aurora-a",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    -360.0,
+                                    30.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 0.66
+                                    },
+                                    {
+                                      "stage": 0.32
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.6,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "aurora_a",
+                                  "fit": "stretch"
+                                },
+                                "sway": {
+                                  "position": [
+                                    60.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "aurora-b",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    430.0,
+                                    150.0,
+                                    20.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 0.58
+                                    },
+                                    {
+                                      "stage": 0.27
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.5,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "aurora_b",
+                                  "fit": "stretch"
+                                },
+                                "sway": {
+                                  "position": [
+                                    -50.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              }
+                            ]
+                          },
+                          "state": "app.theme",
+                          "cases": [
+                            {
+                              "when": "light",
+                              "visible": true,
+                              "opacity": 0.45
+                            },
+                            {
+                              "when": "dark",
+                              "visible": true,
+                              "opacity": 1.0
+                            }
+                          ]
+                        },
+                        {
+                          "id": "air",
+                          "name": "Bokeh",
+                          "place": {
+                            "anchor": "center",
+                            "position": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 1
+                              },
+                              {
+                                "stage": 1
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "group",
+                            "items": [
+                              {
+                                "id": "bokeh-1",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top_left",
+                                  "position": [
+                                    300.0,
+                                    210.0,
+                                    -260.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 120
+                                    },
+                                    {
+                                      "units": 120
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.35,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bokeh",
+                                  "fit": "contain"
+                                }
+                              },
+                              {
+                                "id": "bokeh-2",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    40.0,
+                                    120.0,
+                                    -240.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 70
+                                    },
+                                    {
+                                      "units": 70
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.45,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bokeh_aqua",
+                                  "fit": "contain"
+                                }
+                              },
+                              {
+                                "id": "bokeh-3",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top_right",
+                                  "position": [
+                                    -420.0,
+                                    260.0,
+                                    -220.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 90
+                                    },
+                                    {
+                                      "units": 90
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.3,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bokeh",
+                                  "fit": "contain"
+                                }
+                              },
+                              {
+                                "id": "bokeh-4",
+                                "name": "",
+                                "place": {
+                                  "anchor": "right",
+                                  "position": [
+                                    -160.0,
+                                    -60.0,
+                                    -200.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 54
+                                    },
+                                    {
+                                      "units": 54
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.4,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bokeh_aqua",
+                                  "fit": "contain"
+                                }
+                              },
+                              {
+                                "id": "bokeh-5",
+                                "name": "",
+                                "place": {
+                                  "anchor": "left",
+                                  "position": [
+                                    180.0,
+                                    40.0,
+                                    -250.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 64
+                                    },
+                                    {
+                                      "units": 64
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.3,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bokeh",
+                                  "fit": "contain"
+                                }
+                              },
+                              {
+                                "id": "ghost-1",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    -120.0,
+                                    300.0,
+                                    -180.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 80
+                                    },
+                                    {
+                                      "units": 80
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.5,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "ghost",
+                                  "fit": "contain"
+                                }
+                              },
+                              {
+                                "id": "ghost-2",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    80.0,
+                                    140.0,
+                                    -160.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 46
+                                    },
+                                    {
+                                      "units": 46
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.5,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "ghost",
+                                  "fit": "contain"
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "id": "hills-back",
+                          "name": "Far hills",
+                          "place": {
+                            "anchor": "bottom",
+                            "position": [
+                              0.0,
+                              110.0,
+                              -230.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 1.34
+                              },
+                              {
+                                "stage": 0.4
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "image",
+                            "asset": "hills_back",
+                            "fit": "stretch"
+                          },
+                          "state": "app.theme",
+                          "cases": [
+                            {
+                              "when": "dark",
+                              "visible": true,
+                              "opacity": 1.0,
+                              "asset": "hills_back_night"
+                            }
+                          ]
+                        },
+                        {
+                          "id": "hills-front",
+                          "name": "Near hills",
+                          "place": {
+                            "anchor": "bottom",
+                            "position": [
+                              0.0,
+                              90.0,
+                              -120.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 1.24
+                              },
+                              {
+                                "stage": 0.3
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "image",
+                            "asset": "hills_front",
+                            "fit": "stretch"
+                          },
+                          "state": "app.theme",
+                          "cases": [
+                            {
+                              "when": "dark",
+                              "visible": true,
+                              "opacity": 1.0,
+                              "asset": "hills_front_night"
+                            }
+                          ]
+                        },
+                        {
+                          "id": "bubbles",
+                          "name": "Bubbles",
+                          "place": {
+                            "anchor": "center",
+                            "position": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 1
+                              },
+                              {
+                                "stage": 1
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "group",
+                            "items": [
+                              {
+                                "id": "bubble-1",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom_left",
+                                  "position": [
+                                    120.0,
+                                    -120.0,
+                                    -60.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 150
+                                    },
+                                    {
+                                      "units": 150
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_l",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    36.0,
+                                    -1500.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-2",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom_left",
+                                  "position": [
+                                    420.0,
+                                    -200.0,
+                                    -140.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 56
+                                    },
+                                    {
+                                      "units": 56
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    -24.0,
+                                    -1300.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-3",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom",
+                                  "position": [
+                                    -260.0,
+                                    -260.0,
+                                    -90.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 96
+                                    },
+                                    {
+                                      "units": 96
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_m",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    30.0,
+                                    -1400.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-4",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom",
+                                  "position": [
+                                    20.0,
+                                    -90.0,
+                                    -30.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 44
+                                    },
+                                    {
+                                      "units": 44
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    -18.0,
+                                    -1250.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-5",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom",
+                                  "position": [
+                                    180.0,
+                                    -330.0,
+                                    -180.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 120
+                                    },
+                                    {
+                                      "units": 120
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_l",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    28.0,
+                                    -1600.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-6",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom_right",
+                                  "position": [
+                                    -560.0,
+                                    -150.0,
+                                    -110.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 84
+                                    },
+                                    {
+                                      "units": 84
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_m",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    -30.0,
+                                    -1450.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-7",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom_right",
+                                  "position": [
+                                    -300.0,
+                                    -380.0,
+                                    -70.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 38
+                                    },
+                                    {
+                                      "units": 38
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    20.0,
+                                    -1200.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-8",
+                                "name": "",
+                                "place": {
+                                  "anchor": "bottom_right",
+                                  "position": [
+                                    -120.0,
+                                    -240.0,
+                                    -150.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 70
+                                    },
+                                    {
+                                      "units": 70
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_m",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    -26.0,
+                                    -1550.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "bubble-9",
+                                "name": "",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    -60.0,
+                                    330.0,
+                                    -40.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 34
+                                    },
+                                    {
+                                      "units": 34
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.95,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    16.0,
+                                    -1100.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "id": "deck",
+                          "name": "Deck",
+                          "place": {
+                            "anchor": "left",
+                            "position": [
+                              36.0,
+                              6.0,
+                              0.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 0.3
+                              },
+                              {
+                                "stage": 0.885
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "group",
+                            "items": [
+                              {
+                                "id": "deck-frame",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    -4.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1.083
+                                    },
+                                    {
+                                      "stage": 1.067
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "glass_deck",
+                                  "fit": "stretch"
+                                },
+                                "state": "app.theme",
+                                "cases": [
+                                  {
+                                    "when": "dark",
+                                    "visible": true,
+                                    "opacity": 1.0,
+                                    "asset": "glass_deck_night"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "cover-box",
+                                "name": "Cover",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    0.0,
+                                    14.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1
+                                    },
+                                    {
+                                      "stage": 0.52
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "group",
+                                  "items": [
+                                    {
+                                      "id": "cover-shadow",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          10.0,
+                                          -2.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.86
+                                          },
+                                          {
+                                            "stage": 1.0
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "image",
+                                        "asset": "shadow",
+                                        "fit": "stretch"
+                                      }
+                                    },
+                                    {
+                                      "id": "cover",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.74
+                                          },
+                                          {
+                                            "stage": 0.86
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "grid",
+                                        "dock": {
+                                          "version": 1,
+                                          "center": {
+                                            "panel_name": "StackPanel",
+                                            "children": [
+                                              {
+                                                "panel_name": "TabPanel",
+                                                "children": [
+                                                  {
+                                                    "panel_name": "cover art",
+                                                    "children": [],
+                                                    "info": {
+                                                      "panel": {
+                                                        "theme": {
+                                                          "rounding": 14.0,
+                                                          "surface_opacity": 0.0
+                                                        },
+                                                        "source": "playing",
+                                                        "align": "center",
+                                                        "stretch": true
+                                                      }
+                                                    }
+                                                  }
+                                                ],
+                                                "info": {
+                                                  "tabs": {
+                                                    "active_index": 0
+                                                  }
+                                                }
+                                              }
+                                            ],
+                                            "info": {
+                                              "stack": {
+                                                "sizes": [],
+                                                "axis": 1
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "id": "cover-gloss",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          2.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.74
+                                          },
+                                          {
+                                            "stage": 0.86
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "image",
+                                        "asset": "cover_gloss",
+                                        "fit": "stretch"
+                                      }
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "info",
+                                "name": "Now playing",
+                                "place": {
+                                  "anchor": "bottom",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1
+                                    },
+                                    {
+                                      "stage": 0.48
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "group",
+                                  "items": [
+                                    {
+                                      "id": "lines",
+                                      "name": "Lines",
+                                      "place": {
+                                        "anchor": "top",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 1
+                                          },
+                                          {
+                                            "stage": 0.45
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "group",
+                                        "items": [
+                                          {
+                                            "id": "title",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                -34.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.92
+                                                },
+                                                {
+                                                  "units": 38
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "text",
+                                              "text": "%title%",
+                                              "font": null,
+                                              "size": 26,
+                                              "color": "text_bright",
+                                              "align": "center"
+                                            }
+                                          },
+                                          {
+                                            "id": "artist",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                2.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.92
+                                                },
+                                                {
+                                                  "units": 28
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "text",
+                                              "text": "%artist%",
+                                              "font": null,
+                                              "size": 19,
+                                              "color": "text",
+                                              "align": "center"
+                                            }
+                                          },
+                                          {
+                                            "id": "album",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                30.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.92
+                                                },
+                                                {
+                                                  "units": 24
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "text",
+                                              "text": "%album% - %year%",
+                                              "font": null,
+                                              "size": 15,
+                                              "color": "text_dim",
+                                              "align": "center"
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "id": "seek",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "bottom",
+                                        "position": [
+                                          0.0,
+                                          -150.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.9
+                                          },
+                                          {
+                                            "units": 30
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "grid",
+                                        "dock": {
+                                          "version": 1,
+                                          "center": {
+                                            "panel_name": "StackPanel",
+                                            "children": [
+                                              {
+                                                "panel_name": "TabPanel",
+                                                "children": [
+                                                  {
+                                                    "panel_name": "seek",
+                                                    "children": [],
+                                                    "info": {
+                                                      "panel": {
+                                                        "theme": {
+                                                          "surface_opacity": 0.0
+                                                        },
+                                                        "show_total": false,
+                                                        "thickness": 6.0,
+                                                        "rounding": 6.0,
+                                                        "playhead_max": 16.0,
+                                                        "items": [
+                                                          "elapsed",
+                                                          "strip",
+                                                          "ending"
+                                                        ]
+                                                      }
+                                                    }
+                                                  }
+                                                ],
+                                                "info": {
+                                                  "tabs": {
+                                                    "active_index": 0
+                                                  }
+                                                }
+                                              }
+                                            ],
+                                            "info": {
+                                              "stack": {
+                                                "sizes": [],
+                                                "axis": 1
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "id": "buttons",
+                                      "name": "Buttons",
+                                      "place": {
+                                        "anchor": "bottom",
+                                        "position": [
+                                          0.0,
+                                          -50.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.9
+                                          },
+                                          {
+                                            "units": 92
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "group",
+                                        "items": [
+                                          {
+                                            "id": "shuffle",
+                                            "name": "Shuffle",
+                                            "place": {
+                                              "anchor": "left",
+                                              "position": [
+                                                4.0,
+                                                4.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "units": 44
+                                                },
+                                                {
+                                                  "units": 44
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "shuffle-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_clear",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.shuffle_on",
+                                                  "cases": [
+                                                    {
+                                                      "when": "on",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "id": "shuffle-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_shuffle",
+                                                    "fit": "contain"
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "action": "toggle_shuffle"
+                                          },
+                                          {
+                                            "id": "previous",
+                                            "name": "Previous",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                -72.0,
+                                                2.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "units": 54
+                                                },
+                                                {
+                                                  "units": 54
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "previous-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_aqua",
+                                                    "fit": "contain"
+                                                  }
+                                                },
+                                                {
+                                                  "id": "previous-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_prev",
+                                                    "fit": "contain"
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "action": "previous_track"
+                                          },
+                                          {
+                                            "id": "play",
+                                            "name": "Play",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "units": 84
+                                                },
+                                                {
+                                                  "units": 84
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "play-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_aqua",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.playback",
+                                                  "cases": [
+                                                    {
+                                                      "when": "playing",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "id": "play-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_play",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.playback",
+                                                  "cases": [
+                                                    {
+                                                      "when": "playing",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "glyph_pause"
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "action": "toggle_playback"
+                                          },
+                                          {
+                                            "id": "next",
+                                            "name": "Next",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                72.0,
+                                                2.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "units": 54
+                                                },
+                                                {
+                                                  "units": 54
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "next-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_aqua",
+                                                    "fit": "contain"
+                                                  }
+                                                },
+                                                {
+                                                  "id": "next-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_next",
+                                                    "fit": "contain"
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "action": "next_track"
+                                          },
+                                          {
+                                            "id": "repeat",
+                                            "name": "Repeat",
+                                            "place": {
+                                              "anchor": "right",
+                                              "position": [
+                                                -4.0,
+                                                4.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "units": 44
+                                                },
+                                                {
+                                                  "units": 44
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "repeat-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_clear",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.repeat",
+                                                  "cases": [
+                                                    {
+                                                      "when": "all",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green"
+                                                    },
+                                                    {
+                                                      "when": "one",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "id": "repeat-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_repeat",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.repeat",
+                                                  "cases": [
+                                                    {
+                                                      "when": "one",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "glyph_repeat1"
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "action": "cycle_loop"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "id": "volume",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "bottom",
+                                        "position": [
+                                          0.0,
+                                          -12.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.8
+                                          },
+                                          {
+                                            "units": 28
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "grid",
+                                        "dock": {
+                                          "version": 1,
+                                          "center": {
+                                            "panel_name": "StackPanel",
+                                            "children": [
+                                              {
+                                                "panel_name": "TabPanel",
+                                                "children": [
+                                                  {
+                                                    "panel_name": "volume",
+                                                    "children": [],
+                                                    "info": {
+                                                      "panel": {
+                                                        "theme": {
+                                                          "surface_opacity": 0.0
+                                                        },
+                                                        "align": "center",
+                                                        "stretch": true,
+                                                        "items": [
+                                                          "icon",
+                                                          "slider",
+                                                          "percent"
+                                                        ]
+                                                      }
+                                                    }
+                                                  }
+                                                ],
+                                                "info": {
+                                                  "tabs": {
+                                                    "active_index": 0
+                                                  }
+                                                }
+                                              }
+                                            ],
+                                            "info": {
+                                              "stack": {
+                                                "sizes": [],
+                                                "axis": 1
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "droplet",
+                                "name": "Paused drop",
+                                "place": {
+                                  "anchor": "top_right",
+                                  "position": [
+                                    -26.0,
+                                    30.0,
+                                    4.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 30
+                                    },
+                                    {
+                                      "units": 40
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.9,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "droplet",
+                                  "fit": "contain"
+                                },
+                                "state": "player.playback",
+                                "cases": [
+                                  {
+                                    "when": "playing",
+                                    "visible": false,
+                                    "opacity": 1.0
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "id": "sheet",
+                          "name": "Sheet",
+                          "place": {
+                            "anchor": "right",
+                            "position": [
+                              -36.0,
+                              6.0,
+                              0.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 0.6
+                              },
+                              {
+                                "stage": 0.885
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "group",
+                            "items": [
+                              {
+                                "id": "shard",
+                                "name": "Glass shard",
+                                "place": {
+                                  "anchor": "top_left",
+                                  "position": [
+                                    -90.0,
+                                    -50.0,
+                                    -40.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 0.34
+                                    },
+                                    {
+                                      "stage": 0.34
+                                    }
+                                  ],
+                                  "rotation": [
+                                    10.0,
+                                    -24.0,
+                                    -7.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.75,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "glass_shard",
+                                  "fit": "stretch"
+                                },
+                                "sway": {
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    5.0,
+                                    0.0
+                                  ]
+                                }
+                              },
+                              {
+                                "id": "sheet-frame",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    -4.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1.076
+                                    },
+                                    {
+                                      "stage": 1.067
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "glass_sheet",
+                                  "fit": "stretch"
+                                },
+                                "state": "app.theme",
+                                "cases": [
+                                  {
+                                    "when": "dark",
+                                    "visible": true,
+                                    "opacity": 1.0,
+                                    "asset": "glass_sheet_night"
+                                  }
+                                ]
+                              },
+                              {
+                                "id": "shimmer",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    -3.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1
+                                    },
+                                    {
+                                      "stage": 1
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "shader",
+                                  "shader": {
+                                    "enabled": true,
+                                    "source": "",
+                                    "name": "Aero Shimmer",
+                                    "path": null,
+                                    "routes": [
+                                      {
+                                        "enabled": true,
+                                        "signal": 3,
+                                        "target": "slot0",
+                                        "from": 0.0,
+                                        "to": 1.0
+                                      },
+                                      {
+                                        "enabled": true,
+                                        "signal": 1,
+                                        "target": "slot1",
+                                        "from": 0.0,
+                                        "to": 1.0
+                                      }
+                                    ],
+                                    "run_when_idle": false
+                                  }
+                                }
+                              },
+                              {
+                                "id": "browser",
+                                "name": "Library",
+                                "place": {
+                                  "anchor": "top",
+                                  "position": [
+                                    0.0,
+                                    16.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 0.955
+                                    },
+                                    {
+                                      "stage": 0.6
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "grid",
+                                  "dock": {
+                                    "version": 1,
+                                    "center": {
+                                      "panel_name": "StackPanel",
+                                      "children": [
+                                        {
+                                          "panel_name": "TabPanel",
+                                          "children": [
+                                            {
+                                              "panel_name": "library",
+                                              "children": [],
+                                              "info": {
+                                                "panel": {
+                                                  "theme": {
+                                                    "surface_opacity": 0.0
+                                                  },
+                                                  "density": "compact",
+                                                  "headers": "expanded",
+                                                  "group_by": "album",
+                                                  "row_height": 26.0,
+                                                  "follow_playing": true,
+                                                  "smooth_follow": true,
+                                                  "art_rounding": 8.0,
+                                                  "header_art": true,
+                                                  "header_year": true,
+                                                  "header_details": true
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "panel_name": "queue",
+                                              "children": [],
+                                              "info": {
+                                                "panel": {
+                                                  "theme": {
+                                                    "surface_opacity": 0.0
+                                                  },
+                                                  "headers": "off",
+                                                  "columns": [
+                                                    "number",
+                                                    "cover",
+                                                    "name",
+                                                    "artist",
+                                                    "duration"
+                                                  ]
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "panel_name": "playlists",
+                                              "children": [],
+                                              "info": {
+                                                "panel": {
+                                                  "theme": {
+                                                    "surface_opacity": 0.0
+                                                  },
+                                                  "headers": "off",
+                                                  "columns": [
+                                                    "cover",
+                                                    "number",
+                                                    "name",
+                                                    "artist",
+                                                    "rating",
+                                                    "favourite"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ],
+                                          "info": {
+                                            "tabs": {
+                                              "active_index": 0
+                                            }
+                                          }
+                                        }
+                                      ],
+                                      "info": {
+                                        "stack": {
+                                          "sizes": [],
+                                          "axis": 1
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              },
+                              {
+                                "id": "lower",
+                                "name": "Lower",
+                                "place": {
+                                  "anchor": "bottom",
+                                  "position": [
+                                    0.0,
+                                    -18.0,
+                                    0.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 0.955
+                                    },
+                                    {
+                                      "stage": 0.32
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "group",
+                                  "items": [
+                                    {
+                                      "id": "well",
+                                      "name": "Spectrum",
+                                      "place": {
+                                        "anchor": "left",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.62
+                                          },
+                                          {
+                                            "stage": 1
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "group",
+                                        "items": [
+                                          {
+                                            "id": "well-frame",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1
+                                                },
+                                                {
+                                                  "stage": 1
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "image",
+                                              "asset": "glass_well",
+                                              "fit": "stretch"
+                                            },
+                                            "state": "app.theme",
+                                            "cases": [
+                                              {
+                                                "when": "dark",
+                                                "visible": true,
+                                                "opacity": 1.0,
+                                                "asset": "glass_well_night"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "id": "spectrum",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.95
+                                                },
+                                                {
+                                                  "stage": 0.84
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "grid",
+                                              "dock": {
+                                                "version": 1,
+                                                "center": {
+                                                  "panel_name": "StackPanel",
+                                                  "children": [
+                                                    {
+                                                      "panel_name": "TabPanel",
+                                                      "children": [
+                                                        {
+                                                          "panel_name": "spectrum",
+                                                          "children": [],
+                                                          "info": {
+                                                            "panel": {
+                                                              "theme": {
+                                                                "surface_opacity": 0.0
+                                                              },
+                                                              "style": "bars",
+                                                              "orientation": "bottom",
+                                                              "symmetry": "none",
+                                                              "freq_lo": 30.0,
+                                                              "freq_hi": 16000.0,
+                                                              "bar_width": 6.0,
+                                                              "bar_gap": 3.0,
+                                                              "fft_size": 8192,
+                                                              "gradient": "custom",
+                                                              "gradient_lo": "#2fd06a",
+                                                              "gradient_hi": "#2fb8ff",
+                                                              "gradient_curve": 2.0,
+                                                              "caps": true,
+                                                              "freeze": false,
+                                                              "cap_gravity": 0.05,
+                                                              "labels": false
+                                                            }
+                                                          }
+                                                        }
+                                                      ],
+                                                      "info": {
+                                                        "tabs": {
+                                                          "active_index": 0
+                                                        }
+                                                      }
+                                                    }
+                                                  ],
+                                                  "info": {
+                                                    "stack": {
+                                                      "sizes": [],
+                                                      "axis": 1
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "id": "screen",
+                                      "name": "Screen",
+                                      "place": {
+                                        "anchor": "right",
+                                        "position": [
+                                          -6.0,
+                                          0.0,
+                                          24.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.35
+                                          },
+                                          {
+                                            "stage": 0.96
+                                          }
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          -12.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "group",
+                                        "items": [
+                                          {
+                                            "id": "screen-frame",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1.07
+                                                },
+                                                {
+                                                  "stage": 1.1
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 0.8,
+                                            "content": {
+                                              "kind": "image",
+                                              "asset": "glass_screen",
+                                              "fit": "stretch"
+                                            },
+                                            "state": "app.theme",
+                                            "cases": [
+                                              {
+                                                "when": "dark",
+                                                "visible": true,
+                                                "opacity": 1.0,
+                                                "asset": "glass_screen_night"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "id": "renderer",
+                                            "name": "Render target",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                1.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.93
+                                                },
+                                                {
+                                                  "stage": 0.88
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "target",
+                                              "owner": "",
+                                              "width": 640,
+                                              "height": 360,
+                                              "rests": true,
+                                              "config": null
+                                            }
+                                          },
+                                          {
+                                            "id": "screen-gloss",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                2.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.95
+                                                },
+                                                {
+                                                  "stage": 0.92
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 0.55,
+                                            "content": {
+                                              "kind": "image",
+                                              "asset": "cover_gloss",
+                                              "fit": "stretch"
+                                            },
+                                            "state": "app.theme",
+                                            "cases": [
+                                              {
+                                                "when": "dark",
+                                                "visible": true,
+                                                "opacity": 0.4
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      },
+                                      "sway": {
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          4.0,
+                                          0.0
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "id": "handle",
+                          "name": "Drag handle",
+                          "place": {
+                            "anchor": "top",
+                            "position": [
+                              0.0,
+                              6.0,
+                              0.0
+                            ],
+                            "size": [
+                              {
+                                "stage": 0.3
+                              },
+                              {
+                                "units": 30
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "grid",
+                            "dock": {
+                              "version": 1,
+                              "center": {
+                                "panel_name": "StackPanel",
+                                "children": [
+                                  {
+                                    "panel_name": "TabPanel",
+                                    "children": [
+                                      {
+                                        "panel_name": "drag anchor",
+                                        "children": [],
+                                        "info": {
+                                          "panel": {
+                                            "theme": {
+                                              "surface_opacity": 0.0
+                                            },
+                                            "align": "center"
+                                          }
+                                        }
+                                      }
+                                    ],
+                                    "info": {
+                                      "tabs": {
+                                        "active_index": 0
+                                      }
+                                    }
+                                  }
+                                ],
+                                "info": {
+                                  "stack": {
+                                    "sizes": [],
+                                    "axis": 1
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "id": "window",
+                          "name": "Window controls",
+                          "place": {
+                            "anchor": "top_right",
+                            "position": [
+                              -12.0,
+                              8.0,
+                              0.0
+                            ],
+                            "size": [
+                              {
+                                "units": 112
+                              },
+                              {
+                                "units": 28
+                              }
+                            ],
+                            "rotation": [
+                              0.0,
+                              0.0,
+                              0.0
+                            ],
+                            "scale": 1.0
+                          },
+                          "visible": true,
+                          "locked": false,
+                          "opacity": 1.0,
+                          "content": {
+                            "kind": "grid",
+                            "dock": {
+                              "version": 1,
+                              "center": {
+                                "panel_name": "StackPanel",
+                                "children": [
+                                  {
+                                    "panel_name": "TabPanel",
+                                    "children": [
+                                      {
+                                        "panel_name": "window controls",
+                                        "children": [],
+                                        "info": {
+                                          "panel": {
+                                            "theme": {
+                                              "surface_opacity": 0.0
+                                            },
+                                            "anchor": true,
+                                            "style": "icons",
+                                            "items": [
+                                              "minimize",
+                                              "maximize",
+                                              "close"
+                                            ],
+                                            "pin_mini_only": false,
+                                            "align": "right"
+                                          }
+                                        }
+                                      }
+                                    ],
+                                    "info": {
+                                      "tabs": {
+                                        "active_index": 0
+                                      }
+                                    }
+                                  }
+                                ],
+                                "info": {
+                                  "stack": {
+                                    "sizes": [],
+                                    "axis": 1
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ],
+                      "routes": [
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "sky-box.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "sky-box.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 5,
+                          "target": "flare.opacity",
+                          "from": 1.0,
+                          "to": 1.65
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 5,
+                          "target": "flare.scale",
+                          "from": 1.0,
+                          "to": 1.18
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "aurora-a.opacity",
+                          "from": 1.0,
+                          "to": 1.9
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "aurora-a.scale",
+                          "from": 1.0,
+                          "to": 1.07
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "aurora-a.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "aurora-b.opacity",
+                          "from": 1.0,
+                          "to": 1.9
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "aurora-b.scale",
+                          "from": 1.0,
+                          "to": 1.07
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "aurora-b.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 3,
+                          "target": "bokeh-1.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 3,
+                          "target": "bokeh-2.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 3,
+                          "target": "bokeh-3.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 3,
+                          "target": "bokeh-4.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 3,
+                          "target": "bokeh-5.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 5,
+                          "target": "ghost-1.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 5,
+                          "target": "ghost-2.opacity",
+                          "from": 1.0,
+                          "to": 1.8
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 6,
+                          "target": "bubble-1.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-1.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-1.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 7,
+                          "target": "bubble-2.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-2.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-2.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 8,
+                          "target": "bubble-3.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-3.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-3.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 6,
+                          "target": "bubble-4.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-4.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-4.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 7,
+                          "target": "bubble-5.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-5.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-5.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 8,
+                          "target": "bubble-6.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-6.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-6.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 6,
+                          "target": "bubble-7.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-7.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-7.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 7,
+                          "target": "bubble-8.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-8.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-8.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 8,
+                          "target": "bubble-9.y",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "bubble-9.x",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 1,
+                          "target": "bubble-9.scale",
+                          "from": 1.0,
+                          "to": 1.16
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 5,
+                          "target": "play.scale",
+                          "from": 1.0,
+                          "to": 1.06
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "screen.ry",
+                          "from": 0.0,
+                          "to": 1.0
+                        },
+                        {
+                          "enabled": true,
+                          "signal": 2,
+                          "target": "shard.ry",
+                          "from": 0.0,
+                          "to": 1.0
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "info": {
+                "tabs": {
+                  "active_index": 0
+                }
+              }
+            }
+          ],
+          "info": {
+            "stack": {
+              "sizes": [],
+              "axis": 1
+            }
+          }
+        }
+      }
+    }
+  ],
+  "primary_layout": "Aero",
+  "palette_dark": {
+    "accent": "#45d4ff",
+    "accent_hover": "#7be2ff",
+    "bg_control": "#12304f",
+    "bg_control_active": "#1b416a",
+    "bg_control_hover": "#173a5f",
+    "bg_elevated": "#0f2a47",
+    "bg_header": "#0d2440",
+    "bg_input": "#081a30",
+    "bg_menu": "#0e2643",
+    "bg_menu_hover": "#1a3d63",
+    "bg_menubar": "#0a1f38",
+    "bg_panel": "#0b2139",
+    "bg_root": "#071a30",
+    "bg_toolbar": "#0d2440",
+    "border": "#2b5b85",
+    "border_light": "#3b6d98",
+    "gridline": "#1d4469",
+    "highlight": "#1f4e7a",
+    "text": "#e4f4ff",
+    "text_bright": "#ffffff",
+    "text_dim": "#a7cbe6",
+    "text_faint": "#6c93b4",
+    "text_muted": "#86acca",
+    "text_on_accent": "#03203a",
+    "text_secondary": "#c6e2f6"
+  },
+  "palette_light": {
+    "accent": "#0f9fd8",
+    "accent_hover": "#0b86b8",
+    "bg_control": "#e6f4fc",
+    "bg_control_active": "#cfe8f7",
+    "bg_control_hover": "#d9eefa",
+    "bg_elevated": "#f2faff",
+    "bg_header": "#e8f5fd",
+    "bg_input": "#ffffff",
+    "bg_menu": "#f4fbff",
+    "bg_menu_hover": "#d6eefb",
+    "bg_menubar": "#eaf6fd",
+    "bg_panel": "#eef8fe",
+    "bg_root": "#dff1fb",
+    "bg_toolbar": "#e8f5fd",
+    "border": "#9cc8e4",
+    "border_light": "#b9daee",
+    "gridline": "#c4e0f1",
+    "highlight": "#c9ecff",
+    "text": "#0d2c48",
+    "text_bright": "#04182c",
+    "text_dim": "#36617f",
+    "text_faint": "#6f94b0",
+    "text_muted": "#4d7391",
+    "text_on_accent": "#ffffff",
+    "text_secondary": "#1d4466"
+  },
+  "signals": [
+    {
+      "id": 1,
+      "name": "",
+      "source": {
+        "kind": "band",
+        "lo": 30.0,
+        "hi": 150.0
+      },
+      "smooth": 0.45,
+      "threshold": 0.1,
+      "reset_on_track": false
+    },
+    {
+      "id": 2,
+      "name": "",
+      "source": {
+        "kind": "band",
+        "lo": 250.0,
+        "hi": 2000.0
+      },
+      "smooth": 0.7,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 3,
+      "name": "",
+      "source": {
+        "kind": "band",
+        "lo": 4000.0,
+        "hi": 12000.0
+      },
+      "smooth": 0.45,
+      "threshold": 0.05,
+      "reset_on_track": false
+    },
+    {
+      "id": 4,
+      "name": "",
+      "source": {
+        "kind": "level"
+      },
+      "smooth": 0.6,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 5,
+      "name": "",
+      "source": {
+        "kind": "beat",
+        "lo": 40.0,
+        "hi": 160.0
+      },
+      "smooth": 0.55,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 6,
+      "name": "",
+      "source": {
+        "kind": "aggregate",
+        "of": 4,
+        "rate": 0.05
+      },
+      "smooth": 0.0,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 7,
+      "name": "",
+      "source": {
+        "kind": "aggregate",
+        "of": 4,
+        "rate": 0.07
+      },
+      "smooth": 0.0,
+      "threshold": 0.0,
+      "reset_on_track": false
+    },
+    {
+      "id": 8,
+      "name": "",
+      "source": {
+        "kind": "aggregate",
+        "of": 4,
+        "rate": 0.035
+      },
+      "smooth": 0.0,
+      "threshold": 0.0,
+      "reset_on_track": false
+    }
+  ],
+  "shaders": [
+    {
+      "name": "Aero Rays",
+      "source": "// Aero: soft rays fanning down from the sun at the top of the sky, turning\n// slowly while music plays and brighter with the mids. At night they thin\n// to a cool haze. Pure uniforms, so it stays on the cheap in-scene path.\n//\n// @overlay\n// @slot 0: mids\n// @slot 1: level\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let mids = params.signals[0].x;\n    let level = params.signals[0].y;\n    let light = params.user_meta[1].y;\n\n    let aspect = max(params.resolution.x, 1.0) / max(params.resolution.y, 1.0);\n    let d = (uv - vec2<f32>(0.33, 0.03)) * vec2<f32>(aspect, 1.0);\n    let r = length(d);\n    let a = atan2(d.x, d.y);\n    let t = params.time * 0.02;\n\n    // Two fans at different counts beating against each other, so the rays\n    // break up instead of reading as a pinwheel.\n    var rays = 0.5 + 0.5 * sin(a * 11.0 + t * 6.2831);\n    rays = rays * (0.55 + 0.45 * sin(a * 27.0 - t * 9.0 + 1.3));\n    rays = rays * rays * rays;\n\n    let fall = exp(-r * 1.4) * smoothstep(0.02, 0.12, r);\n    let strength = rays * fall * (0.07 + 0.16 * mids + 0.06 * level) * mix(0.3, 1.0, light);\n    let tint = mix(vec3<f32>(0.55, 0.85, 1.0), vec3<f32>(1.0, 0.98, 0.9), light);\n    return vec4<f32>(tint * strength, 0.0);\n}\n"
+    },
+    {
+      "name": "Aero Shimmer",
+      "source": "// Aero: caustic light drifting across a glass sheet, the web water throws\n// on a pane. The highs sharpen it and the bass brightens it. Added light\n// only, so it never darkens what's on the glass.\n//\n// @overlay\n// @slot 0: highs\n// @slot 1: bass\n\nfn fs_user(uv: vec2<f32>) -> vec4<f32> {\n    let highs = params.signals[0].x;\n    let bass = params.signals[0].y;\n    let light = params.user_meta[1].y;\n\n    let aspect = max(params.resolution.x, 1.0) / max(params.resolution.y, 1.0);\n    let p = uv * vec2<f32>(aspect, 1.0) * 4.0;\n    let t = params.time * 0.12;\n\n    let warp = vec2<f32>(sin(p.y * 1.3 + t), cos(p.x * 1.1 - t * 0.8)) * 0.7;\n    let q = p + warp;\n    let wave = sin(q.x * 2.1 + t) * sin(q.y * 1.9 - t * 1.3);\n    let web = pow(1.0 - abs(wave), 10.0 + 10.0 * highs);\n\n    // Strongest near the top, where the gloss already says light comes in.\n    let fade = (1.0 - smoothstep(0.0, 0.9, uv.y)) * smoothstep(0.0, 0.04, uv.x)\n        * smoothstep(0.0, 0.04, 1.0 - uv.x) * smoothstep(0.0, 0.03, uv.y);\n    let strength = web * fade * (0.035 + 0.07 * bass);\n    let tint = mix(vec3<f32>(0.45, 0.9, 1.0), vec3<f32>(1.0, 1.0, 1.0), light);\n    return vec4<f32>(tint * strength, 0.0);\n}\n"
+    }
+  ],
+  "assets": [
+    {
+      "id": "aurora_a",
+      "file": "aurora_a.png",
+      "kind": "image",
+      "sha256": "2b33a104321bdb29d64e15e5e9b011a0874775c21dcdc6ecffdd33a544222b49",
+      "bytes": 75356
+    },
+    {
+      "id": "aurora_b",
+      "file": "aurora_b.png",
+      "kind": "image",
+      "sha256": "f390da3fafdebf1a63d240f072ea4bde4678d05d752a086d928e267800f6ceba",
+      "bytes": 70617
+    },
+    {
+      "id": "bokeh",
+      "file": "bokeh.png",
+      "kind": "image",
+      "sha256": "53f4275ddff5c2a96e423b7234c0bcc2dd5819abe8a0940eb5d4529cd069afba",
+      "bytes": 3276
+    },
+    {
+      "id": "bokeh_aqua",
+      "file": "bokeh_aqua.png",
+      "kind": "image",
+      "sha256": "13a01278c4fd792c20427cd1f758e11367ad318387c45294e9344601f5ac1f5d",
+      "bytes": 2967
+    },
+    {
+      "id": "bubble_l",
+      "file": "bubble_l.png",
+      "kind": "image",
+      "sha256": "d6cde8e6f46bb0b9692efb7f40ef111e8af4fbb1cc74adfa52972188e201921c",
+      "bytes": 48939
+    },
+    {
+      "id": "bubble_m",
+      "file": "bubble_m.png",
+      "kind": "image",
+      "sha256": "10f924dd885e19d0d7d020275e79852791a2248a82d5e7346c2c5af50a46fbae",
+      "bytes": 26186
+    },
+    {
+      "id": "bubble_s",
+      "file": "bubble_s.png",
+      "kind": "image",
+      "sha256": "c1bdc06d475481cc2ea47afd2e9c7a702bdbcc20fffa12c7912f933198f32636",
+      "bytes": 13227
+    },
+    {
+      "id": "cover_gloss",
+      "file": "cover_gloss.png",
+      "kind": "image",
+      "sha256": "62f5bdb94d07bf04a7451a0365254152157e2b302b7106d12a8961813cc71fc0",
+      "bytes": 8763
+    },
+    {
+      "id": "droplet",
+      "file": "droplet.png",
+      "kind": "image",
+      "sha256": "826fd7853d1c6d6fc0482fe9938419c3ce9362d8f5bde44913a3a12fb8280aa9",
+      "bytes": 9994
+    },
+    {
+      "id": "flare",
+      "file": "flare.png",
+      "kind": "image",
+      "sha256": "d076ef9a76e2b8b14ac532d8a7eff48eddd079fe9a4e4feb89daea997d545c3b",
+      "bytes": 104820
+    },
+    {
+      "id": "gel_round_aqua",
+      "file": "gel_round_aqua.png",
+      "kind": "image",
+      "sha256": "7c0b0da94f19611bc1068a47b539a26371c4d038847aaf4d522089fcaa2adf64",
+      "bytes": 17114
+    },
+    {
+      "id": "gel_round_clear",
+      "file": "gel_round_clear.png",
+      "kind": "image",
+      "sha256": "bca334a6bdc8dc996c1ca56c41ab3929010955e0a853d660b0c46cdf3beaa2d5",
+      "bytes": 16283
+    },
+    {
+      "id": "gel_round_green",
+      "file": "gel_round_green.png",
+      "kind": "image",
+      "sha256": "d6bac8e20a768608e45655b3dd3e479437d31e2c549b9a4798e6778c521fb0ca",
+      "bytes": 17891
+    },
+    {
+      "id": "ghost",
+      "file": "ghost.png",
+      "kind": "image",
+      "sha256": "dc1b7bf2ff172f88d2558b2def0c3b0a1f1855e612c58f2f0606979518b5e43f",
+      "bytes": 2521
+    },
+    {
+      "id": "glass_deck",
+      "file": "glass_deck.png",
+      "kind": "image",
+      "sha256": "55673385b07a28f5fe3af4c2730caff6aa6c06488abf868e09a3a0bcfb0b73dd",
+      "bytes": 28831
+    },
+    {
+      "id": "glass_deck_night",
+      "file": "glass_deck_night.png",
+      "kind": "image",
+      "sha256": "185dbb4d6e83078af81eaa3d5bb322ea8a35be913f865962e5c55ac33abc7823",
+      "bytes": 37765
+    },
+    {
+      "id": "glass_screen",
+      "file": "glass_screen.png",
+      "kind": "image",
+      "sha256": "32f00f97b49c0ac4447b1e2229f2123b88f895d1f1281f1907ca127e84e690c1",
+      "bytes": 12599
+    },
+    {
+      "id": "glass_screen_night",
+      "file": "glass_screen_night.png",
+      "kind": "image",
+      "sha256": "f58b158555190c9e09b64afe781cac0edfb2a04a487de5bc6313ea99737d10af",
+      "bytes": 16442
+    },
+    {
+      "id": "glass_shard",
+      "file": "glass_shard.png",
+      "kind": "image",
+      "sha256": "904d2b44507df2d94e1eccbed08c74640b00bffab2215ef9413d8cecf7ec03f9",
+      "bytes": 12814
+    },
+    {
+      "id": "glass_sheet",
+      "file": "glass_sheet.png",
+      "kind": "image",
+      "sha256": "1ea8e36f54961ca697653dcdfa8a38ec72fb2a392c1f3eb450d5f993a66c4762",
+      "bytes": 35790
+    },
+    {
+      "id": "glass_sheet_night",
+      "file": "glass_sheet_night.png",
+      "kind": "image",
+      "sha256": "086fff16ac2482440a145590cf974033c9bf9ecd8d860352dc09af11c3a67af8",
+      "bytes": 47052
+    },
+    {
+      "id": "glass_well",
+      "file": "glass_well.png",
+      "kind": "image",
+      "sha256": "fae04bce79643756eee6346eb2175558726704d1aeea23e0b9030ecf7acef9bf",
+      "bytes": 10620
+    },
+    {
+      "id": "glass_well_night",
+      "file": "glass_well_night.png",
+      "kind": "image",
+      "sha256": "b31767274ac4c7273954b73bf74fdb54701af7d7205f601dc6f10553e7ca04ec",
+      "bytes": 13408
+    },
+    {
+      "id": "glyph_next",
+      "file": "glyph_next.png",
+      "kind": "image",
+      "sha256": "e17732d99f78597fad922c156478d63315a8d3ccdeff71b928d1ca68fcd4416b",
+      "bytes": 2734
+    },
+    {
+      "id": "glyph_pause",
+      "file": "glyph_pause.png",
+      "kind": "image",
+      "sha256": "46f7030968c306fa6bd54e203cd7ca06b802e7db771dae0ddcdb7705ee917c38",
+      "bytes": 1445
+    },
+    {
+      "id": "glyph_play",
+      "file": "glyph_play.png",
+      "kind": "image",
+      "sha256": "5fbaf7c0132b3d1c6bee8047b84e952b91c2b2b39ca24f72d1af196dac3d7119",
+      "bytes": 2012
+    },
+    {
+      "id": "glyph_prev",
+      "file": "glyph_prev.png",
+      "kind": "image",
+      "sha256": "32a362a7a4aeeb570659b22d155716cfba815070b80185cc80749613cc88333f",
+      "bytes": 2859
+    },
+    {
+      "id": "glyph_repeat",
+      "file": "glyph_repeat.png",
+      "kind": "image",
+      "sha256": "79204e88494b11822602dcead9d75597f90f80998868e2f1b4c8f155f327b290",
+      "bytes": 3636
+    },
+    {
+      "id": "glyph_repeat1",
+      "file": "glyph_repeat1.png",
+      "kind": "image",
+      "sha256": "390a3466453d0593b73bb6961fdb7cc47f00561233b23c68c47e1b986f55454c",
+      "bytes": 3642
+    },
+    {
+      "id": "glyph_shuffle",
+      "file": "glyph_shuffle.png",
+      "kind": "image",
+      "sha256": "4351f181e52783ff89d9a30988200879c1a669ed11dd9f10c59140426c183c60",
+      "bytes": 4104
+    },
+    {
+      "id": "hills_back",
+      "file": "hills_back.png",
+      "kind": "image",
+      "sha256": "8f341c19a7f0991f177003f56f1271065949db1b4ef649564e907e799d3380ec",
+      "bytes": 46847
+    },
+    {
+      "id": "hills_back_night",
+      "file": "hills_back_night.png",
+      "kind": "image",
+      "sha256": "a0b2e9dac4b271c251b09f5bf7560616bb28384da0c3435fff8234d87efce89c",
+      "bytes": 40591
+    },
+    {
+      "id": "hills_front",
+      "file": "hills_front.png",
+      "kind": "image",
+      "sha256": "6f695e3a07e7200cc46baca0f8ac3c9b05fa02826865f46bc6411b25102ef61c",
+      "bytes": 44077
+    },
+    {
+      "id": "hills_front_night",
+      "file": "hills_front_night.png",
+      "kind": "image",
+      "sha256": "304deca8b0c53970cc074068120af4109a3da57a2864b1e22f798fd187493670",
+      "bytes": 36627
+    },
+    {
+      "id": "shadow",
+      "file": "shadow.png",
+      "kind": "image",
+      "sha256": "e40d0d4d0d589d61a4c55e1be9d25a484076b467e829a1590a58a3e51e2526f4",
+      "bytes": 3788
+    },
+    {
+      "id": "sky_day",
+      "file": "sky_day.png",
+      "kind": "image",
+      "sha256": "de31c609127abfde3689c758a3c4a075b54d6d2f37ada252e7b6057807045bb3",
+      "bytes": 103753
+    },
+    {
+      "id": "sky_night",
+      "file": "sky_night.png",
+      "kind": "image",
+      "sha256": "59246c7124253d90409d9a1ed5294b3f6a984298edbacaf7c6cfe2d726bd0597",
+      "bytes": 87488
+    }
+  ],
+  "meta": {
+    "author": "zealsprince",
+    "description": "A sunny sky-blue morning drawn on one canvas: glass panels over clouds and green hills, gel buttons, bubbles that rise with the music, an aurora that breathes with the mids and a sun that flares on the beat. Dark mode turns it to night.",
+    "created": "2026-11-26",
+    "updated": "2026-11-26"
+  },
+  "appearance": {
+    "surface_opacity": 0.0,
+    "backdrop_strength": 1.0,
+    "frame": {
+      "margin": 0.0,
+      "padding": 2.0,
+      "rounding": 10.0,
+      "border": 0.0
+    },
+    "seams": false,
+    "keep_theme": true,
+    "art_theming": false,
+    "hide_menubar": true,
+    "os_decorations": false
+  }
+}

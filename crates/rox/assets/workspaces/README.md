@@ -16,6 +16,16 @@ workspace's name, and its `assets/` folder goes beside it as `<Name>/assets/`.
 Rebuild. Files that don't parse, or that come from a newer bundle format, are
 skipped.
 
+A look can also be written by a script. `Aero.json` comes from
+`scripts/workspaces/aero_workspace.py`, which lays its one canvas out from a
+compact description and fills the asset table from the files on disk, and
+every image in `Aero/assets/` is drawn by `scripts/workspaces/aero_assets.py`
+with nothing but the Python standard library. Edit the scripts rather than the
+JSON or the PNGs, then run the asset script before the workspace one:
+
+    python3 scripts/workspaces/aero_assets.py
+    python3 scripts/workspaces/aero_workspace.py
+
 A `.png` named like the bundle's file with a theme suffix (`Foobar.json` ->
 `Foobar_Dark.png` and `Foobar_Light.png`) becomes the preview picture on the
 welcome window's quick-start tiles, the side picked by the app's live theme.

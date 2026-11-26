@@ -1627,6 +1627,166 @@ mod tests {
         }
     }
 
+    /// A file out of step with its table entry fails the apply, so a look
+    /// regenerated without its JSON would ship broken.
+    #[test]
+    fn every_shipped_asset_matches_its_table() {
+        for (stem, bytes) in assets::shipped_workspaces() {
+            let bundle: WorkspaceBundle = serde_json::from_slice(&bytes).unwrap();
+            for entry in &bundle.assets {
+                shipped_asset(&stem, entry).unwrap_or_else(|err| panic!("{stem}: {err}"));
+            }
+        }
+    }
+
+    #[test]
+    fn every_shipped_bundle_has_both_previews() {
+        for (stem, _) in assets::shipped_workspaces() {
+            for (mode, side) in [
+                (palette::Mode::Dark, "dark"),
+                (palette::Mode::Light, "light"),
+            ] {
+                assert!(
+                    assets::workspace_preview(&stem, mode).is_some(),
+                    "{stem} has no {side} preview"
+                );
+            }
+        }
+    }
+
+    fn aero() -> (WorkspaceBundle, serde_json::Value) {
+        let (_, bytes) = assets::shipped_workspaces()
+            .into_iter()
+            .find(|(stem, _)| stem == "Aero")
+            .expect("Aero ships");
+        let bundle: WorkspaceBundle = serde_json::from_slice(&bytes).unwrap();
+        let canvas = aero_canvas(&bundle);
+        (bundle, canvas)
+    }
+
+    /// The one panel the window's dock holds, which has to be a canvas.
+    fn aero_canvas(bundle: &WorkspaceBundle) -> serde_json::Value {
+        assert_eq!(bundle.layouts.len(), 1);
+        let center = &bundle.layouts[0].dump["center"];
+        let groups = center["children"].as_array().expect("a stack");
+        assert_eq!(groups.len(), 1, "one tab group fills the window");
+        let panels = groups[0]["children"].as_array().expect("a tab group");
+        assert_eq!(panels.len(), 1, "the tab group holds one panel");
+        assert_eq!(panels[0]["panel_name"], crate::panels::canvas::PANEL_NAME);
+        panels[0]["info"]["panel"].clone()
+    }
+
+    #[test]
+    fn aero_is_one_canvas_and_every_item_is_a_kind_this_build_draws() {
+        let (_, canvas) = aero();
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas.clone()).unwrap();
+
+        // The item lists read leniently, so a typo would drop an item quietly.
+        fn count(items: &serde_json::Value) -> usize {
+            items.as_array().map_or(0, |items| {
+                items
+                    .iter()
+                    .map(|item| 1 + count(&item["content"]["items"]))
+                    .sum()
+            })
+        }
+        let mut parsed = 0;
+        state.walk(&mut |item, _| {
+            parsed += 1;
+            assert!(
+                !matches!(item.content, rox_canvas::Content::Unknown(_)),
+                "{} didn't parse",
+                item.id
+            );
+        });
+        assert_eq!(parsed, count(&canvas["items"]));
+    }
+
+    #[test]
+    fn aero_names_only_assets_it_carries_and_keeps_them_small() {
+        let (bundle, canvas) = aero();
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas).unwrap();
+
+        let carried: HashSet<&str> = bundle.assets.iter().map(|a| a.id.as_str()).collect();
+        state.walk(&mut |item, _| {
+            for asset in item.assets() {
+                assert!(carried.contains(asset), "{} names {asset}", item.id);
+            }
+        });
+
+        // In line with what the other looks weigh, and small enough to ship.
+        let mut total = 0;
+        for entry in &bundle.assets {
+            assert!(
+                entry.bytes <= 256 * 1024,
+                "{} is {} bytes",
+                entry.file,
+                entry.bytes
+            );
+            total += entry.bytes;
+        }
+        assert!(total <= 3 * 1024 * 1024, "Aero carries {total} bytes");
+    }
+
+    #[test]
+    fn aero_pools_a_beat_and_every_route_reads_the_pool() {
+        let (bundle, canvas) = aero();
+        let pooled: HashSet<u64> = bundle.signals.iter().map(|s| s.id).collect();
+
+        assert!(
+            bundle
+                .signals
+                .iter()
+                .any(|s| matches!(s.source, rox_viz::signal::Source::Beat { .. }))
+        );
+
+        let routes: Vec<rox_viz::signal::Route> =
+            serde_json::from_value(canvas["routes"].clone()).unwrap();
+        assert!(!routes.is_empty());
+        for route in &routes {
+            assert!(
+                pooled.contains(&route.signal),
+                "{} reads nothing",
+                route.target
+            );
+        }
+    }
+
+    #[test]
+    fn aero_weighs_under_every_warning_and_needs_nothing_installed() {
+        let (bundle, _) = aero();
+        let weight = crate::canvas::cost::heaviest(&bundle);
+
+        assert!(
+            crate::canvas::cost::warnings(&weight).is_empty(),
+            "{}",
+            crate::canvas::cost::counts(&weight)
+        );
+        assert!(bundle.requires.is_empty());
+
+        // Its render target is a place for one, naming no renderer, so the
+        // apply card has nothing to ask for.
+        let mut renderers = BTreeSet::new();
+        crate::canvas::target::named_renderers(&bundle.layouts[0].dump, &mut renderers);
+        assert!(renderers.is_empty(), "{renderers:?}");
+        assert_eq!(weight.cost.targets, 1);
+    }
+
+    /// Aero is the look the harness may apply, so it holds no panel that
+    /// fetches anything.
+    #[test]
+    fn aero_holds_no_panel_that_reaches_the_network() {
+        let (bundle, _) = aero();
+        let dump = bundle.layouts[0].dump.to_string();
+
+        for kind in ["biography", "artist grid", "metadata", "lyrics", "stations"] {
+            assert!(
+                !dump.contains(&format!("\"panel_name\":\"{kind}\"")),
+                "Aero holds a {kind} panel"
+            );
+        }
+    }
+
     #[test]
     fn shipped_trust_collects_every_shader_a_bundle_carries() {
         let bundle = WorkspaceBundle {

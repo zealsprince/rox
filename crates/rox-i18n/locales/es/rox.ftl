@@ -5049,7 +5049,7 @@ catalog-updates-chip-tip = Versiones más nuevas de lo instalado desde el catál
 canvas-look-hover = Al pasar el puntero
 canvas-look-pressed = Al pulsar
 canvas-look-preview = Ver este aspecto en el lienzo
-canvas-weight-animates = Rutas de tiempo: { $count }, así que este lienzo dibuja cada fotograma mientras se ve, lo que gasta energía incluso con la música parada
+canvas-weight-animates = Rutas de tiempo: { $count }, así que este lienzo sigue dibujando mientras se ve, tan a menudo como lo pide su movimiento, lo que gasta energía incluso con la música parada
 route-time = Tiempo
 route-time-note = Sigue el reloj propio del lienzo, no la música, y mantiene el lienzo dibujando mientras se ve
 route-time-period = Período
@@ -5089,3 +5089,16 @@ canvas-align-tip-group = { $tool }, respecto a su grupo
 canvas-align-tip-selection = { $tool }, respecto a los límites de la selección
 canvas-distribute-x = Distribuir horizontalmente, con espacios iguales
 canvas-distribute-y = Distribuir verticalmente, con espacios iguales
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = Reducir el movimiento
+    .description = Detén el movimiento decorativo: los elementos del lienzo que se desplazan con una ruta de tiempo se quedan donde empiezan, y los aspectos al pasar el puntero cambian sin transición. Seguir al sistema toma la preferencia de movimiento reducido del escritorio
+    .keywords = animacion movimiento accesibilidad quieto
+settings-appearance-reduce-motion-plain = Reducir el movimiento
+    .description = Detén el movimiento decorativo: los elementos del lienzo que se desplazan con una ruta de tiempo se quedan donde empiezan, y los aspectos al pasar el puntero cambian sin transición
+    .keywords = animacion movimiento accesibilidad quieto
+settings-appearance-reduce-motion-system = Seguir al sistema
+settings-appearance-reduce-motion-on = Activado
+settings-appearance-reduce-motion-off = Desactivado
+canvas-weight-held-still = Rutas de tiempo: { $count }, detenidas por Reducir el movimiento, así que este lienzo solo dibuja cuando cambia otra cosa

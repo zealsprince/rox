@@ -5015,7 +5015,7 @@ catalog-updates-chip-tip = Versioni più recenti di ciò che è stato installato
 canvas-look-hover = Al passaggio
 canvas-look-pressed = Alla pressione
 canvas-look-preview = Mostra questo aspetto sulla tela
-canvas-weight-animates = Percorsi a tempo: { $count }, quindi questa tela disegna ogni fotogramma finché è visibile, e consuma energia anche a musica ferma
+canvas-weight-animates = Percorsi a tempo: { $count }, quindi questa tela continua a disegnare finché è visibile, tanto spesso quanto il suo movimento richiede, e consuma energia anche a musica ferma
 route-time = Tempo
 route-time-note = Segue l'orologio della tela, non la musica, e la tiene a disegnare finché è visibile
 route-time-period = Periodo
@@ -5055,3 +5055,16 @@ canvas-align-tip-group = { $tool }, rispetto al suo gruppo
 canvas-align-tip-selection = { $tool }, rispetto ai limiti della selezione
 canvas-distribute-x = Distribuisci in orizzontale, con spazi uguali
 canvas-distribute-y = Distribuisci in verticale, con spazi uguali
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = Riduci il movimento
+    .description = Ferma il movimento decorativo: gli elementi della tela che si spostano su un percorso a tempo restano dove cominciano, e gli aspetti al passaggio cambiano senza transizione. Segui il sistema usa la preferenza del desktop per il movimento ridotto
+    .keywords = animazione movimento accessibilita fermo
+settings-appearance-reduce-motion-plain = Riduci il movimento
+    .description = Ferma il movimento decorativo: gli elementi della tela che si spostano su un percorso a tempo restano dove cominciano, e gli aspetti al passaggio cambiano senza transizione
+    .keywords = animazione movimento accessibilita fermo
+settings-appearance-reduce-motion-system = Segui il sistema
+settings-appearance-reduce-motion-on = Acceso
+settings-appearance-reduce-motion-off = Spento
+canvas-weight-held-still = Percorsi a tempo: { $count }, fermati da Riduci il movimento, quindi questa tela disegna solo quando cambia qualcos'altro

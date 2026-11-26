@@ -86,7 +86,7 @@ pub fn apply_time_routes(routes: &[Route], seconds: f64, targets: &mut impl Rout
 
 /// A share of the knob's own setting. Overshoot past 100% is allowed; the
 /// knob's accessor clamps it.
-fn span(route: &Route, reading: f32) -> f32 {
+pub fn span(route: &Route, reading: f32) -> f32 {
     let x = route.curve.bend(reading);
     (route.from + (route.to - route.from) * x).max(0.0)
 }

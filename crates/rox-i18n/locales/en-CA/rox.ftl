@@ -5072,7 +5072,7 @@ catalog-updates-chip-tip = Newer versions of what you installed from the catalog
 canvas-look-hover = While Hovered
 canvas-look-pressed = While Pressed
 canvas-look-preview = Preview this look on the canvas
-canvas-weight-animates = Time routes: { $count }, so this canvas draws every frame while it shows, which costs power even with the music stopped
+canvas-weight-animates = Time routes: { $count }, so this canvas keeps drawing while it shows, as often as its motion needs, which costs power even with the music stopped
 route-time = Time
 route-time-note = Follows the canvas's own clock, not the music, and keeps the canvas drawing while it shows
 route-time-period = Period
@@ -5112,3 +5112,16 @@ canvas-align-tip-group = { $tool }, against its group
 canvas-align-tip-selection = { $tool }, against the selection's bounds
 canvas-distribute-x = Distribute Horizontally, with equal gaps
 canvas-distribute-y = Distribute Vertically, with equal gaps
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = Reduce Motion
+    .description = Hold decorative motion still: canvas items that drift on a time route rest where they start, and hover looks switch without easing. Follow the System takes the desktop's reduced-motion preference
+    .keywords = animation motion accessibility still drift
+settings-appearance-reduce-motion-plain = Reduce Motion
+    .description = Hold decorative motion still: canvas items that drift on a time route rest where they start, and hover looks switch without easing
+    .keywords = animation motion accessibility still drift
+settings-appearance-reduce-motion-system = Follow the System
+settings-appearance-reduce-motion-on = On
+settings-appearance-reduce-motion-off = Off
+canvas-weight-held-still = Time routes: { $count }, held still by Reduce Motion, so this canvas draws only when something else changes

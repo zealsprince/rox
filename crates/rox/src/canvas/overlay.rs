@@ -405,7 +405,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
     let weight = cost::drawing(weight, &panel.config.canvas, |id| panel.target_drawn(id));
     let counts = cost::counts(&weight);
     let targets = cost::target_counts(&weight);
-    let animates = cost::animates(&weight);
+    let animates = cost::animates(&weight, rox_core::settings::reduce_motion());
     let lines = cost::warnings(&weight);
 
     // The tone is a fixed yellow that washes out on a light theme, so it

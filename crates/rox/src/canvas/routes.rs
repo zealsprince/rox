@@ -9,8 +9,10 @@
 //! While playback isn't running a canvas's [`Idle`] setting decides what
 //! they are: none at all (Rest), or the last ones drawn (Hold). A time
 //! route follows the canvas's own clock instead and ignores playback, so a
-//! canvas with one draws every frame while it shows.
+//! canvas with one keeps drawing while it shows, paced by
+//! [`crate::canvas::pace`]. Reduce Motion holds time routes at rest.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -256,7 +258,11 @@ pub(crate) struct Motion {
 /// One frame's offsets, and whether the canvas needs another frame.
 pub(crate) struct Pose {
     pub lives: HashMap<String, Live>,
+    /// A music route moves or eases: the next frame, as soon as it can.
     pub more: bool,
+    /// A time route moves: a frame once the motion has gone far enough to
+    /// show.
+    pub drifts: bool,
 }
 
 impl Motion {
@@ -313,6 +319,7 @@ impl Motion {
             return Pose {
                 lives: self.held.clone(),
                 more: false,
+                drifts: false,
             };
         }
 
@@ -322,6 +329,7 @@ impl Motion {
             return Pose {
                 lives: HashMap::new(),
                 more: false,
+                drifts: false,
             };
         }
 
@@ -337,17 +345,20 @@ impl Motion {
 
         Pose {
             more: easing || (running && moving),
+            drifts: false,
             lives,
         }
     }
 }
 
 /// [`Motion::pose`] against the hub, with the time routes laid over it.
+/// `still` holds them at rest, for Reduce Motion.
 pub(crate) fn pose(
     motion: &mut Motion,
     canvas: &CanvasState,
     routes: &[Route],
     running: bool,
+    still: bool,
     hub: &SignalHub,
 ) -> Pose {
     let now = Instant::now();
@@ -365,37 +376,81 @@ pub(crate) fn pose(
         Pose {
             lives: HashMap::new(),
             more: false,
+            drifts: false,
         }
     };
 
-    let seconds = motion.clock(now);
+    let seconds = (!still).then(|| motion.clock(now));
     over_time(canvas, routes, seconds, pose)
+}
+
+thread_local! {
+    /// `debug.canvas_clock`: every canvas's clock held at these seconds, so
+    /// two builds can be compared on the same frame.
+    static CLOCK_HELD: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
+/// Holds every canvas's clock at `seconds`, or lets it run again.
+pub(crate) fn hold_clock(seconds: Option<f64>) {
+    CLOCK_HELD.set(seconds);
 }
 
 impl Motion {
     /// Seconds on this canvas's own clock, which starts at its first pose.
     fn clock(&mut self, now: Instant) -> f64 {
         let born = *self.born.get_or_insert(now);
+        if let Some(held) = CLOCK_HELD.get() {
+            return held;
+        }
         now.saturating_duration_since(born).as_secs_f64()
     }
 }
 
 /// `pose` with every time route applied at `seconds`, at full weight
 /// whatever playback does. On a target a music route also drives, the time
-/// route wins. One switched on keeps the frames coming.
-fn over_time(canvas: &CanvasState, routes: &[Route], seconds: f64, pose: Pose) -> Pose {
+/// route wins. One switched on keeps the frames coming. No `seconds` holds
+/// them at rest and asks for no frames.
+fn over_time(canvas: &CanvasState, routes: &[Route], seconds: Option<f64>, pose: Pose) -> Pose {
     if !signal_ui::timed(routes) {
         return pose;
     }
 
     let mut lives = Lives::new(canvas);
     lives.live = pose.lives;
-    signal_ui::apply_time_routes(routes, seconds, &mut lives);
+    match seconds {
+        Some(seconds) => signal_ui::apply_time_routes(routes, seconds, &mut lives),
+        None => at_rest(routes, &mut lives),
+    }
 
     Pose {
         lives: lives.live,
-        more: true,
+        more: pose.more,
+        drifts: seconds.is_some(),
     }
+}
+
+/// Every time route held still. Each wave sits where its cycle starts, at
+/// its own phase, so the picture is the one the canvas opens on, staggered
+/// as its author set the phases. An opacity takes the brighter of that and
+/// its wave's middle, so nothing a fade carries is held invisible: Aero's
+/// bubbles pair a rising saw with a triangle fade, and a bubble whose phase
+/// sits near the start of its cycle would otherwise rest unseen.
+fn at_rest(routes: &[Route], lives: &mut Lives) {
+    for route in routes {
+        let Some(wave) = route.time.filter(|_| route.enabled) else {
+            continue;
+        };
+
+        let mut value = signal_ui::span(route, wave.at(0.));
+        if fades(&route.target) {
+            value = value.max(signal_ui::span(route, 0.5));
+        }
+        lives.apply(&route.target, value);
+    }
+}
+
+fn fades(target: &str) -> bool {
+    split(target).is_some_and(|(_, property)| property == Property::Opacity)
 }
 
 /// The offsets for one item, none when no route reaches it.
@@ -819,6 +874,7 @@ mod tests {
         Pose {
             lives: HashMap::new(),
             more: false,
+            drifts: false,
         }
     }
 
@@ -826,15 +882,16 @@ mod tests {
     fn a_time_route_moves_its_item_on_the_canvas_clock() {
         let (canvas, mut routes) = drifting(true);
 
-        let quarter = over_time(&canvas, &routes, 0.5, still());
+        let quarter = over_time(&canvas, &routes, Some(0.5), still());
         assert_eq!(quarter.lives["logo"].position[1], 10.);
-        assert!(quarter.more, "a time route keeps the canvas drawing");
-        let half = over_time(&canvas, &routes, 1., still());
+        assert!(quarter.drifts, "a time route keeps the canvas drawing");
+        assert!(!quarter.more, "and paces its own frames");
+        let half = over_time(&canvas, &routes, Some(1.), still());
         assert_eq!(half.lives["logo"].position[1], 20.);
 
         // A curve bends a time route as it does a music one.
         routes[0].curve = Curve::EaseIn;
-        let bent = over_time(&canvas, &routes, 1., still());
+        let bent = over_time(&canvas, &routes, Some(1.), still());
         assert_eq!(bent.lives["logo"].position[1], 10.);
     }
 
@@ -850,17 +907,62 @@ mod tests {
             };
             let mut motion = Motion::default();
             for running in [false, true] {
-                let posed = pose(&mut motion, &canvas, &routes, running, &hub);
-                assert!(posed.more);
+                let posed = pose(&mut motion, &canvas, &routes, running, false, &hub);
+                assert!(posed.drifts);
                 assert!(posed.lives.contains_key("logo"));
             }
         }
 
         // Switched off, it asks for nothing, so the canvas rests again.
         let (canvas, routes) = drifting(false);
-        let posed = pose(&mut Motion::default(), &canvas, &routes, false, &hub);
-        assert!(!posed.more);
+        let posed = pose(&mut Motion::default(), &canvas, &routes, false, false, &hub);
+        assert!(!posed.more && !posed.drifts);
         assert!(posed.lives.is_empty());
+    }
+
+    #[test]
+    fn held_still_a_time_route_rests_at_its_phase_and_asks_for_no_frames() {
+        let (canvas, mut routes) = drifting(true);
+        routes[0].time = Some(Wave {
+            phase: 0.25,
+            ..routes[0].time.unwrap()
+        });
+        let hub = SignalHub::unfed(Vec::new());
+
+        let mut motion = Motion::default();
+        for _ in 0..2 {
+            let posed = pose(&mut motion, &canvas, &routes, false, true, &hub);
+            assert!(!posed.more && !posed.drifts);
+            // A saw a quarter in, of a 40 unit sway, wherever the clock is.
+            assert_eq!(posed.lives["logo"].position[1], 10.);
+        }
+    }
+
+    #[test]
+    fn held_still_a_fade_never_rests_invisible() {
+        let canvas = canvas(vec![item("bubble")]);
+        let fade = |phase: f32| Route {
+            time: Some(Wave {
+                period: 40.,
+                shape: Shape::Triangle,
+                phase,
+            }),
+            ..route("bubble.opacity")
+        };
+
+        // At the start of its cycle a triangle reads 0, which would hide it.
+        let rested = over_time(&canvas, &[fade(0.)], None, still());
+        assert_eq!(rested.lives["bubble"].opacity, 0.5);
+        assert!(!rested.drifts);
+
+        // Brighter than the middle already, it keeps its own reading.
+        let lit = over_time(&canvas, &[fade(0.4)], None, still());
+        assert!((lit.lives["bubble"].opacity - 0.8).abs() < 1e-6);
+
+        // A position is never pulled to the middle: it rests at its phase.
+        let (canvas, routes) = drifting(true);
+        let rested = over_time(&canvas, &routes, None, still());
+        assert_eq!(rested.lives["logo"].position[1], 0.);
     }
 
     #[test]

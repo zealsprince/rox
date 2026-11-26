@@ -4810,7 +4810,7 @@ catalog-updates-chip-tip = カタログから入れたものの新しいバー�
 canvas-look-hover = ポインターを重ねたとき
 canvas-look-pressed = 押したとき
 canvas-look-preview = この見た目をキャンバスでプレビュー
-canvas-weight-animates = 時間ルート: { $count }。表示中はこのキャンバスが毎フレーム描画するので、音楽が止まっていても電力を使います
+canvas-weight-animates = 時間ルート: { $count }。表示中はこのキャンバスが動きに必要な頻度で描画を続けるので、音楽が止まっていても電力を使います
 route-time = 時間
 route-time-note = 音楽ではなくキャンバス自身の時計に従い、表示中はキャンバスを描画し続けます
 route-time-period = 周期
@@ -4847,3 +4847,16 @@ canvas-align-tip-group = { $tool }(グループ基準)
 canvas-align-tip-selection = { $tool }(選択範囲の境界基準)
 canvas-distribute-x = 水平方向に等間隔で分布
 canvas-distribute-y = 垂直方向に等間隔で分布
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = 視差効果を減らす
+    .description = 装飾的な動きを止める。時間ルートで漂うキャンバスの項目は始まりの位置で静止し、ポインターを重ねたときの見た目はイージングなしで切り替わる。システムに従うと、デスクトップの視差効果を減らす設定を使う
+    .keywords = アニメーション 動き うごき ugoki アクセシビリティ 静止 animation motion
+settings-appearance-reduce-motion-plain = 視差効果を減らす
+    .description = 装飾的な動きを止める。時間ルートで漂うキャンバスの項目は始まりの位置で静止し、ポインターを重ねたときの見た目はイージングなしで切り替わる
+    .keywords = アニメーション 動き うごき ugoki アクセシビリティ 静止 animation motion
+settings-appearance-reduce-motion-system = システムに従う
+settings-appearance-reduce-motion-on = オン
+settings-appearance-reduce-motion-off = オフ
+canvas-weight-held-still = 時間ルート: { $count }。「視差効果を減らす」で静止しているので、このキャンバスはほかの何かが変わったときだけ描画します

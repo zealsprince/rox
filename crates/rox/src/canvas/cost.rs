@@ -305,10 +305,15 @@ pub(crate) fn target_counts(weight: &Weight) -> Option<SharedString> {
 }
 
 /// The line saying a canvas animates for as long as it shows, for one with
-/// a time route. Not a warning: nothing is over, it only never rests.
-pub(crate) fn animates(weight: &Weight) -> Option<SharedString> {
-    (weight.time_routes > 0)
-        .then(|| rox_i18n::t!("canvas-weight-animates", count = weight.time_routes as u64))
+/// a time route, or that Reduce Motion is holding it still. Not a warning:
+/// nothing is over, it only never rests.
+pub(crate) fn animates(weight: &Weight, still: bool) -> Option<SharedString> {
+    let key = if still {
+        "canvas-weight-held-still"
+    } else {
+        "canvas-weight-animates"
+    };
+    (weight.time_routes > 0).then(|| rox_i18n::t!(key, count = weight.time_routes as u64))
 }
 
 /// The lines to show, empty when nothing is over.
@@ -492,7 +497,8 @@ mod tests {
             &bare(),
         );
         assert_eq!(weight.time_routes, 1, "only the switched-on time route");
-        assert!(animates(&weight).is_some());
+        assert!(animates(&weight, false).is_some());
+        assert_ne!(animates(&weight, true), animates(&weight, false));
         assert!(
             warnings(&weight).is_empty(),
             "animating isn't over anything"
@@ -503,7 +509,8 @@ mod tests {
             &bare(),
         );
         assert_eq!(still.time_routes, 0);
-        assert!(animates(&still).is_none());
+        assert!(animates(&still, false).is_none());
+        assert!(animates(&still, true).is_none());
     }
 
     #[test]

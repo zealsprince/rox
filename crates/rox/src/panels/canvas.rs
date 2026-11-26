@@ -25,12 +25,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Axis, Bounds, Context, CursorStyle, DismissEvent, Div,
-    Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, HitboxBehavior,
+    AnyElement, AnyView, AnyWindowHandle, App, Axis, Bounds, Context, CursorStyle, DismissEvent,
+    Div, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, HitboxBehavior,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, PathBuilder,
     PathPromptOptions, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString,
-    Subscription, WeakEntity, Window, actions, anchored, canvas, deferred, div, point, prelude::*,
-    px,
+    StyleRefinement, Subscription, WeakEntity, Window, actions, anchored, canvas, deferred, div,
+    point, prelude::*, px,
 };
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -52,6 +52,7 @@ use crate::canvas::edit::{self, Edges, History};
 use crate::canvas::grid::{self, Grid};
 use crate::canvas::image::{self, Images};
 use crate::canvas::overlay::Inspector;
+use crate::canvas::pace::{self, Pace};
 use crate::canvas::routes::{self, Snapshot};
 use crate::canvas::selection::Selection;
 use crate::canvas::shader::{self as shader_item, Shaders};
@@ -525,6 +526,7 @@ pub struct CanvasPanel {
     /// write `config.routes` directly, so a difference is an edit to record.
     seen_routes: Vec<Route>,
     motion: routes::Motion,
+    pace: Pace,
     signal_ui: SignalUi,
     gesture: Option<Gesture>,
     /// Where the last press picked, and the chain of ids under it, so a
@@ -692,6 +694,7 @@ impl CanvasPanel {
             history: History::default(),
             seen_routes,
             motion: routes::Motion::default(),
+            pace: Pace::default(),
             signal_ui: SignalUi::default(),
             gesture: None,
             last_press: None,
@@ -1048,6 +1051,8 @@ impl CanvasPanel {
 
         // Reading the hub advances it. A canvas with no routes doesn't, and
         // asks for no frames, and neither does one settled at rest or held.
+        let still = settings::reduce_motion();
+        let mut drifts = false;
         let lives = if routes::running(&self.config.routes) {
             let player = self.state.player.read(cx);
             let running = routes::playback_running(player.is_playing(), player.queue_ended());
@@ -1056,6 +1061,7 @@ impl CanvasPanel {
                 &self.config.canvas,
                 &self.config.routes,
                 running,
+                still,
                 &self.state.signals,
             );
 
@@ -1065,6 +1071,7 @@ impl CanvasPanel {
             if pose.more {
                 window.request_animation_frame();
             }
+            drifts = pose.drifts;
             pose.lives
         } else {
             HashMap::new()
@@ -1135,7 +1142,7 @@ impl CanvasPanel {
             .preview()
             .filter(|(id, _)| active && self.selected.primary() == Some(*id));
 
-        let looks = canvas::looks::this_frame(&mut self.looks, self.design, preview, window);
+        let looks = canvas::looks::this_frame(&mut self.looks, self.design, preview, still, window);
 
         // Before the first bounds land there's nothing to place against, and
         // a grid laid out at no size would lay its panels out at none.
@@ -1167,6 +1174,26 @@ impl CanvasPanel {
         let Draw { layers, shapes, .. } = draw;
         self.shapes = shapes;
         self.images.wake_when_due(cx);
+
+        // Where time alone moves things, the next frame waits until the
+        // motion would show.
+        if drifts {
+            let seen = self
+                .shapes
+                .iter()
+                .map(|shape| {
+                    let opacity = lives.get(&shape.id).map_or(1., |live| live.opacity);
+                    let seen = pace::Seen {
+                        corners: shape.corners,
+                        opacity,
+                    };
+                    (shape.id.clone(), seen)
+                })
+                .collect();
+            self.pace.follow(seen, Instant::now(), cx);
+        } else {
+            self.pace.stop();
+        }
 
         // Bounds land a frame late, so a resize re-renders once they move.
         // gpui drops a notify made while the window draws, so it's deferred.
@@ -1662,6 +1689,10 @@ fn around(shapes: &[Shape]) -> Option<[[f32; 2]; 4]> {
 }
 
 /// A grid is flat, so its corners are a screen-aligned box.
+///
+/// Its dock renders cached, so a frame the canvas draws for items that moved
+/// replays a grid that didn't. It re-renders when its box or the mask over it
+/// changes, when it or anything inside it notifies, and on a window refresh.
 fn grid_element(
     item: &CanvasItem,
     grid: &Grid,
@@ -1678,7 +1709,7 @@ fn grid_element(
         .w(px(extent[0]))
         .h(px(extent[1]))
         .when(opacity < 1., |d| d.opacity(opacity))
-        .child(grid.area.clone())
+        .child(AnyView::from(grid.area.clone()).cached(StyleRefinement::default().size_full()))
         .into_any_element()
 }
 

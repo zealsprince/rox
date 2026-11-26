@@ -37,8 +37,8 @@ use rox_core::settings::{
     self, AcousticSave, BORDER_MAX, ChromeSide, ChromeStyle, DEFAULT_PRESENCE_FIRST_LINE,
     DEFAULT_PRESENCE_HOVER, DEFAULT_PRESENCE_SECOND_LINE, DiscordStatusLine, Frame,
     GainModeSetting, LayoutSize, LyricsSave, MARGIN_MAX, NamedLayout, PADDING_MAX, PluginRecord,
-    Providers, ROUNDING_MAX, RatingStyle, ReplayGainSave, Settings, ShuffleMode, Theme,
-    WorkspaceMeta, data_dir, settings_path,
+    Providers, ROUNDING_MAX, RatingStyle, ReduceMotion, ReplayGainSave, Settings, ShuffleMode,
+    Theme, WorkspaceMeta, data_dir, settings_path,
 };
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, ROLES, Role, Side, Sides};

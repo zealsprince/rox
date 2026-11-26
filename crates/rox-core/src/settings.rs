@@ -497,6 +497,11 @@ pub struct Settings {
     /// id negotiates the same way instead of failing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Holds canvas time routes still and switches hover looks without
+    /// easing. System follows the desktop's preference where the platform
+    /// reports one.
+    #[serde(deserialize_with = "lenient::or_default")]
+    pub reduce_motion: ReduceMotion,
     /// The app-wide rem in px. 16 is gpui's stock rem.
     pub app_font_size: f32,
     /// Gates the restore only; the last track is written either way.
@@ -936,6 +941,64 @@ pub fn note_os_appearance(appearance: WindowAppearance, cx: &mut App) {
     *OS_APPEARANCE.write().unwrap() = appearance;
     if theme() == Theme::System {
         palette::set_mode(resolve_theme(Theme::System), cx);
+    }
+}
+
+/// Whether decorative motion holds still: canvas time routes rest and hover
+/// looks switch without easing. System follows the desktop where
+/// [`SYSTEM_REPORTS_MOTION`] says the platform can say, and is Off where it
+/// can't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReduceMotion {
+    #[default]
+    System,
+    On,
+    Off,
+}
+
+/// The platforms rox reads a reduced-motion preference on: the desktop
+/// portal on Linux, the animation switch on Windows. macOS has no read
+/// without an Objective-C bridge rox doesn't carry.
+pub const SYSTEM_REPORTS_MOTION: bool = cfg!(any(target_os = "linux", target_os = "windows"));
+
+static REDUCE_MOTION: RwLock<ReduceMotion> = RwLock::new(ReduceMotion::System);
+
+/// What the platform last reported. False until a read lands, and where
+/// nothing answers.
+static SYSTEM_REDUCES_MOTION: AtomicBool = AtomicBool::new(false);
+
+pub fn reduce_motion_choice() -> ReduceMotion {
+    *REDUCE_MOTION.read().unwrap()
+}
+
+/// The setting resolved: true while motion should hold still.
+pub fn reduce_motion() -> bool {
+    resolve_reduce_motion(
+        reduce_motion_choice(),
+        SYSTEM_REDUCES_MOTION.load(Ordering::Relaxed),
+    )
+}
+
+fn resolve_reduce_motion(choice: ReduceMotion, system: bool) -> bool {
+    match choice {
+        ReduceMotion::On => true,
+        ReduceMotion::Off => false,
+        ReduceMotion::System => SYSTEM_REPORTS_MOTION && system,
+    }
+}
+
+/// Repaints every window: canvases read the static at render.
+pub fn set_reduce_motion(choice: ReduceMotion, cx: &mut App) {
+    *REDUCE_MOTION.write().unwrap() = choice;
+    cx.refresh_windows();
+}
+
+/// The platform's preference as read, from startup or a change signal.
+pub fn note_system_reduces_motion(reduces: bool, cx: &mut App) {
+    let was = SYSTEM_REDUCES_MOTION.swap(reduces, Ordering::Relaxed);
+    if was != reduces && reduce_motion_choice() == ReduceMotion::System {
+        cx.refresh_windows();
     }
 }
 
@@ -3650,6 +3713,7 @@ impl Default for Settings {
             show_readings: true,
             theme: Theme::default(),
             language: None,
+            reduce_motion: ReduceMotion::default(),
             app_font_size: palette::FONT_SIZE_DEFAULT,
             restore_last_track: true,
             scrobbling: true,
@@ -3957,6 +4021,32 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduce_motion_follows_the_system_only_where_the_platform_reports() {
+        assert!(resolve_reduce_motion(ReduceMotion::On, false));
+        assert!(!resolve_reduce_motion(ReduceMotion::Off, true));
+        assert_eq!(
+            resolve_reduce_motion(ReduceMotion::System, true),
+            SYSTEM_REPORTS_MOTION
+        );
+        assert!(!resolve_reduce_motion(ReduceMotion::System, false));
+    }
+
+    #[test]
+    fn reduce_motion_saves_by_name_and_a_stray_value_reads_as_the_default() {
+        let saved = serde_json::to_value(Settings {
+            reduce_motion: ReduceMotion::On,
+            ..Settings::default()
+        })
+        .expect("settings serialize");
+        assert_eq!(saved["reduce_motion"], "on");
+
+        let read: Settings =
+            serde_json::from_value(serde_json::json!({ "reduce_motion": "sometimes" }))
+                .expect("a stray value doesn't fail the file");
+        assert_eq!(read.reduce_motion, ReduceMotion::System);
+    }
 
     #[test]
     fn nothing_from_a_link_on_is_a_flag() {

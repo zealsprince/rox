@@ -324,6 +324,19 @@ fn route(state: &AppState, method: &str, params: &Value, cx: &mut App) -> Result
             crate::workspace::apply_workspace_to_front(name, cx);
             Ok(Value::Null)
         }
+        // Every canvas drawn at one moment of its clock, to compare two builds'
+        // pixels. Null lets the clocks run on.
+        "debug.canvas_clock" => {
+            let seconds = match params.get("seconds") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_f64().filter(|s| s.is_finite()).ok_or_else(|| {
+                    RpcError::invalid_params("canvas_clock takes {\"seconds\": number|null}")
+                })?),
+            };
+            crate::canvas::routes::hold_clock(seconds);
+            cx.refresh_windows();
+            Ok(Value::Null)
+        }
         // The preset-authoring loop. `frame` is the engine's own readback, free of
         // the panel's tint and grade.
         "debug.milkdrop" => milkdrop(params, cx),

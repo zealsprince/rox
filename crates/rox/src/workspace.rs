@@ -4347,6 +4347,9 @@ impl Workspace {
         let _window_activated = cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() {
                 note_activated(window.window_handle(), cx);
+                // A reduced-motion change made in the desktop's settings
+                // lands when the user comes back.
+                crate::integrations::motion::reread(cx);
             }
         });
         let weak_self = cx.entity().downgrade();

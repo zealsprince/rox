@@ -4953,7 +4953,7 @@ catalog-updates-chip-tip = Neuere Versionen von dem, was aus dem Katalog install
 canvas-look-hover = Beim Überfahren
 canvas-look-pressed = Beim Drücken
 canvas-look-preview = Diesen Zustand auf der Leinwand ansehen
-canvas-weight-animates = Zeit-Routen: { $count }, die Leinwand zeichnet also jedes Bild, solange sie zu sehen ist, und das kostet Strom, auch wenn keine Musik läuft
+canvas-weight-animates = Zeit-Routen: { $count }, die Leinwand zeichnet also weiter, solange sie zu sehen ist, so oft ihre Bewegung es braucht, und das kostet Strom, auch wenn keine Musik läuft
 route-time = Zeit
 route-time-note = Folgt der eigenen Uhr der Leinwand, nicht der Musik, und lässt die Leinwand zeichnen, solange sie zu sehen ist
 route-time-period = Periode
@@ -4993,3 +4993,16 @@ canvas-align-tip-group = { $tool }, an der Gruppe
 canvas-align-tip-selection = { $tool }, an den Grenzen der Auswahl
 canvas-distribute-x = Horizontal verteilen, mit gleichen Abständen
 canvas-distribute-y = Vertikal verteilen, mit gleichen Abständen
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = Bewegung reduzieren
+    .description = Dekorative Bewegung anhalten: Leinwand-Elemente, die einer Zeit-Route folgen, bleiben dort stehen, wo sie beginnen, und Looks beim Überfahren wechseln ohne Übergang. Dem System folgen übernimmt die Einstellung des Desktops für reduzierte Bewegung
+    .keywords = animation bewegung barrierefreiheit ruhig stillstand
+settings-appearance-reduce-motion-plain = Bewegung reduzieren
+    .description = Dekorative Bewegung anhalten: Leinwand-Elemente, die einer Zeit-Route folgen, bleiben dort stehen, wo sie beginnen, und Looks beim Überfahren wechseln ohne Übergang
+    .keywords = animation bewegung barrierefreiheit ruhig stillstand
+settings-appearance-reduce-motion-system = Dem System folgen
+settings-appearance-reduce-motion-on = An
+settings-appearance-reduce-motion-off = Aus
+canvas-weight-held-still = Zeit-Routen: { $count }, angehalten durch Bewegung reduzieren, die Leinwand zeichnet also nur, wenn sich etwas anderes ändert

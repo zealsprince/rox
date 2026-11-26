@@ -5045,7 +5045,7 @@ catalog-updates-chip-tip = Des versions plus récentes de ce qui a été install
 canvas-look-hover = Au survol
 canvas-look-pressed = À l'appui
 canvas-look-preview = Voir cet aspect sur le canevas
-canvas-weight-animates = Routes temporelles : { $count }, ce canevas dessine donc chaque image tant qu'il est visible, ce qui consomme de l'énergie même musique arrêtée
+canvas-weight-animates = Routes temporelles : { $count }, ce canevas continue donc de dessiner tant qu'il est visible, aussi souvent que son mouvement le demande, ce qui consomme de l'énergie même musique arrêtée
 route-time = Temps
 route-time-note = Suit l'horloge propre du canevas, pas la musique, et le fait dessiner tant qu'il est visible
 route-time-period = Période
@@ -5085,3 +5085,16 @@ canvas-align-tip-group = { $tool }, par rapport à son groupe
 canvas-align-tip-selection = { $tool }, par rapport aux limites de la sélection
 canvas-distribute-x = Répartir horizontalement, à espaces égaux
 canvas-distribute-y = Répartir verticalement, à espaces égaux
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = Réduire les animations
+    .description = Figer le mouvement décoratif : les éléments du canevas qui dérivent sur une route temporelle restent là où ils commencent, et les apparences au survol changent sans transition. Suivre le système reprend la préférence du bureau pour les animations réduites
+    .keywords = animation mouvement accessibilite immobile
+settings-appearance-reduce-motion-plain = Réduire les animations
+    .description = Figer le mouvement décoratif : les éléments du canevas qui dérivent sur une route temporelle restent là où ils commencent, et les apparences au survol changent sans transition
+    .keywords = animation mouvement accessibilite immobile
+settings-appearance-reduce-motion-system = Suivre le système
+settings-appearance-reduce-motion-on = Activé
+settings-appearance-reduce-motion-off = Désactivé
+canvas-weight-held-still = Routes temporelles : { $count }, figées par Réduire les animations, ce canevas ne dessine donc que quand autre chose change

@@ -592,7 +592,8 @@ the pointer has gone. Only the pointer hovers: there's no keyboard focus on canv
 Each look eases in and out over 140 ms with a smoothstep. Opacity blends, and an image or
 a color switches halfway through. A canvas asks for frames only while an ease runs: in
 a debug build in a headless sway, a hover drew 9 frames in 800 ms and none in the 1.5 s
-before or after it.
+before or after it. Under Reduce Motion (below) a look lands in the frame its pointer
+moved, with no ease and no frames after (`Looks::shown`).
 
 In design mode the inspector shows a While Hovered and a While Pressed block on an item
 with a command, with the case block's opacity slider and image or color picker, and an eye
@@ -608,11 +609,43 @@ A time route follows the canvas's own clock instead, which starts at the canvas'
 render and is never the wall clock or the playing position (`Motion::clock`). It applies
 at full weight whatever playback does, and on a target a music route also drives, the time
 route wins. The canvas is the one host that reads time routes, so only its route rows
-offer Time. A canvas with a time route switched on asks for a frame on every render while
-it's drawn, and stops when gpui stops rendering it, a hidden tab or a hidden window, the
-same thing that pauses a render target. rox has no reduced-motion setting, so nothing else
-gates it. The inspector's weight line says in words that the canvas draws every frame
-while it shows and that this costs power (`cost::animates`).
+offer Time. A canvas with a time route switched on keeps drawing while it's drawn, and
+stops when gpui stops rendering it, a hidden tab or a hidden window, the same thing that
+pauses a render target. The inspector's weight line says in words that the canvas keeps
+drawing while it shows and that this costs power, or that Reduce Motion is holding it
+still (`cost::animates`).
+
+Motion that only time drives is paced (`crates/rox/src/canvas/pace.rs`). A frame where a
+time route moved something compares every item's projected corners and routed opacity
+with the frame before, and wakes the canvas for the next once the fastest corner will
+have moved `STEP`, one pixel, or an opacity two of 255 levels, at the speed just
+measured. It never waits more than 250 ms, so a sine turning slowly is looked at again
+before it picks up speed, and a saw that wraps draws its jump at once. A music route that
+moves or eases, a hover ease and the pointer's parallax ask for the next frame straight
+away as before, so a canvas following playback still draws every vsync. Aero's fastest
+drift, the rising bubbles, comes out near 21 frames a second.
+
+Reduce Motion is one app-wide setting, saved as `reduce_motion` and set through
+`rox_core::settings::set_reduce_motion` from the Appearance page's Interface section or
+the socket's `settings set reduce_motion system|on|off`. On Linux and Windows it has three
+states, Follow the System, On and Off, and follows the system by default. On macOS it's
+On and Off, since rox has no read of the preference there without an Objective-C bridge
+it doesn't carry, and a saved System reads as Off (`SYSTEM_REPORTS_MOTION`). Linux asks
+the desktop portal's Settings interface with `ReadOne` on the session bus: first
+`org.freedesktop.appearance` `reduced-motion`, where a value of 1 means reduce (Plasma 6's
+portal backend offers it; xdg-desktop-portal 1.20 doesn't standardize it), then GNOME's
+`org.gnome.desktop.interface` `enable-animations`. Windows reads the Show Animations switch,
+`SPI_GETCLIENTAREAANIMATION`. Both run at startup and again whenever a workspace window
+comes to the front (`crates/rox/src/integrations/motion.rs`). No bus, no portal, or no
+backend offering either key reads as no preference, logged at debug only.
+
+While it holds, every time route rests (`routes::at_rest`). Each wave sits where its cycle
+starts, at its own phase, so the canvas shows the picture it opens on, staggered as its
+author set the phases. An opacity route takes the brighter of that and its wave's middle,
+so nothing a fade carries is held invisible: Aero's bubbles pair a rising saw with a
+triangle fade from 0, and a bubble whose phase sits near the start of its cycle would
+otherwise rest unseen. A canvas whose only motion is time then asks for no frames. Music
+routes, render targets, the visualizers and Milkdrop are content and keep moving.
 
 Measured 2026-11-26 on a Ryzen 9 5950X with a Navi 21 Radeon, release build, a 1920x1080
 window in a headless sway, design mode off, nothing playing, a canvas of 50 image items
@@ -628,6 +661,27 @@ with routes on the first N of them. `debug.frames` over 3 s, three runs each:
 Another tree was compiling during the 50-route runs and the CPU readings. Most of the cost
 is having any frame at all; each route adds little.
 
+Aero measured the same way, its library holding 61 short test tracks, CPU over 10 s,
+with the machine's load under 6, before pacing and the cached grid docks and after. The
+at-rest rows span two sets of three runs:
+
+| Aero | Frames in 3 s | Mean ms | CPU, 10 s |
+|---|---|---|---|
+| At rest, before | 185 to 186 | 1.98 to 2.24 | 12.5% to 14.8% of a core |
+| At rest, after | 62 to 63 | 1.80 to 2.21 | 4.1% to 5.3% |
+| At rest, Reduce Motion on | 0 | | 0.1% to 0.3% |
+| Playing, before | 185 | 2.51 to 2.82 | 16.6% to 17.6% |
+| Playing, after | 186 | 1.93 to 2.32 | 14.0% to 16.1% |
+
+The "before" build carried frame pointers for profiling, which a stripped release build
+of the same commit matched within the spread (2.04 to 2.14 ms). A frame's cost is mostly
+gpui's whole-window frame rather than the canvas: in a `perf` profile of Aero at rest the
+canvas's own render was 11% of the main thread, while layout, replaying every cached
+view's recorded paint into the new scene, sorting it, moving element state across and the
+GPU submit made up most of the rest. A canvas of one image and a grid holding only the
+library cost 1.2 ms a frame where the image alone cost 0.35 ms, with the library
+re-rendering nothing: its cached frame still replays every glyph.
+
 A grid item is a dock tree of its own: one `DockArea` per item, built and gated the way
 the window's dock is (the layout version and a split at the root), with the middle-drag
 pop-out hook. Its tab groups are real tab groups, so they report into the workspace's
@@ -640,7 +694,10 @@ before handing a panel its state, so children there would be built twice. A dump
 doesn't restore keeps its item as saved. The dump walkers (shader sources, shader
 wearing, stripping, scrubbing, plugin owners) recurse every object and array, so they
 reach a grid inside a canvas with no change. A grid's own layout events go to the
-workspace's debounced save, since the canvas emits none of its own.
+workspace's debounced save, since the canvas emits none of its own. Its dock renders as a
+cached view (`grid_element`), so a frame the canvas draws for items that moved replays a
+grid that didn't. It re-renders when its box or the mask over it changes, when it or
+anything inside it notifies, or on a window refresh.
 
 Canvases nest: a canvas panel can sit in a grid inside another canvas, and it projects its
 own items inside its bounds under its own camera. Canvases inside grids and groups inside
@@ -688,6 +745,8 @@ arithmetic), `crates/rox/src/panels/canvas/set.rs` (the marquee and the set's ed
 and `overlay/set_rows.rs` (the inspector), `patches/gpui/e7-image-patch-inner-edges.patch`
 (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
-`crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock),
+`crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock, time routes at
+rest), `crates/rox/src/canvas/pace.rs` (frames for time-only motion),
+`crates/rox/src/integrations/motion.rs` (the desktop's reduced-motion preference),
 `crates/rox/src/canvas/cost.rs` (the weight line),
 and `Workspace::docks` in `crates/rox/src/workspace.rs`.

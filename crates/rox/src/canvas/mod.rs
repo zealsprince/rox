@@ -15,6 +15,7 @@ pub(crate) mod grid;
 pub(crate) mod image;
 pub(crate) mod looks;
 pub(crate) mod overlay;
+pub(crate) mod pace;
 pub(crate) mod routes;
 pub(crate) mod selection;
 pub(crate) mod shader;

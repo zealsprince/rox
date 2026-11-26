@@ -1,6 +1,6 @@
 //! OS integration surfaces: media keys, the control socket and its debug
 //! drive and frame timer, the broadcast sink, the tray, taskbar progress,
-//! and window placement.
+//! window placement, and the desktop's reduced-motion preference.
 
 pub mod broadcast;
 pub mod drive;
@@ -15,6 +15,7 @@ mod ipc_track;
 #[cfg(target_os = "linux")]
 mod kwin;
 pub mod media_controls;
+pub(crate) mod motion;
 pub mod placement;
 pub mod taskbar;
 pub mod tray;

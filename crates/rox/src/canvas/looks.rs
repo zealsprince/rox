@@ -137,8 +137,15 @@ impl Looks {
     }
 
     /// Each item's weights this frame, and whether an ease still runs. Items
-    /// back at rest are dropped.
-    pub(crate) fn shown(&mut self, now: Instant) -> (Shown, bool) {
+    /// back at rest are dropped. `still` lands every ease at once, for
+    /// Reduce Motion.
+    pub(crate) fn shown(&mut self, now: Instant, still: bool) -> (Shown, bool) {
+        if still {
+            for edge in self.eases.values_mut().flatten() {
+                edge.at = None;
+            }
+        }
+
         self.eases
             .retain(|_, edges| edges.iter().any(|edge| edge.on || !edge.settled(now)));
 
@@ -153,13 +160,14 @@ impl Looks {
     }
 }
 
-/// The looks this frame: the pointer's off design mode, eased, or the one
-/// the inspector previews in it. Frames are asked for only while an ease
-/// runs.
+/// The looks this frame: the pointer's off design mode, eased unless
+/// `still`, or the one the inspector previews in it. Frames are asked for
+/// only while an ease runs.
 pub(crate) fn this_frame(
     looks: &mut Looks,
     design: bool,
     preview: Option<(&str, &str)>,
+    still: bool,
     window: &mut Window,
 ) -> Shown {
     if design {
@@ -170,7 +178,7 @@ pub(crate) fn this_frame(
         return shown;
     }
 
-    let (shown, more) = looks.shown(Instant::now());
+    let (shown, more) = looks.shown(Instant::now(), still);
     if more {
         window.request_animation_frame();
     }
@@ -533,7 +541,7 @@ mod tests {
     fn a_hover_eases_in_and_out_and_then_asks_for_nothing() {
         let mut looks = Looks::default();
         let start = Instant::now();
-        assert_eq!(looks.shown(start), (Shown::new(), false));
+        assert_eq!(looks.shown(start, false), (Shown::new(), false));
 
         assert!(looks.point(Some("play"), None, start));
         assert!(
@@ -541,22 +549,22 @@ mod tests {
             "the same item again moves nothing"
         );
 
-        let (shown, more) = looks.shown(start + EASE / 2);
+        let (shown, more) = looks.shown(start + EASE / 2, false);
         assert!(more);
         let [hover, press] = shown["play"];
         assert!(hover > 0. && hover < 1.);
         assert_eq!(press, 0.);
 
-        let (shown, more) = looks.shown(start + EASE);
+        let (shown, more) = looks.shown(start + EASE, false);
         assert_eq!(shown["play"], [1., 0.]);
         assert!(!more, "a settled hover draws no frames");
 
         let left = start + EASE * 2;
         assert!(looks.clear(left));
-        let (shown, more) = looks.shown(left + EASE / 2);
+        let (shown, more) = looks.shown(left + EASE / 2, false);
         assert!(more && shown["play"][0] > 0.);
 
-        let (shown, more) = looks.shown(left + EASE);
+        let (shown, more) = looks.shown(left + EASE, false);
         assert!(shown.is_empty(), "an item back at rest is dropped");
         assert!(!more);
     }
@@ -567,13 +575,13 @@ mod tests {
         let now = Instant::now();
 
         looks.point(Some("play"), Some("play"), now);
-        assert_eq!(looks.shown(now + EASE).0["play"], [1., 1.]);
+        assert_eq!(looks.shown(now + EASE, false).0["play"], [1., 1.]);
 
         // Dragged off onto another button, the press lets go and that one
         // hovers.
         let later = now + EASE * 2;
         looks.point(Some("next"), Some("play"), later);
-        let (shown, _) = looks.shown(later + EASE);
+        let (shown, _) = looks.shown(later + EASE, false);
         assert!(!shown.contains_key("play"));
         assert_eq!(shown["next"], [1., 0.]);
     }
@@ -585,12 +593,28 @@ mod tests {
 
         looks.point(Some("play"), None, start);
         let midway = start + EASE / 2;
-        let stood = looks.shown(midway).0["play"][0];
+        let stood = looks.shown(midway, false).0["play"][0];
         looks.clear(midway);
 
-        let (shown, _) = looks.shown(midway + Duration::from_millis(1));
+        let (shown, _) = looks.shown(midway + Duration::from_millis(1), false);
         let now = shown["play"][0];
         assert!(now <= stood && now > stood - 0.1, "{stood} then {now}");
+    }
+
+    #[test]
+    fn held_still_a_look_switches_at_once_and_asks_for_no_frames() {
+        let mut looks = Looks::default();
+        let start = Instant::now();
+
+        looks.point(Some("play"), Some("play"), start);
+        let (shown, more) = looks.shown(start, true);
+        assert_eq!(shown["play"], [1., 1.]);
+        assert!(!more);
+
+        looks.clear(start);
+        let (shown, more) = looks.shown(start, true);
+        assert!(shown.is_empty(), "gone the same frame it left");
+        assert!(!more);
     }
 
     #[test]

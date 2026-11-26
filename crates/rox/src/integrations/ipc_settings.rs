@@ -13,7 +13,9 @@
 use gpui::App;
 use serde_json::{Value, json};
 
-use rox_core::settings::{self, ChromeSide, ChromeStyle, RatingStyle, Settings, Theme};
+use rox_core::settings::{
+    self, ChromeSide, ChromeStyle, RatingStyle, ReduceMotion, Settings, Theme,
+};
 use rox_design::palette;
 use rox_ipc::RpcError;
 
@@ -133,6 +135,26 @@ fn theme_name(theme: Theme) -> &'static str {
     }
 }
 
+fn reduce_motions() -> Vec<&'static str> {
+    vec!["system", "on", "off"]
+}
+
+fn reduce_motion_of(name: &str) -> ReduceMotion {
+    match name {
+        "on" => ReduceMotion::On,
+        "off" => ReduceMotion::Off,
+        _ => ReduceMotion::System,
+    }
+}
+
+fn reduce_motion_name(choice: ReduceMotion) -> &'static str {
+    match choice {
+        ReduceMotion::System => "system",
+        ReduceMotion::On => "on",
+        ReduceMotion::Off => "off",
+    }
+}
+
 /// A saved id that isn't shipped reads as what it negotiates to: the
 /// language the UI is really in.
 fn language_name(saved: Option<&str>) -> &'static str {
@@ -176,6 +198,13 @@ static KEYS: &[Key] = &[
         read: |s| Val::Choice(theme_name(s.theme)),
         write: |s, v| s.theme = theme_of(v.choice()),
         apply: |v, cx| settings::set_theme(theme_of(v.choice()), cx),
+    },
+    Key {
+        name: "reduce_motion",
+        kind: Kind::Choice(reduce_motions),
+        read: |s| Val::Choice(reduce_motion_name(s.reduce_motion)),
+        write: |s, v| s.reduce_motion = reduce_motion_of(v.choice()),
+        apply: |v, cx| settings::set_reduce_motion(reduce_motion_of(v.choice()), cx),
     },
     Key {
         name: "design_mode",

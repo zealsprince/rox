@@ -4809,7 +4809,7 @@ catalog-updates-chip-tip = 从目录安装的内容有了新版本
 canvas-look-hover = 指针悬停时
 canvas-look-pressed = 按下时
 canvas-look-preview = 在画布上预览这种外观
-canvas-weight-animates = 时间路由：{ $count }，所以画布在显示时每一帧都要绘制，即使音乐停止也会耗电
+canvas-weight-animates = 时间路由：{ $count }，所以画布在显示时会按动作需要的频率持续绘制，即使音乐停止也会耗电
 route-time = 时间
 route-time-note = 跟随画布自己的时钟而不是音乐，并让画布在显示时一直绘制
 route-time-period = 周期
@@ -4846,3 +4846,16 @@ canvas-align-tip-group = { $tool }(相对所在组)
 canvas-align-tip-selection = { $tool }(相对选区边界)
 canvas-distribute-x = 水平等距分布
 canvas-distribute-y = 垂直等距分布
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = 减弱动态效果
+    .description = 让装饰性的动作静止：随时间路由漂移的画布项目停在起始处，指针悬停时的外观直接切换，不做缓动。“跟随系统”采用桌面的减弱动态效果设置
+    .keywords = 动画 动态 无障碍 静止 donghua animation motion
+settings-appearance-reduce-motion-plain = 减弱动态效果
+    .description = 让装饰性的动作静止：随时间路由漂移的画布项目停在起始处，指针悬停时的外观直接切换，不做缓动
+    .keywords = 动画 动态 无障碍 静止 donghua animation motion
+settings-appearance-reduce-motion-system = 跟随系统
+settings-appearance-reduce-motion-on = 开
+settings-appearance-reduce-motion-off = 关
+canvas-weight-held-still = 时间路由：{ $count }，已被“减弱动态效果”定住，所以画布只在别的内容变化时才绘制

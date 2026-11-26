@@ -4975,7 +4975,7 @@ catalog-updates-chip-tip = Versões mais novas do que foi instalado pelo catálo
 canvas-look-hover = Ao passar o ponteiro
 canvas-look-pressed = Ao pressionar
 canvas-look-preview = Ver este visual no canvas
-canvas-weight-animates = Rotas de tempo: { $count }, então este canvas desenha cada quadro enquanto aparece, o que gasta energia mesmo com a música parada
+canvas-weight-animates = Rotas de tempo: { $count }, então este canvas continua desenhando enquanto aparece, com a frequência que o seu movimento pede, o que gasta energia mesmo com a música parada
 route-time = Tempo
 route-time-note = Segue o relógio do próprio canvas, não a música, e mantém o canvas desenhando enquanto aparece
 route-time-period = Período
@@ -5015,3 +5015,16 @@ canvas-align-tip-group = { $tool }, em relação ao grupo
 canvas-align-tip-selection = { $tool }, em relação aos limites da seleção
 canvas-distribute-x = Distribuir na horizontal, com espaços iguais
 canvas-distribute-y = Distribuir na vertical, com espaços iguais
+
+## Reduce Motion
+
+settings-appearance-reduce-motion = Reduzir o movimento
+    .description = Parar o movimento decorativo: os itens do canvas que flutuam numa rota de tempo ficam onde começam, e os visuais ao passar o ponteiro trocam sem transição. Seguir o sistema usa a preferência de movimento reduzido da área de trabalho
+    .keywords = animacao movimento acessibilidade parado
+settings-appearance-reduce-motion-plain = Reduzir o movimento
+    .description = Parar o movimento decorativo: os itens do canvas que flutuam numa rota de tempo ficam onde começam, e os visuais ao passar o ponteiro trocam sem transição
+    .keywords = animacao movimento acessibilidade parado
+settings-appearance-reduce-motion-system = Seguir o sistema
+settings-appearance-reduce-motion-on = Ligado
+settings-appearance-reduce-motion-off = Desligado
+canvas-weight-held-still = Rotas de tempo: { $count }, paradas por Reduzir o movimento, então este canvas só desenha quando outra coisa muda

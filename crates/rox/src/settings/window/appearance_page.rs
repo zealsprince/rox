@@ -103,6 +103,12 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn set_reduce_motion(&mut self, choice: ReduceMotion, cx: &mut Context<Self>) {
+        settings::set_reduce_motion(choice, cx);
+        Settings::update(move |s| s.reduce_motion = choice);
+        cx.notify();
+    }
+
     fn set_design_mode(&mut self, on: bool, cx: &mut Context<Self>) {
         settings::set_design_mode(on, cx);
         Settings::update(move |s| s.design_mode = on);
@@ -619,6 +625,39 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Reduce Motion's row key and switch: three ways where the platform
+    /// reports a preference, On and Off where it can't, with System read as
+    /// Off there.
+    fn reduce_motion_control(&self, cx: &mut Context<Self>) -> (&'static str, Div) {
+        let on = (
+            rox_i18n::t!("settings-appearance-reduce-motion-on"),
+            ReduceMotion::On,
+        );
+        let off = (
+            rox_i18n::t!("settings-appearance-reduce-motion-off"),
+            ReduceMotion::Off,
+        );
+        let choice = settings::reduce_motion_choice();
+
+        if settings::SYSTEM_REPORTS_MOTION {
+            let system = (
+                rox_i18n::t!("settings-appearance-reduce-motion-system"),
+                ReduceMotion::System,
+            );
+            let control =
+                panel::choices_shared(&[system, on, off], choice, Self::set_reduce_motion, cx);
+            return ("settings-appearance-reduce-motion", control);
+        }
+
+        let shown = if choice == ReduceMotion::On {
+            ReduceMotion::On
+        } else {
+            ReduceMotion::Off
+        };
+        let control = panel::choices_shared(&[on, off], shown, Self::set_reduce_motion, cx);
+        ("settings-appearance-reduce-motion-plain", control)
+    }
+
     pub(super) fn appearance_page(
         &self,
         q: &Query,
@@ -632,6 +671,7 @@ impl SettingsWindow {
                 rox_i18n::t!("settings-appearance-section-interface"),
                 None,
                 |rows| {
+                    let (motion_key, motion) = self.reduce_motion_control(cx);
                     rows.keyed(
                         "settings-language",
                         &["language", "locale", "translation"],
@@ -651,6 +691,11 @@ impl SettingsWindow {
                         "settings-appearance-hide-menubar",
                         &["menu bar", "toolbar", "alt"],
                         panel::toggle(settings::hide_menubar(), Self::set_hide_menubar, cx),
+                    )
+                    .keyed(
+                        motion_key,
+                        &["animation", "motion", "accessibility", "still"],
+                        motion,
                     )
                     .keyed(
                         "settings-appearance-os-decorations",

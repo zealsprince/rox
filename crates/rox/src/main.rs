@@ -74,9 +74,9 @@ use rox_core::settings::{
     set_bare_child_windows, set_child_titlebar, set_chrome_side, set_chrome_style, set_design_mode,
     set_experimental, set_fold_case, set_gain_mode, set_hide_menubar, set_language,
     set_menubar_buttons, set_os_decorations, set_plugin_favourites, set_plugins_enabled,
-    set_quit_to_tray, set_rating_dots, set_rating_style, set_resize_border, set_resize_lock,
-    set_seams, set_show_readings, set_tempo_analysis, set_theme, set_unknown_plugin,
-    set_workspace_migrator, split_folders, window_decorations,
+    set_quit_to_tray, set_rating_dots, set_rating_style, set_reduce_motion, set_resize_border,
+    set_resize_lock, set_seams, set_show_readings, set_tempo_analysis, set_theme,
+    set_unknown_plugin, set_workspace_migrator, split_folders, window_decorations,
 };
 use rox_core::{APP_ID, logging};
 use rox_design::assets::Assets;
@@ -462,6 +462,8 @@ fn main() {
         palette::set_palettes(settings.palette_dark(), settings.palette_light(), cx);
         seed_os_appearance(cx);
         set_theme(settings.theme, cx);
+        set_reduce_motion(settings.reduce_motion, cx);
+        integrations::motion::reread(cx);
         palette::set_scalars(
             settings.look.bundle.appearance.surface_opacity,
             settings.look.bundle.appearance.backdrop_strength,

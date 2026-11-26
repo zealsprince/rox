@@ -8,7 +8,9 @@
 //! rows, the install and the enable card are the Plugins page's own code.
 //! Nothing on this page calls a renderer a plugin.
 
-use super::plugins_page::package_controls;
+use super::plugins_page::{
+    PROGRAM_FOLDERS_KEY, PROGRAM_FOLDERS_KEYWORDS, ProgramFolders, package_controls,
+};
 use super::*;
 
 /// The renderer guide as of this build's release, as the plugin guide is.
@@ -67,8 +69,15 @@ impl SettingsWindow {
             rox_i18n::t!("settings-page-renderers"),
             Some(controls.into_any_element()),
             |rows| {
-                rows.custom(&keywords, || intro.into_any_element())
-                    .custom(&keywords, || table.into_any_element())
+                // A renderer's interpreter is looked up in these folders
+                // too, with plugins off as well as on.
+                rows.keyed(
+                    PROGRAM_FOLDERS_KEY,
+                    PROGRAM_FOLDERS_KEYWORDS,
+                    ProgramFolders::field(&self.program_folders.renderers),
+                )
+                .custom(&keywords, || intro.into_any_element())
+                .custom(&keywords, || table.into_any_element())
             },
         ))
     }

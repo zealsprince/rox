@@ -70,20 +70,34 @@ pub(super) struct PluginsPage {
     open: HashSet<String>,
 }
 
-/// Search terms for the Program Folders row on both pages it sits on.
+/// The Program Folders row's label and description, the same on every page
+/// that shows the row.
+pub(super) const PROGRAM_FOLDERS_KEY: &str = "settings-common-program-folders";
+
+/// Search terms for the Program Folders row on every page it sits on.
 pub(super) const PROGRAM_FOLDERS_KEYWORDS: &[&str] = &[
-    "program", "folder", "path", "homebrew", "bin", "ffmpeg", "python", "plugin",
+    "program",
+    "folder",
+    "path",
+    "homebrew",
+    "bin",
+    "ffmpeg",
+    "python",
+    "interpreter",
+    "plugin",
+    "renderer",
 ];
 
-/// The Program Folders field, on this page and beside Convert's ffmpeg row.
-/// One input per page, since search shows both rows at once and an input
-/// drawn twice keeps only the last one's layout for clicks.
+/// The Program Folders field, on this page, the Renderers page and beside
+/// Convert's ffmpeg row. One input per page, since search shows every row at
+/// once and an input drawn twice keeps only the last one's layout for clicks.
 pub(super) struct ProgramFolders {
     pub(super) plugins: Entity<InputState>,
+    pub(super) renderers: Entity<InputState>,
     pub(super) convert: Entity<InputState>,
     /// Edited since the plugins folder was last rescanned for it.
     dirty: bool,
-    _changes: [Subscription; 2],
+    _changes: [Subscription; 3],
 }
 
 impl ProgramFolders {
@@ -92,27 +106,37 @@ impl ProgramFolders {
         window: &mut Window,
         cx: &mut Context<SettingsWindow>,
     ) -> ProgramFolders {
-        let plugins = cx.new(|cx| InputState::new(window, cx).default_value(value.to_string()));
-        let convert = cx.new(|cx| InputState::new(window, cx).default_value(value.to_string()));
+        let mut field =
+            || cx.new(|cx| InputState::new(window, cx).default_value(value.to_string()));
+        let plugins = field();
+        let renderers = field();
+        let convert = field();
 
         let _changes = [
-            Self::follow(&plugins, convert.clone(), window, cx),
-            Self::follow(&convert, plugins.clone(), window, cx),
+            Self::follow(&plugins, [renderers.clone(), convert.clone()], window, cx),
+            Self::follow(&renderers, [plugins.clone(), convert.clone()], window, cx),
+            Self::follow(&convert, [plugins.clone(), renderers.clone()], window, cx),
         ];
 
         ProgramFolders {
             plugins,
+            renderers,
             convert,
             dirty: false,
             _changes,
         }
     }
 
+    /// The row's field over one page's input.
+    pub(super) fn field(input: &Entity<InputState>) -> Input {
+        Input::new(input).w(px(240.))
+    }
+
     /// Every keystroke saves and reaches the program lookup, which is cheap.
     /// The rescan hashes every plugin folder, so it waits for the edit to end.
     fn follow(
         input: &Entity<InputState>,
-        twin: Entity<InputState>,
+        twins: [Entity<InputState>; 2],
         window: &mut Window,
         cx: &mut Context<SettingsWindow>,
     ) -> Subscription {
@@ -123,9 +147,11 @@ impl ProgramFolders {
                 InputEvent::Change => {
                     let text = input.read(cx).value().to_string();
 
-                    // `set_value` is silent, so the twin doesn't echo back.
-                    if twin.read(cx).value().as_ref() != text.as_str() {
-                        twin.update(cx, |twin, cx| twin.set_value(text.clone(), window, cx));
+                    // `set_value` is silent, so a twin doesn't echo back.
+                    for twin in &twins {
+                        if twin.read(cx).value().as_ref() != text.as_str() {
+                            twin.update(cx, |twin, cx| twin.set_value(text.clone(), window, cx));
+                        }
                     }
 
                     rox_plugins::search::set_extra_dirs(settings::split_folders(&text));
@@ -816,9 +842,9 @@ impl SettingsWindow {
                 )
                 .when(self.plugins_enabled, |rows| {
                     rows.keyed(
-                        "settings-common-program-folders",
+                        PROGRAM_FOLDERS_KEY,
                         PROGRAM_FOLDERS_KEYWORDS,
-                        Input::new(&self.program_folders.plugins).w(px(240.)),
+                        ProgramFolders::field(&self.program_folders.plugins),
                     )
                     .keyed(
                         "settings-plugins-favourites",

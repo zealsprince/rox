@@ -1021,7 +1021,14 @@ impl Workspace {
                     div()
                         .id("library-status")
                         .flex_shrink()
-                        .min_w(px(64.))
+                        // Its 64 px fold the menus first. Once they're folded it
+                        // gives way to nothing, or it pushes the buttons past
+                        // the window's edge.
+                        .min_w(if self.menubar_collapsed {
+                            px(0.)
+                        } else {
+                            px(64.)
+                        })
                         .max_w(px(480.))
                         .truncate()
                         .text_color(palette::text_muted())

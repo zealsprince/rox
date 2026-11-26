@@ -330,9 +330,184 @@ pub(crate) fn wrap_layout(mut dump: Value, version: usize) -> DockAreaState {
         ..CanvasConfig::default()
     };
 
+    full_window(&config, version)
+}
+
+/// A tab group of a dock dump and where it shows, as fractions of the
+/// dump's whole box: left, top, right, bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GroupBox {
+    pub(crate) edges: [f32; 4],
+    pub(crate) node: Value,
+}
+
+/// Every leaf of a dock dump's split tree with its box. A split shares its
+/// box out along its axis by its `sizes`, so a dump whose sizes are the
+/// solved ones gives the boxes the window draws. Anything that isn't a split
+/// is a leaf: a tab group, or whatever else the dump holds there.
+pub(crate) fn group_boxes(dump: &Value) -> Vec<GroupBox> {
+    let mut out = Vec::new();
+    if let Some(center) = dump.get("center") {
+        boxes_in(center, [0., 0., 1., 1.], &mut out);
+    }
+    out
+}
+
+fn boxes_in(node: &Value, edges: [f32; 4], out: &mut Vec<GroupBox>) {
+    let stack = node.pointer("/info/stack");
+    let children = node.get("children").and_then(Value::as_array);
+    let (Some(stack), Some(children)) = (stack, children) else {
+        out.push(GroupBox {
+            edges,
+            node: node.clone(),
+        });
+        return;
+    };
+
+    // `axis` 0 lays the children out left to right, 1 top to bottom.
+    let across = stack.get("axis").and_then(Value::as_u64) == Some(0);
+    let sizes: Vec<f32> = stack
+        .get("sizes")
+        .and_then(Value::as_array)
+        .map(|sizes| {
+            sizes
+                .iter()
+                .map(|size| size.as_f64().unwrap_or(0.).max(0.) as f32)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // A split that never laid out has no sizes to go by: equal shares.
+    let total: f32 = sizes.iter().sum();
+    let shares: Vec<f32> = match sizes.len() == children.len() && total > 0. {
+        true => sizes.iter().map(|size| size / total).collect(),
+        false => vec![1. / children.len().max(1) as f32; children.len()],
+    };
+
+    let (start, end) = match across {
+        true => (edges[0], edges[2]),
+        false => (edges[1], edges[3]),
+    };
+    let mut at = start;
+    for (i, (child, share)) in children.iter().zip(&shares).enumerate() {
+        // The last child ends on the edge, whatever the rounding left.
+        let next = match i + 1 == children.len() {
+            true => end,
+            false => at + (end - start) * share,
+        };
+        let child_edges = match across {
+            true => [at, edges[1], next, edges[3]],
+            false => [edges[0], at, edges[2], next],
+        };
+        boxes_in(child, child_edges, out);
+        at = next;
+    }
+}
+
+/// How one axis of a converted group is placed: the anchor's fraction, the
+/// offset from it in units at `extent`, and the size as a fraction.
+///
+/// The size is a fraction of the stage, so it follows a resize. The position
+/// can only be units, so the anchor is the one that keeps the box's edges
+/// where the window's would be at any size: the start for a box from the
+/// start, the end for one to the end, the centre for a centred one. Any
+/// other box drifts by the offset's share of a resize, and takes the anchor
+/// that drifts least.
+pub(crate) fn place_axis(start: f32, end: f32, extent: f32) -> (f32, f32, f32) {
+    let size = (end - start).max(0.);
+
+    // Where the box's start lands, as a fraction, with no offset.
+    let drift = |anchor: f32| anchor * (1. - size) - start;
+    let anchor = [0., 1., 0.5]
+        .into_iter()
+        .min_by(|a: &f32, b: &f32| drift(*a).abs().total_cmp(&drift(*b).abs()))
+        .unwrap_or(0.);
+
+    let offset = match drift(anchor).abs() < 1e-4 {
+        true => 0.,
+        false => -drift(anchor) * extent,
+    };
+    (anchor, offset, size)
+}
+
+fn anchor_at(x: f32, y: f32) -> Anchor {
+    let third = |f: f32| match f {
+        f if f < 0.25 => 0,
+        f if f > 0.75 => 2,
+        _ => 1,
+    };
+
+    match (third(x), third(y)) {
+        (0, 0) => Anchor::TopLeft,
+        (1, 0) => Anchor::Top,
+        (2, 0) => Anchor::TopRight,
+        (0, 1) => Anchor::Left,
+        (1, 1) => Anchor::Center,
+        (2, 1) => Anchor::Right,
+        (0, _) => Anchor::BottomLeft,
+        (1, _) => Anchor::Bottom,
+        _ => Anchor::BottomRight,
+    }
+}
+
+/// A layout as a canvas with each of its tab groups a grid item of its
+/// own, where the group shows in a window of `area` units, with its tabs,
+/// active tab and panels as they were. The splitters between groups go:
+/// the items are independent. Locks come off as in [`wrap_layout`].
+pub(crate) fn split_layout(mut dump: Value, area: [f32; 2], version: usize) -> DockAreaState {
+    unlock(&mut dump);
+
+    let mut canvas = CanvasState {
+        stage: rox_canvas::Stage {
+            width: area[0].round().max(1.),
+            height: area[1].round().max(1.),
+            ..rox_canvas::Stage::default()
+        },
+        ..CanvasState::default()
+    };
+
+    for group in group_boxes(&dump) {
+        let [left, top, right, bottom] = group.edges;
+        let (ax, x, width) = place_axis(left, right, area[0]);
+        let (ay, y, height) = place_axis(top, bottom, area[1]);
+
+        let root = PanelState {
+            panel_name: "StackPanel".to_string(),
+            children: Vec::new(),
+            info: PanelInfo::stack(Vec::new(), Axis::Vertical),
+        };
+        let mut root = serde_json::to_value(root).unwrap_or(Value::Null);
+        root["children"] = Value::Array(vec![group.node]);
+
+        let item = CanvasItem {
+            id: canvas.fresh_id(WRAPPED_GRID),
+            place: Place {
+                anchor: anchor_at(ax, ay),
+                position: [x, y, 0.],
+                size: [Length::Stage(width), Length::Stage(height)],
+                ..Place::default()
+            },
+            content: Content::Grid {
+                dock: serde_json::json!({ "version": version, "center": root }),
+            },
+            ..CanvasItem::default()
+        };
+        canvas.items.push(item);
+    }
+
+    let config = CanvasConfig {
+        canvas,
+        ..CanvasConfig::default()
+    };
+    full_window(&config, version)
+}
+
+/// The dock of a window that is one canvas: `config` as the one panel in
+/// the one tab group of a fresh root.
+fn full_window(config: &CanvasConfig, version: usize) -> DockAreaState {
     let tabs = PanelState {
         panel_name: "TabPanel".to_string(),
-        children: vec![state_of(&config)],
+        children: vec![state_of(config)],
         info: PanelInfo::tabs(0),
     };
     let root = PanelState {
@@ -3682,6 +3857,234 @@ mod tests {
         assert!(library.get("locked").is_none());
         assert_eq!(library["max_height"], 24.0);
         assert_eq!(library["items"][0]["locked"], true);
+    }
+
+    fn tabs(id: &str, panels: &[&str], active: usize) -> Value {
+        let children: Vec<Value> = panels
+            .iter()
+            .map(|name| {
+                json!({
+                    "panel_name": name,
+                    "children": [],
+                    "info": { "panel": { "locked": true, "from": id } },
+                })
+            })
+            .collect();
+        json!({
+            "panel_name": "TabPanel",
+            "children": children,
+            "info": { "tabs": { "active_index": active } },
+        })
+    }
+
+    fn split(axis: u64, sizes: &[f32], children: Vec<Value>) -> Value {
+        json!({
+            "panel_name": "StackPanel",
+            "children": children,
+            "info": { "stack": { "sizes": sizes, "axis": axis } },
+        })
+    }
+
+    fn dump(center: Value) -> Value {
+        json!({ "version": 1, "center": center })
+    }
+
+    fn edges(dump: &Value) -> Vec<[f32; 4]> {
+        group_boxes(dump).into_iter().map(|g| g.edges).collect()
+    }
+
+    fn close(a: [f32; 4], b: [f32; 4]) -> bool {
+        a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-4)
+    }
+
+    /// The items of a split layout, read back the way the canvas loads them.
+    fn split_items(dump: Value, area: [f32; 2]) -> Vec<CanvasItem> {
+        let state = split_layout(dump, area, 1);
+        let info = state.center.children[0].children[0].info.clone();
+        let config: CanvasConfig = panel::config_from_info(&info);
+        assert_eq!(config.canvas.stage.width, area[0].round());
+        config.canvas.items
+    }
+
+    /// Where an item lands in a viewport of `area`, as left, top, right,
+    /// bottom pixels, with the canvas's own projection.
+    fn drawn(item: &CanvasItem, area: [f32; 2]) -> [f32; 4] {
+        let viewport = Viewport {
+            width: area[0],
+            height: area[1],
+        };
+        let frame = Frame::stage(&rox_canvas::Stage::default(), viewport);
+        let camera = Camera {
+            fov: 0.,
+            parallax: 0.,
+        };
+        let face = project(
+            item,
+            &frame,
+            &camera,
+            viewport,
+            None,
+            true,
+            &Live::default(),
+        )
+        .expect("in front of the camera");
+        let [top_left, _, bottom_right, _] = face.corners;
+        [top_left[0], top_left[1], bottom_right[0], bottom_right[1]]
+    }
+
+    fn at(fractions: [f32; 4], area: [f32; 2]) -> [f32; 4] {
+        [
+            fractions[0] * area[0],
+            fractions[1] * area[1],
+            fractions[2] * area[0],
+            fractions[3] * area[1],
+        ]
+    }
+
+    #[test]
+    fn a_split_shares_its_box_by_its_sizes() {
+        let layout = dump(split(
+            0,
+            &[300., 700.],
+            vec![tabs("a", &["library"], 0), tabs("b", &["queue"], 0)],
+        ));
+
+        let boxes = edges(&layout);
+        assert_eq!(boxes.len(), 2);
+        assert!(close(boxes[0], [0., 0., 0.3, 1.]), "{boxes:?}");
+        assert!(close(boxes[1], [0.3, 0., 1., 1.]), "{boxes:?}");
+    }
+
+    #[test]
+    fn nested_splits_divide_their_parents_box() {
+        // A row of two over a full-width strip, the window's usual shape.
+        let layout = dump(split(
+            1,
+            &[600., 200.],
+            vec![
+                split(
+                    0,
+                    &[250., 750.],
+                    vec![tabs("a", &["library"], 0), tabs("b", &["art"], 0)],
+                ),
+                tabs("c", &["playback", "seek"], 1),
+            ],
+        ));
+
+        let boxes = edges(&layout);
+        let want = [
+            [0., 0., 0.25, 0.75],
+            [0.25, 0., 1., 0.75],
+            [0., 0.75, 1., 1.],
+        ];
+        assert_eq!(boxes.len(), 3);
+        for (got, want) in boxes.iter().zip(want) {
+            assert!(close(*got, want), "{got:?} against {want:?}");
+        }
+
+        // Converted at 1000 by 800, each item draws where its group did.
+        // Each one touches the edges it started from, so a resize keeps every
+        // one where the window would have put it.
+        let area = [1000., 800.];
+        let items = split_items(layout, area);
+        assert_eq!(items.len(), 3);
+        for size in [area, [1600., 900.]] {
+            for (item, want) in items.iter().zip(want) {
+                let px = at(want, size);
+                let got = drawn(item, size);
+                assert!(
+                    got.iter().zip(px).all(|(a, b)| (a - b).abs() < 0.01),
+                    "{} at {got:?} in {size:?}, the group at {px:?}",
+                    item.id
+                );
+            }
+        }
+
+        let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["grid", "grid-2", "grid-3"]);
+    }
+
+    #[test]
+    fn a_middle_group_keeps_its_place_and_an_off_centre_one_drifts_least() {
+        let layout = dump(split(
+            0,
+            &[200., 300., 500.],
+            vec![
+                tabs("a", &["library"], 0),
+                tabs("b", &["art"], 0),
+                tabs("c", &["queue"], 0),
+            ],
+        ));
+        let area = [1000., 600.];
+        let items = split_items(layout, area);
+
+        let middle = &items[1];
+        assert_eq!(middle.place.anchor, Anchor::Top);
+        assert!(matches!(middle.place.size[0], Length::Stage(w) if (w - 0.3).abs() < 1e-6));
+        assert!((middle.place.position[0] + 150.).abs() < 0.01);
+        let got = drawn(middle, area);
+        assert!((got[0] - 200.).abs() < 0.01 && (got[2] - 500.).abs() < 0.01);
+
+        // 400 wider, the window would put it at 280. Its width follows, and
+        // its offset drifts it by 0.15 of the resize: 60 to the right.
+        let got = drawn(middle, [1400., 600.]);
+        assert!((got[0] - 340.).abs() < 0.01, "{got:?}");
+
+        // A centred box is exact at any size.
+        assert_eq!(place_axis(0.25, 0.75, 1000.), (0.5, 0., 0.5));
+        assert_eq!(place_axis(0., 1., 1000.), (0., 0., 1.));
+    }
+
+    #[test]
+    fn a_single_group_fills_the_stage() {
+        let items = split_items(layout(), [1280., 720.]);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].place.anchor, Anchor::TopLeft);
+        assert_eq!(items[0].place.position, [0.; 3]);
+        assert_eq!(items[0].place.size, [Length::Stage(1.), Length::Stage(1.)]);
+    }
+
+    #[test]
+    fn each_group_keeps_its_tabs_active_tab_and_settings() {
+        let layout = dump(split(
+            0,
+            &[1., 1.],
+            vec![
+                tabs("a", &["library", "queue", "lyrics"], 2),
+                tabs("b", &["art"], 0),
+            ],
+        ));
+        let items = split_items(layout, [800., 600.]);
+
+        let Content::Grid { dock } = &items[0].content else {
+            panic!("a grid");
+        };
+        assert!(grid::usable(dock).is_some(), "the grid's dump restores");
+        assert_eq!(dock["center"]["info"]["stack"]["axis"], 1);
+
+        let group = &dock["center"]["children"][0];
+        assert_eq!(group["info"]["tabs"]["active_index"], 2);
+        let names: Vec<&str> = group["children"]
+            .as_array()
+            .expect("tabs")
+            .iter()
+            .filter_map(|panel| panel["panel_name"].as_str())
+            .collect();
+        assert_eq!(names, ["library", "queue", "lyrics"]);
+
+        // The settings come along and the locks come off.
+        let config = &group["children"][1]["info"]["panel"];
+        assert_eq!(config["from"], "a");
+        assert!(config.get("locked").is_none());
+
+        // A split that never laid out shares its box equally.
+        let unlaid = dump(split(
+            1,
+            &[],
+            vec![tabs("a", &["library"], 0), tabs("b", &["art"], 0)],
+        ));
+        assert!(close(edges(&unlaid)[1], [0., 0.5, 1., 1.]));
     }
 
     #[test]

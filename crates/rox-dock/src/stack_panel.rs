@@ -192,6 +192,12 @@ impl StackPanel {
         &self.panels
     }
 
+    /// rox addition: each child's size along the axis as last laid out,
+    /// pinned panels' clamps included. `dump` saves the weights instead.
+    pub fn solved_sizes(&self, cx: &App) -> Vec<Pixels> {
+        self.state.read(cx).sizes().clone()
+    }
+
     /// Return the index of the panel.
     pub(crate) fn index_of_panel(&self, panel: Arc<dyn PanelView>) -> Option<usize> {
         self.panels.iter().position(|p| p == &panel)

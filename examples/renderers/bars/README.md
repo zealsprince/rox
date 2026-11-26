@@ -2,7 +2,8 @@
 
 An example rox renderer, written to be copied. It draws one bar for each signal in the
 signal pool, a white stripe along the bottom that sweeps once every ten seconds of the
-playing position, and a dot under the pointer that turns solid while a button is held.
+playing position and turns grey when the music stops, and a dot under the pointer that
+turns solid while a button is held.
 It's one Python file on nothing beyond the standard library.
 
 Its manifest asks for the palette (`"palette": true` under `capabilities.renderer`), so

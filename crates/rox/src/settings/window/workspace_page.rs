@@ -1148,14 +1148,11 @@ impl SettingsWindow {
         };
         let shaders = card.and_then(|card| card.shader_line());
         let screen = card.and_then(|card| card.screen_shader.clone());
-        // A plugin's card reads out what it is, what it may do and what
-        // changed, around the line saying it runs as a program.
+        // A plugin's card draws its own words, as every host of it does.
         let plugin = match self.pending.as_ref()? {
             Pending::EnablePlugin(card) => Some(card),
             _ => None,
         };
-        let plugin_lead = plugin.map(|card| card.lead.clone()).unwrap_or_default();
-        let plugin_lines = plugin.map(|card| card.lines.clone()).unwrap_or_default();
         let split = self.splits_yes(self.pending.as_ref()?);
         let destructive = self.pending.as_ref()?.destructive();
         // The shader list and the hotkey line need the room.
@@ -1236,8 +1233,8 @@ impl SettingsWindow {
                 None,
             ),
             Pending::EnablePlugin(card) => (
-                rox_i18n::t!("settings-plugins-card-title", name = card.name.as_str()),
-                rox_i18n::t!("settings-plugins-card-runs"),
+                card.title(),
+                SharedString::default(),
                 rox_i18n::t!("settings-plugins-switch-on"),
                 None,
             ),
@@ -1357,52 +1354,55 @@ impl SettingsWindow {
                 .child(
                     dialog_card(
                         "settings-confirm-body",
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(tokens::SPACE_MD)
-                            .child(div().child(title))
-                            .children(card.and_then(|card| card.byline.clone()).map(line))
-                            .children(card.and_then(|card| card.description.clone()).map(line))
-                            .children(
-                                card.map(|card| card.requires.clone())
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(line),
-                            )
-                            .children(card.and_then(|card| card.heavy.clone()).map(line))
-                            .children(
-                                card.into_iter()
-                                    .flat_map(|card| card.weight.iter().cloned())
-                                    .map(line),
-                            )
-                            .children(plugin_lead.into_iter().map(line))
-                            .child(line(body))
-                            .children(plugin_lines.into_iter().map(line))
-                            // A screen shader covers the window, so say so before the
-                            // apply, with the way back off.
-                            .children(screen.clone().map(line))
-                            .children(screen.map(|_| {
-                                kbd_line([
-                                    Seg::Text(rox_i18n::t!("workspace-screen-shader-hint-before")),
-                                    Seg::Key(chord("Shift+X")),
-                                    Seg::Text(rox_i18n::t!("workspace-hint-or")),
-                                    Seg::Key(rox_i18n::t!("menu-window")),
-                                    Seg::Text(rox_i18n::t!("workspace-hint-then")),
-                                    Seg::Key(rox_i18n::t!("menu-overlay-shader")),
-                                ])
-                                .text_xs()
-                            }))
-                            .children(shaders.clone().map(line))
-                            // Shaders from a look are somebody else's code, so the
-                            // yes that runs them says so.
-                            .children(split.then(|| {
-                                line(if shaders.is_some() {
-                                    rox_i18n::t!("workspace-apply-shaders-approve-body")
-                                } else {
-                                    rox_i18n::t!("workspace-apply-shaders-plain-body")
-                                })
-                            })),
+                        match plugin {
+                            Some(card) => card.body(),
+                            None => div()
+                                .flex()
+                                .flex_col()
+                                .gap(tokens::SPACE_MD)
+                                .child(div().child(title))
+                                .children(card.and_then(|card| card.byline.clone()).map(line))
+                                .children(card.and_then(|card| card.description.clone()).map(line))
+                                .children(
+                                    card.map(|card| card.requires.clone())
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .map(line),
+                                )
+                                .children(card.and_then(|card| card.heavy.clone()).map(line))
+                                .children(
+                                    card.into_iter()
+                                        .flat_map(|card| card.weight.iter().cloned())
+                                        .map(line),
+                                )
+                                .child(line(body))
+                                // A screen shader covers the window, so say so before the
+                                // apply, with the way back off.
+                                .children(screen.clone().map(line))
+                                .children(screen.map(|_| {
+                                    kbd_line([
+                                        Seg::Text(rox_i18n::t!(
+                                            "workspace-screen-shader-hint-before"
+                                        )),
+                                        Seg::Key(chord("Shift+X")),
+                                        Seg::Text(rox_i18n::t!("workspace-hint-or")),
+                                        Seg::Key(rox_i18n::t!("menu-window")),
+                                        Seg::Text(rox_i18n::t!("workspace-hint-then")),
+                                        Seg::Key(rox_i18n::t!("menu-overlay-shader")),
+                                    ])
+                                    .text_xs()
+                                }))
+                                .children(shaders.clone().map(line))
+                                // Shaders from a look are somebody else's code, so the
+                                // yes that runs them says so.
+                                .children(split.then(|| {
+                                    line(if shaders.is_some() {
+                                        rox_i18n::t!("workspace-apply-shaders-approve-body")
+                                    } else {
+                                        rox_i18n::t!("workspace-apply-shaders-plain-body")
+                                    })
+                                })),
+                        },
                         div()
                             .flex()
                             .flex_row()

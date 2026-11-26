@@ -11,7 +11,7 @@ the timeouts, the read size and the buffering are in
 example in [`examples/plugins/tones`](../../examples/plugins/tones/).
 
 Version-sensitive: the host speaks plugin API version 1 and nothing else
-(`SUPPORTED_API = 1..=1`, `rox-plugins/src/manifest.rs:24`). The wire is JSON-RPC 2.0,
+(`SUPPORTED_API = 1..=1`, `rox-plugins/src/manifest.rs`). The wire is JSON-RPC 2.0,
 one object per line. A plugin's bytes are decoded by symphonia 0.6, so its containers and
 codecs are the ones the engine reads. Folder hashes are sha2 0.10's SHA-256, the folder
 watch is notify-debouncer-full 0.7, and the Windows job object is windows-sys 0.61.
@@ -28,7 +28,7 @@ guide drawn from this document.
    behind it: it lists on the Renderers page with a switch of its own
    ([the renderers doc](11-renderers.md)).
 2. Install on the Plugins page takes one or more `.roxp` files from the file dialog
-   (`install_plugins`, `plugins_page.rs:202-246`). Each is copied in as
+   (`install_plugins`, `plugins_page.rs`). Each is copied in as
    `plugins/<id>.roxp` and listed with its switch off, and a toast names it or gives
    the reason it was refused. Installing runs nothing and asks nothing. A `.roxp` dropped
    into the plugins folder by hand lists the same way. Reveal Folder creates the plugins
@@ -50,7 +50,7 @@ guide drawn from this document.
    folder is left alone, and so is the plugin's data folder either way.
 
 The Plugins page links to that guide at the running build's release tag
-(`GUIDE_URL`, `rox/src/settings/window/plugins_page.rs:34-38`).
+(`GUIDE_URL`, `rox/src/settings/window/plugins_page.rs`).
 
 ## The plugins folder
 
@@ -65,54 +65,54 @@ The Plugins page links to that guide at the running build's release tag
 
 `<data>` is rox's data directory, `rox-data` beside the executable in portable mode
 (`plugins_dir`, `plugin_data_dir` and `plugin_cache_dir`,
-`rox-core/src/settings.rs:193-208`). The plugin is told its data directory in `hello`
+`rox-core/src/settings.rs`). The plugin is told its data directory in `hello`
 and should write nothing anywhere else inside rox's data. A write into its own folder
 would change its hash and switch it off. The cache is outside the plugins folder, so
 unpacking into it doesn't wake the watch.
 
 A scan reads every subfolder, then every `.roxp` in file name order, parses the
 manifest, hashes the plugin and checks the programs it lists (`scan`,
-`rox-plugins/src/loader.rs:89-162`). It runs nothing. A plugin that can't load still
+`rox-plugins/src/loader.rs`). It runs nothing. A plugin that can't load still
 comes back with its reason, which the page shows under "This plugin can't run". A
 stray file beside them is skipped. A folder whose manifest `id` isn't the folder's name
-is refused (`loader.rs:249-253`), because rows are filed under the id and the host
+is refused (`load`, `loader.rs`), because rows are filed under the id and the host
 finds the plugin by it. A package's copy is named for its hash, so it's held to the id
 its archive's manifest gave instead.
 
-A package is read without unpacking first (`peek`, `rox-plugins/src/package.rs:49-69`):
+A package is read without unpacking first (`peek`, `rox-plugins/src/package.rs`):
 the manifest at the archive's root, held to the same rules as a folder's, and the
 archive's hash. The peek is remembered per path, length and modified time, so a rescan
 rehashes only the packages that moved. A zip whose only manifest is one folder down is
 refused with an error naming that folder, the shape a file manager's "compress folder"
 gives. Then it's unpacked into `plugin-cache/<id>/<first 16 hex of the hash>/` and
-loaded from there like a folder (`unpack`, `package.rs:111-145`). A copy that already
+loaded from there like a folder (`unpack`, `package.rs`). A copy that already
 hashes to the archive's hash is reused. Anything else in its place is removed and the
 archive unpacked again. The fresh copy is hashed once more and refused on a mismatch,
 so the copy that runs is the copy that was approved. After the scan, copies
 under any other hash and ids with no package behind them are swept (`sweep`,
-`loader.rs:184`). A copy that won't delete, as on Windows while a native plugin runs
+`loader.rs`). A copy that won't delete, as on Windows while a native plugin runs
 from it, is left for the next scan.
 
 One id lists one plugin. A folder holds its id ahead of any package, and among packages
 the file that sorts first holds it. A package refused for an id already held still
 lists, failed, with an error naming the file or folder that holds it
-(`loader.rs:139-143`). The scan sorts by id with the holder first. The page keys a
+(`scan`, `loader.rs`). The scan sorts by id with the holder first. The page keys a
 refused row on the id and its place among that id's rows, so the two draw as separate
-rows (`plugin_row`, `rox/src/settings/window/plugins_page.rs:974`). A `.roxp` that's a
-symlink lists as failed (`loader.rs:103-111`). Install refuses a package whose id a
+rows (`plugin_row`, `rox/src/settings/window/plugins_page.rs`). A `.roxp` that's a
+symlink lists as failed (`scan`, `loader.rs`). Install refuses a package whose id a
 folder or another package already holds, and copies through a temporary name that
 isn't `.roxp`, so a scan mid-copy passes over it (`install_into`,
-`rox-services/src/plugins.rs:680-713`). It leaves the record and the approval alone, so
+`rox-services/src/plugins.rs`). It leaves the record and the approval alone, so
 an update to a switched-on plugin shows as Changed through `apply`.
 
 Pack, beside Developer mode on a switched-on folder's row, writes the folder to a
-`.roxp` the author names (`pack_plugin`, `plugins_page.rs:759`, then `pack`,
-`rox-services/src/plugins.rs:730-742`). It takes only a folder that loads, refuses an
+`.roxp` the author names (`pack_plugin`, `plugins_page.rs`, then `pack`,
+`rox-services/src/plugins.rs`). It takes only a folder that loads, refuses an
 archive path inside that folder, and hashes the finished archive against the folder's
-hash, deleting it on a mismatch (`package.rs:148-180`). Pack and Install's hashing
+hash, deleting it on a mismatch (`pack`, `package.rs`). Pack and Install's hashing
 run off the UI thread. Install's copy runs on it, because `install` takes the `App`.
 
-The limits a package is held to are `LIMITS` (`package.rs:25-29`): 20,000 entries and
+The limits a package is held to are `LIMITS` (`package.rs`): 20,000 entries and
 1 GiB unpacked. Every archive rule beneath that (names, links, duplicates, sizes) is
 `rox-package`'s. The executable bit is kept from the unix mode an entry stores, masked to
 `0o755`. An entry with no stored mode unpacks as `0o644`.
@@ -123,9 +123,9 @@ installed, or the Renderers page is open, which rescans once as it starts it (`w
 `watch_folder`, `rox-services/src/plugins.rs`). Once started it runs until rox quits. A
 scan starts nothing, and only the hosts `apply` builds, which need the switch on, run a
 plugin. The watch follows its parent until the folder exists
-(`Watch`, `loader.rs:300-377`). A dropped or replaced `.roxp` raises an event like a
+(`Watch`, `loader.rs`). A dropped or replaced `.roxp` raises an event like a
 folder edit. Events are hints to scan again, 500 ms debounced; a scan that finds what
-the last one found changes nothing (`rescan`, `rox-services/src/plugins.rs:634-663`).
+the last one found changes nothing (`rescan`, `rox-services/src/plugins.rs`).
 macOS reports event paths with symlinks resolved, so the watch matches both spellings
 of the folder.
 
@@ -134,30 +134,30 @@ of the folder.
 The hash is the plugin's identity for trust: SHA-256 over every file under the folder,
 each fed as `<relative path>\0<length as u64 little-endian><bytes>`, in byte order of the
 relative paths, with `/` as the separator on every OS (`folder_hash`,
-`rox-plugins/src/hash.rs:24-37`). `.DS_Store`, `Thumbs.db` and `desktop.ini` are skipped,
+`rox-plugins/src/hash.rs`). `.DS_Store`, `Thumbs.db` and `desktop.ini` are skipped,
 since the OS writes them and nothing runs them. `__pycache__` is not skipped: Python
 would run a planted `.pyc`.
 
-A package's hash is the same digest over its entries (`archive_hash`, `hash.rs:41-56`),
+A package's hash is the same digest over its entries (`archive_hash`, `hash.rs`),
 so a folder and the `.roxp` packed from it hash the same and share one approval. One
-predicate picks what's hashed and what's unpacked (`hashed`, `hash.rs:61-71`): an
+predicate picks what's hashed and what's unpacked (`hashed`, `hash.rs`): an
 entry the hash leaves out never reaches the folder the plugin runs from. Names under
 `_rox/` are reserved. An archive's are left out of the hash and never unpacked, and a
-folder holding a top-level `_rox/` fails to load (`reserved_error`, `loader.rs:277`),
+folder holding a top-level `_rox/` fails to load (`reserved_error`, `loader.rs`),
 since plugin code could read files there that no hash covers.
 
-A symlink anywhere inside refuses the plugin (`hash.rs:107-109`), and so does a plugin
-folder that is itself a symlink (`loader.rs:112-114`). Following one would let an approved
+A symlink anywhere inside refuses the plugin (`walk`, `hash.rs`), and so does a plugin
+folder that is itself a symlink (`scan`, `loader.rs`). Following one would let an approved
 hash stand for bytes outside the folder. A file name that isn't UTF-8 is refused too,
 since it can't hash the same on every OS.
 
 The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
-(`rox-plugins/src/process.rs:87`), so a Python plugin's first import doesn't write
+(`prepare`, `rox-plugins/src/env.rs`), so a Python plugin's first import doesn't write
 `__pycache__/` into its own folder and change its own hash.
 
 ## The manifest
 
-`plugin.json`, at most 256 KiB (`rox-plugins/src/manifest.rs:29`). The tones example's:
+`plugin.json`, at most 256 KiB (`MAX_BYTES`, `rox-plugins/src/manifest.rs`). The tones example's:
 
 ```json
 {
@@ -189,7 +189,7 @@ The host sets `PYTHONDONTWRITEBYTECODE=1` for every plugin
 
 | Key | Meaning |
 |---|---|
-| `id` | `^[a-z0-9][a-z0-9-]{1,63}$` (`valid_id`, `manifest.rs:111-118`). Its rows are filed under `plugin:<id>` for good, so it never changes. |
+| `id` | `^[a-z0-9][a-z0-9-]{1,63}$` (`valid_id`, `manifest.rs`). Its rows are filed under `plugin:<id>` for good, so it never changes. |
 | `name`, `version` | Shown on the Plugins page and the enable card. |
 | `api` | The plugin API version it targets. Must be in `SUPPORTED_API`. |
 | `entry` | Exactly one of `script` or `native`. |
@@ -216,13 +216,13 @@ A native entry names a binary per platform, keyed `<os>-<arch>` from Rust's own 
 A script entry runs `<interpreter> <path>`. `python3` tries the `py -3` launcher first
 on Windows, then `python3`, then `python`; `node` tries `node`; any other name is looked
 up on PATH as written, trying Windows' executable extensions after the bare name
-(`aliases` and `on_path`, `manifest.rs:612` and `:763`). The entry path is resolved
+(`aliases` and `on_path`, `manifest.rs`). The entry path is resolved
 inside the plugin folder and has to be a plain relative path to a file that exists
-(`inside`, `manifest.rs:521`).
+(`inside`, `manifest.rs`).
 
 The Plugins page draws `config_schema.properties` as rows: `string`, `string` with
 `"format": "password"` (a masked field), `number`, `integer`, `boolean`, and any property
-with an `enum` (`field`, `rox/src/settings/window/plugins_page.rs:62-76`). A property's
+with an `enum` (`field`, `rox/src/settings/window/plugins_page.rs`). A property's
 `title` labels the row and its `description` shows under it. Anything else shows as raw
 JSON. Values are stored in the plugin's record in `accounts.json`, in plaintext like the
 rest of that file, and a change restarts the plugin with the new config when the edit
@@ -236,11 +236,11 @@ What refuses a manifest, with the reason the page shows:
   doesn't know are ignored, so a field added there later is additive. A new top-level key
   moves `api`.
 - An `id` that doesn't match the pattern, or an `api` outside `SUPPORTED_API`
-  (`parse`, `manifest.rs:136-155`).
+  (`parse`, `manifest.rs`).
 - `entry` naming both kinds or neither.
 - No native build for this platform ("no build for macos-x86_64"), an interpreter not on
   PATH ("interpreter python3 not found"), an entry path that leaves the folder, or an
-  entry file that's missing (`entry_with`, `manifest.rs:171-197`).
+  entry file that's missing (`entry_with`, `manifest.rs`).
 - A declared panel with no name or a repeated one, no `panel_name`, any children, `info`
   that isn't `{ "panel": { ... } }`, or a `source browser` naming any source but
   `plugin:<id>` (`check_panels`, `manifest.rs`).
@@ -256,7 +256,7 @@ What refuses a manifest, with the reason the page shows:
 Newline-delimited JSON-RPC 2.0 over the plugin's stdin (rox to plugin) and stdout
 (plugin to rox). One object per line, UTF-8, each line at most 1 MiB. stderr is free
 text: every line goes to rox's log as `plugin <id>: <line>`, cut at 4 KiB
-(`drain_stderr`, `rox-plugins/src/process.rs:308-325`). The plugin never calls rox.
+(`drain_stderr`, `rox-plugins/src/process.rs`). The plugin never calls rox.
 
 Every request has an `id`, and the answer echoes it with either `result` or
 `error: {code, message}`. rox may have many requests in flight, and a plugin may answer
@@ -264,12 +264,12 @@ them in any order. A plugin that answers one at a time is legal but stalls its o
 playback behind its own searches, so the example runs everything but `shutdown` on a
 thread pool. `jsonrpc` is optional on answers and has to be `"2.0"` when present.
 `"result": null` is a real answer, told apart from a missing `result`
-(`Response`, `rox-plugins/src/wire.rs:52-69`). An error's message is shown to the user
+(`Response`, `rox-plugins/src/wire.rs`). An error's message is shown to the user
 where the call was theirs (a browse, a sync) and logged otherwise.
 
 Nothing is sent before `hello` answers. Every answer is parsed into a typed shape that
 refuses unknown fields, and a line that doesn't parse or answers an id rox never sent
-is logged and dropped (`parse_line`, `wire.rs:92-117`).
+is logged and dropped (`parse_line`, `wire.rs`).
 
 ### `hello`
 
@@ -280,7 +280,7 @@ is logged and dropped (`parse_line`, `wire.rs:92-117`).
 
 `config` is the plugin's settings as the Plugins page stored them, `{}` or `null` when
 there are none. The answer's `api` has to be in `SUPPORTED_API`, or rox hangs up
-(`start`, `rox-plugins/src/host.rs:382-405`). `features` is `wire::FEATURES`, the
+(`start`, `rox-plugins/src/host.rs`). `features` is `wire::FEATURES`, the
 optional parts of API 1 this host reads. A plugin uses one only when it's listed, since
 an older host refuses a result that carries it. `locale` is `rox_i18n::locale()`, taken
 when `reconcile` (`rox-services/src/plugins.rs`) makes the host and left out when empty.
@@ -308,7 +308,7 @@ non-null `cursor` means there's another page, fetched by sending that cursor bac
 A Track has `key`, `title`, `artist`, `album_artist`, `album`, `genre`, `year`,
 `disc_no`, `track_no`, `duration_ms`, `codec`, `bitrate_kbps` and `live`. None is ever
 null: unknown text is `""` and an unknown number is `0`. A missing field reads as empty
-rather than refusing the track (`Track`, `wire.rs:229-247`). `key` is opaque to rox,
+rather than refusing the track (`Track`, `wire.rs`). `key` is opaque to rox,
 non-empty, and has to stay the same across sessions and plugin versions, because it
 becomes the row's path. A plugin that changes its key scheme orphans every row it made.
 
@@ -438,7 +438,7 @@ first page does. Answering `"unchanged": true` there ends the sync with nothing 
 and rox keeps its stored token whatever the answer's says. The last page (null
 `cursor`) holds the new token. rox replaces the collection's membership only after
 the last page, so a sync that fails partway changes nothing
-(`fetch_collection` and `sync_collection`, `rox-services/src/plugins.rs:895-975`). A
+(`fetch_collection` and `sync_collection`, `rox-services/src/plugins.rs`). A
 sync still paging after 2,000 pages is treated as a plugin looping on its own cursor
 and fails.
 
@@ -484,12 +484,12 @@ overlay a station's songs use (`top_overlay`).
 ```
 
 At most `len` bytes from `offset`, base64. Fewer is fine, and an empty `data` means the
-end of the stream. More than `len` is refused (`Read::bytes`, `wire.rs:344-356`). rox
+end of the stream. More than `len` is refused (`Read::bytes`, `wire.rs`). rox
 asks for 256 KiB at a time and never more than 512 KiB, so an answer stays under the
 frame cap once encoded. rox never sends overlapping ranges on one stream. A seekable
 stream sees its next chunk asked for while the last is being used; a stream that can't
 seek sees one read at a time, each starting where the last answer ended
-(`rox-plugins/src/stream.rs:1-16`). A plugin still has to accept a read on one stream
+(the module doc of `rox-plugins/src/stream.rs`). A plugin still has to accept a read on one stream
 while a read on another is running.
 
 A plugin that loses its upstream mid-stream should recover inside `source.read` and
@@ -509,7 +509,7 @@ symphonia decodes (CAF, MP4, Matroska, Ogg, AIFF or WAV, or ADTS AAC and MP3). s
 < {"jsonrpc":"2.0","id":9,"result":null}
 ```
 
-Sent when rox drops the stream (`Drop for Stream`, `stream.rs:300-313`). Nothing waits on
+Sent when rox drops the stream (`Drop for Stream`, `stream.rs`). Nothing waits on
 the answer.
 
 ### `source.cover`
@@ -523,7 +523,7 @@ the answer.
 size the service has that fits under `MAX_FRAME` once encoded: rox cuts its own
 thumbnails for list rows, and the cover panel draws this answer as it is. Asked off the
 UI thread, for rows with no stored thumbnail and for the track a cover panel is showing
-(`cover`, `rox-services/src/plugins.rs:2310-2326`; `full_cover`,
+(`cover`, `rox-services/src/plugins.rs`; `full_cover`,
 `rox-services/src/sources.rs`).
 
 ### `source.lyrics`
@@ -655,21 +655,21 @@ that reaches a plugin on every OS when rox goes away without a shutdown.
 
 | | Limit | Where |
 |---|---|---|
-| `hello` | 30 s | `Timeouts`, `rox-plugins/src/host.rs:53-65` |
+| `hello` | 30 s | `Timeouts`, `rox-plugins/src/host.rs` |
 | `source.browse`, `source.search`, each later sync page | 15 s | |
 | `provider.lyrics`, `provider.metadata`, `provider.artist` | 15 s, the listing timeout | `ask_provider`, `rox-services/src/plugins.rs` |
 | A sync's first page | 60 s | |
 | `source.open` | 20 s | |
 | `source.read`, `source.cover` | 10 s | |
 | `shutdown` | 2 s, then killed | |
-| A line on stdout | 1 MiB | `MAX_FRAME`, `rox-plugins/src/wire.rs:16` |
-| A string in a result | 4 KiB | `MAX_STRING`, `wire.rs:18` |
-| Entries or tracks per page | 500 | `MAX_ENTRIES`, `wire.rs:21` |
+| A line on stdout | 1 MiB | `MAX_FRAME`, `rox-plugins/src/wire.rs` |
+| A string in a result | 4 KiB | `MAX_STRING`, `wire.rs` |
+| Entries or tracks per page | 500 | `MAX_ENTRIES`, `wire.rs` |
 | Candidates in a `provider.*` answer | 50 | `MAX_CANDIDATES`, `wire.rs` |
 | An artist sheet's bio | 64 KiB | `MAX_BIO`, `wire.rs` |
-| A read's `len` | 256 KiB asked, 512 KiB at most | `Options`, `stream.rs:35-42`; `MAX_READ`, `wire.rs:24` |
-| A stderr line | 4 KiB | `STDERR_LINE`, `process.rs:22` |
-| Sync pages per collection | 2,000 | `MAX_SYNC_PAGES`, `rox-services/src/plugins.rs:45` |
+| A read's `len` | 256 KiB asked, 512 KiB at most | `Options`, `stream.rs`; `MAX_READ`, `wire.rs` |
+| A stderr line | 4 KiB | `STDERR_LINE`, `process.rs` |
+| Sync pages per collection | 2,000 | `MAX_SYNC_PAGES`, `rox-services/src/plugins.rs` |
 
 A call that times out fails on its own; the plugin keeps serving its other calls. A
 longer stdout line is dropped with a warning. A result over a cap fails that call.
@@ -677,7 +677,7 @@ longer stdout line is dropped with a warning. A result over a cap fails that cal
 ## Process lifecycle
 
 A plugin gets one process, started by the first call that needs it
-(`conn`, `host.rs:262-329`). A plugin switched on starts at once, since switching on
+(`conn`, `host.rs`). A plugin switched on starts at once, since switching on
 syncs its kept collections, and that's the first call. The host has one thread writing
 stdin, one reading stdout and a table of pending requests by id, so any number of calls
 can be in flight.
@@ -741,25 +741,25 @@ its `config_schema`.
 
 When a plugin exits unexpectedly, every call it had fails with "the plugin exited", and
 the next call starts it again after a wait of 0, 1, 2 or 4 s for the first through fourth
-crash inside ten minutes (`BACKOFF`, `host.rs:26-31`). The fifth stops it for good
+crash inside ten minutes (`BACKOFF`, `host.rs`). The fifth stops it for good
 with "Stopped after repeated crashes" on its row, until it's switched off and on
-(`crashed` and `revive`, `host.rs:331-347` and `:522-528`). A plugin that can't start,
+(`crashed` and `revive`, `host.rs`). A plugin that can't start,
 or fails `hello`, counts as a crash, so a broken one stops instead of retrying forever.
 
 Switching a plugin off sends `shutdown`, waits up to 2 s for requests still in flight,
-then closes stdin and kills what's left (`stop`, `host.rs:477-500`). Quitting rox skips
-the wait and hangs up at once (`hang_up_now`, `host.rs:505-518`). A changed config or a
+then closes stdin and kills what's left (`stop`, `host.rs`). Quitting rox skips
+the wait and hangs up at once (`hang_up_now`, `host.rs`). A changed config or a
 changed folder hash replaces the host, which stops the old process
-(`reconcile`, `rox-services/src/plugins.rs:281-337`).
+(`reconcile`, `rox-services/src/plugins.rs`).
 
 Per OS:
 
 - Linux and macOS: the plugin leads its own process group (`process_group(0)`), and
   stopping it sends SIGKILL to the whole group, so whatever it started goes with it
-  (`kill`, `process.rs:408-430`). A child that moves itself to another group escapes, as
+  (`kill`, `process.rs`). A child that moves itself to another group escapes, as
   it would from a shell. The plugin gets its three pipes and no other fd: every fd past
   2 is marked to close at exec, so nothing rox holds open, its database and sockets
-  included, reaches it (`inherit_pipes_only`, `process.rs:219`).
+  included, reaches it (`inherit_pipes_only`, `process.rs`).
 - Windows: the plugin starts with `CREATE_NO_WINDOW`, so no console window opens, and
   goes into a job object with kill-on-close right after spawn. Closing the job's handle
   ends everything in it. A grandchild started between the spawn and the assignment can
@@ -770,37 +770,37 @@ Per OS:
 
 A plugin row plays through ADR 29's first amendment. The row stores no URL.
 `store::locators_for` answers a `Locator::Plugin` holding the source, the key and the
-live flag (`rox-library/src/store.rs:1742`), and the player hands the queue the opener
-the services layer installed (`rox-services/src/player.rs:1600`,
-`rox-services/src/openers.rs:17-30`). The engine never depends on the plugin host: the
-opener is a boxed function (`Opener`, `rox-playback/src/plugin.rs:86`).
+live flag (`locators_for`, `rox-library/src/store.rs`), and the player hands the queue the opener
+the services layer installed (`openers::current`, `rox-services/src/player.rs`,
+`rox-services/src/openers.rs`). The engine never depends on the plugin host: the
+opener is a boxed function (`Opener`, `rox-playback/src/plugin.rs`).
 
 On the decode thread the engine calls the opener, names any failure after the plugin,
-and builds a source from the result (`rox-playback/src/engine.rs:2298-2360`). A failed
+and builds a source from the result (`open_file_at`, `rox-playback/src/engine.rs`). A failed
 open publishes a refusal naming the plugin, and the queue moves on. A dead or slow plugin
 never stops local playback. A command that arrives during an open waits for it, since
 commands drain at the top of the decode loop; research 04 measured pauses waiting up to
 2.3 s behind cold opens.
 
 The services side opens ahead (`follow`, `preopen_due`, `worth_preopening` and
-`preopen`, `rox-services/src/plugins.rs:1262-1411`). Once the audible track has held
+`preopen`, `rox-services/src/plugins.rs`). Once the audible track has held
 for 2 s and is within 20 s of its crossfade window, the entry after the one the engine
 is opening or adopted last is opened (`upcoming_locators`,
-`rox-services/src/player.rs:1224-1246`), and the one after that too when it starts
+`rox-services/src/player.rs`), and the one after that too when it starts
 inside 60 s. One nobody takes within 60 s is closed, which is why a long track waits
 for its end: opened at its start, the stream would be closed before the boundary and
 the engine would open it cold mid-fade. A track of unknown length opens what's next as
 soon as it holds. Counting from the engine's entry, not the clock's, keeps a skip from
 reopening the track it just opened. An engine open that finds its stream pre-opened
 takes it, or waits for the pre-open still under way (`take_preopened`,
-`plugins.rs:1238-1260`). Live streams are never pre-opened, since
+`plugins.rs`). Live streams are never pre-opened, since
 that would start a broadcast nobody hears yet.
 
-What the engine reads through (`reader_for`, `rox-playback/src/plugin.rs:56-74`):
+What the engine reads through (`reader_for`, `rox-playback/src/plugin.rs`):
 
 - A seekable stream of known length up to 64 MB, unless it asked for `"ahead"`, is
   downloaded whole while it plays, front to back on its own thread
-  (`rox-playback/src/download.rs`, `CAP` at `:21`). A read the download hasn't reached
+  (`CAP`, `rox-playback/src/download.rs`). A read the download hasn't reached
   moves the download there, and what it skipped fills in after. The seekbar shows what's
   downloaded. The waveform fills in as the bytes land, from a decode that trails the
   download without steering it (`decode_peaks_trailing` and `Trailing`), and the one
@@ -811,12 +811,12 @@ What the engine reads through (`reader_for`, `rox-playback/src/plugin.rs:56-74`)
 
 The decoder reads through `PluginSource`, which keeps a 1 MiB window of recent bytes so
 the probe's small backward seeks never go back to the plugin
-(`rox-playback/src/plugin.rs:88-93`). A seek outside the window is a read at the new
+(`WINDOW`, `rox-playback/src/plugin.rs`). A seek outside the window is a read at the new
 offset, and an error on a stream that can't seek.
 
 A read that fails mid-track recovers before it refuses (`recover`,
-`plugin.rs:169-242`). The stream is closed and reopened through the opener with radio's
-backoff of 0, 1, 2 and 4 s (`BACKOFF`, `rox-playback/src/http.rs:58`), and the transport
+`plugin.rs`). The stream is closed and reopened through the opener with radio's
+backoff of 0, 1, 2 and 4 s (`BACKOFF`, `rox-playback/src/http.rs`), and the transport
 shows Reconnecting. A host restart after a crash is one of those attempts. A seekable
 stream of known length resumes at the byte it failed on, provided the reopened stream has
 the same length; a different length is a different encode, and rox refuses to splice
@@ -824,10 +824,10 @@ two. A stream that can't seek, or has no length, can't resume and ends at once. 
 attempts, the track ends with a refusal naming the plugin.
 
 A live stream plays from radio's feed thread and tape (`open_live`,
-`plugin.rs:380-411`). The feed pulls `source.read` whether or not anything decodes, so a
+`plugin.rs`). The feed pulls `source.read` whether or not anything decodes, so a
 pause resumes where it stopped and the last minutes are seekable in the tape. A dropped
 feed reopens at the live edge and marks a gap. A pause longer than 30 minutes hangs up
-and rejoins live on Play (`LIVE_IDLE_HANGUP_SECS`, `rox-playback/src/engine.rs:147`).
+and rejoins live on Play (`LIVE_IDLE_HANGUP_SECS`, `rox-playback/src/engine.rs`).
 The tape measures the stream's rate from the decoder, since the locator has no
 bitrate.
 
@@ -837,12 +837,12 @@ A plugin's rows come by membership, ADR 29's second amendment
 (`rox-library/src/members.rs`). A plugin has no whole catalog to reconcile against, so
 `source_members` records which collections hold each row and in what order. Tracks
 picked one at a time are held in a collection of their own, `PICKED`, the empty string,
-which no node id can be (`members.rs:22`).
+which no node id can be (`PICKED`, `members.rs`).
 
-- A track becomes a row through `row_for` (`members.rs:63-96`): the wire fields, the key
+- A track becomes a row through `row_for` (`members.rs`): the wire fields, the key
   as the path, no URL, and the live flag.
 - Keeping a collection syncs it, and `set_collection` makes the collection hold exactly
-  the synced tracks, then prunes rows nothing holds any more (`members.rs:130-153`).
+  the synced tracks, then prunes rows nothing holds any more (`members.rs`).
   Letting it go is `drop_collection`, which prunes the same way.
 - Playing, queueing or adding a browsed track to a playlist `pick`s it: the row is
   upserted and held in `PICKED`, and nothing is pruned (`pick`). A row held by nothing
@@ -878,11 +878,11 @@ transaction. Playlist members and listens snapshot their source beside their pat
 playlist entry or a play's history reattaches when a plugin row comes back after a
 re-sync, a re-pick or a reinstall (`playlists::reattach` and `listens::reattach`). Every
 membership write refuses local, radio and Subsonic sources outright
-(`refuse_other_shapes`, `members.rs:247-262`), since their rows aren't held by
+(`refuse_other_shapes`, `members.rs`), since their rows aren't held by
 membership and a prune would delete them.
 
 Kept collections sync once when the plugin starts, and on Sync Now on the Plugins page
-(`sync_now`, `rox-services/src/plugins.rs:1062-1090`). A kept collection opens in the
+(`sync_now`, `rox-services/src/plugins.rs`). A kept collection opens in the
 External Sources panel from the library, with no plugin call, so it still browses with
 the plugin stopped or the network down. Its row draws from what `SyncedCollection` cached
 of the node: title, second line, kind and art key, taken when it's kept and refreshed
@@ -902,13 +902,13 @@ Hide button that turns the panel's Show the Source's Notice setting off (`hideab
 `shown_notice`).
 
 A plugin's rows show only while it's switched on and its folder is loaded
-(`live_ids`, `rox-services/src/sources.rs:228-232`). A switched-off plugin's rows are
+(`live_ids`, `rox-services/src/sources.rs`). A switched-off plugin's rows are
 hidden, not deleted. A Missing plugin, whose folder is gone, keeps its switch and its
 rows, hidden, since deleting the old folder is how many people update a plugin. The
 rows go only on Remove.
 
 A plugin row scrobbles only when the loaded manifest declares `scrobble: true` and the
-user leaves Scrobble Plays on (`may_scrobble`, `rox-services/src/lastfm.rs:150-171`).
+user leaves Scrobble Plays on (`may_scrobble`, `rox-services/src/lastfm.rs`).
 A plugin that isn't loaded never scrobbles, whatever its record says. Capture never
 applies: a plugin stream doesn't pass through the HTTP source or its ICY wrapper.
 
@@ -1015,9 +1015,9 @@ user action approves code to run. There's one gate and no second dialog behind i
 
 Approved hashes are stored in `session.json` as `approved_plugins`, id to hash, next to
 the shader approvals (`plugin_approved` and `approve_plugin`,
-`rox-core/src/settings.rs:1484-1521`). They're machine-local, so a copied settings file
+`rox-core/src/settings.rs`). They're machine-local, so a copied settings file
 doesn't carry someone else's trust decision. What rox remembers about a plugin is its
-`PluginRecord` in `accounts.json` (`settings.rs:2048-2082`): the switch, the label, the
+`PluginRecord` in `accounts.json` (`settings.rs`): the switch, the label, the
 hash and manifest at the last approval, the scrobble, lyrics, tag lookup and artist info
 choices, the kept collections and the config.
 
@@ -1025,12 +1025,12 @@ Switching a plugin on checks the folder's current hash against the machine's app
 (`switch_plugin`, `rox/src/settings/window/plugins_page.rs`). The same hash switches on
 with no card. Any other hash opens the enable card, built from the folder as scanned
 when the switch was pressed, so what gets approved is what the card showed. Confirming
-it writes the approval and the record (`approve`, `rox-services/src/plugins.rs:419-461`).
+it writes the approval and the record (`approve`, `rox-services/src/plugins.rs`).
 
 Whenever the folders, the records or the approvals change, a switched-on plugin whose folder no longer
-matches its approval is switched off (`apply`, `plugins.rs:209-232`). Its row reads
+matches its approval is switched off (`apply`, `plugins.rs`). Its row reads
 "Changed on disk". Switching it on again opens the card with the manifest diff against
-the one approved last time (`changes`, `plugins.rs:553-601`): capabilities added or
+the one approved last time (`changes`, `plugins.rs`): capabilities added or
 dropped, programs added, the scrobble declaration turned on or off, a changed entry, and
 a provider domain declared since, even inside a `providers` block already approved
 (`Change::ProviderAdded`). With none of those, the card says the manifest changed when
@@ -1151,7 +1151,7 @@ word tags intact, and a miss answers an empty list.
 
 Two tones queued back to back play gaplessly through the engine. This was measured on the
 position clock, which counts only frames the output actually played: a gap plays silence
-the clock doesn't count (`rox-playback/src/output.rs:362-366`), so it would show as wall
+the clock doesn't count (`fill`, `rox-playback/src/output.rs`), so it would show as wall
 time pulling ahead of position. In a debug build on an Apple Silicon Mac, output at
 48 kHz with crossfade off, the next tone opened from its pre-open in under a millisecond,
 and wall time and position stayed within 16 ms of each other across the boundary, with

@@ -820,6 +820,7 @@ impl Source {
             }
             if let Some(line) = &feed.signals {
                 out.signals = Some(line.clone());
+                out.last_words = !feed.playing;
             }
         });
     }
@@ -1359,6 +1360,9 @@ impl Supervisor {
                             break Job::Flush;
                         }
                         if paused != told {
+                            if paused && let Some(line) = state.out.take_last_words() {
+                                break Job::Send(line);
+                            }
                             break Job::Pause(paused);
                         }
                         if !paused
@@ -1655,6 +1659,8 @@ pub(crate) struct Feed {
     pool: String,
     /// None once playback stopped and the signals came to rest.
     signals: Option<String>,
+    /// Playback runs, as `signals` says.
+    playing: bool,
     /// The palette line, for a renderer granted it.
     palette: Option<String>,
     /// The playing track's cover, for a renderer granted it.
@@ -1864,17 +1870,20 @@ fn wire_name(signal: &Signal) -> String {
     }
 }
 
-/// `{"signals": [...], "time": t}`: each pool signal's gated value in pool
-/// order, as routes read it, and the playing position in seconds.
-fn signals_line(pool: &[Signal], hub: &SignalHub, time: f64) -> String {
+/// `{"signals": [...], "time": t, "playing": p}`: each pool signal's gated
+/// value in pool order, as routes read it, the playing position in seconds,
+/// and whether playback runs.
+fn signals_line(pool: &[Signal], hub: &SignalHub, time: f64, playing: bool) -> String {
     let values: Vec<f64> = pool
         .iter()
         .map(|signal| rounded(f64::from(hub.value(signal.id).unwrap_or(0.)), 4))
         .collect();
-    format!(
-        "{}\n",
-        serde_json::json!({ "signals": values, "time": rounded(time, 3) })
-    )
+    let line = serde_json::json!({
+        "signals": values,
+        "time": rounded(time, 3),
+        "playing": playing,
+    });
+    format!("{line}\n")
 }
 
 /// A finite number to `places` decimals, so a line reads 0.3 and not
@@ -1960,6 +1969,9 @@ struct Outbox {
     cover_due: bool,
     /// Lossy: a newer reading replaces one not yet sent.
     signals: Option<String>,
+    /// `signals` says playback stopped. It goes even when a pause comes
+    /// behind it, so a renderer that rests hears why.
+    last_words: bool,
     pointer: VecDeque<Pointer>,
     last_move: Option<Instant>,
 }
@@ -2022,14 +2034,36 @@ impl Outbox {
         self.palette_due = wants.palette && self.palette.is_some();
         self.cover_due = wants.cover && self.cover.is_some();
         self.signals = None;
+        self.last_words = false;
         self.pointer.clear();
         self.last_move = None;
     }
 
-    /// Paused: what was waiting is stale by the time it goes on.
+    /// Paused: what was waiting is stale by the time it goes on, but for a
+    /// signals line saying playback stopped.
     fn pause(&mut self) {
-        self.signals = None;
+        if !self.last_words {
+            self.signals = None;
+        }
         self.pointer.clear();
+    }
+
+    /// The signals line saying playback stopped, to send ahead of a pause,
+    /// after the pool it reads if that hasn't gone yet.
+    fn take_last_words(&mut self) -> Option<String> {
+        if !self.last_words {
+            return None;
+        }
+
+        if self.pool_due
+            && let Some(pool) = &self.pool
+        {
+            self.pool_due = false;
+            return Some(pool.clone());
+        }
+
+        self.last_words = false;
+        self.signals.take()
     }
 
     /// The next line due at `now`. Otherwise when a move held back for
@@ -2069,6 +2103,7 @@ impl Outbox {
         }
 
         if let Some(line) = self.signals.take() {
+            self.last_words = false;
             return Ok(line);
         }
         Err(held)
@@ -2605,12 +2640,16 @@ impl Shown {
         }
 
         // Before the take, so a target resting for the music keeps its last
-        // frame on show and its renderer paused.
+        // frame on show and its renderer paused. One going to rest hears
+        // that playback stopped first.
         if let Some(target) = &self.target {
+            if rest && let Some(feed) = feed {
+                target.feed(feed);
+            }
             target.rest(rest);
         }
         let picture = self.target.as_ref().and_then(Target::take);
-        if let (Some(target), Some(feed)) = (&self.target, feed) {
+        if !rest && let (Some(target), Some(feed)) = (&self.target, feed) {
             target.feed(feed);
         }
 
@@ -2705,7 +2744,8 @@ impl Reading {
         let pool = hub.pool();
         self.feed = Some(Feed {
             pool: pool_line(&pool),
-            signals: send.then(|| signals_line(&pool, hub, time())),
+            signals: send.then(|| signals_line(&pool, hub, time(), running)),
+            playing: running,
             palette: Some(palette),
             cover: Some(self.cover.clone()),
         });
@@ -3528,6 +3568,57 @@ mod tests {
     }
 
     #[test]
+    fn a_target_going_to_rest_hears_playback_stopped_first() {
+        let rig = Rig::new(slow());
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        let pool = r#"{"pool":[{"id":1,"name":"level"}]}"#;
+        let stopped = r#"{"signals":[0.0],"time":4.0,"playing":false}"#;
+        rig.source.feed(&Feed {
+            playing: false,
+            ..feed(pool, stopped)
+        });
+        rig.source.rest(true);
+
+        assert_eq!(fake.told().as_deref(), Some(pool));
+        assert_eq!(fake.told().as_deref(), Some(stopped));
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_pool_changed_during_a_pause_goes_on_the_resume() {
+        let rig = Rig::new(slow());
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        let before = r#"{"pool":[{"id":1,"name":"Bass"}]}"#;
+        let after = r#"{"pool":[{"id":1,"name":"Bass"},{"id":2,"name":"level"}]}"#;
+        let signals = r#"{"signals":[0.1],"time":0.0,"playing":true}"#;
+        rig.source.feed(&feed(before, signals));
+        assert_eq!(fake.told().as_deref(), Some(before));
+        assert_eq!(fake.told().as_deref(), Some(signals));
+
+        // Edited while it rests: nothing goes, as nothing does while paused.
+        rig.source.rest(true);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+        rig.source.feed(&feed(after, signals));
+        settle();
+        assert!(fake.stdin.try_recv().is_err());
+
+        // The resume's first paint names the pool as it is now.
+        rig.source.rest(false);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        rig.source.feed(&feed(after, signals));
+        assert_eq!(fake.told().as_deref(), Some(after));
+        assert_eq!(fake.told().as_deref(), Some(signals));
+
+        rig.finish();
+    }
+
+    #[test]
     fn a_rest_and_a_hide_each_keep_it_paused() {
         let rig = Rig::new(slow());
         let fake = rig.session();
@@ -3682,6 +3773,7 @@ mod tests {
         Feed {
             pool: format!("{pool}\n"),
             signals: Some(format!("{signals}\n")),
+            playing: true,
             palette: None,
             cover: None,
         }
@@ -3692,6 +3784,7 @@ mod tests {
         Feed {
             pool: "{\"pool\":[]}\n".into(),
             signals: Some("{\"signals\":[],\"time\":0.0}\n".into()),
+            playing: true,
             palette: Some(format!("{palette}\n")),
             cover: Some(cover),
         }
@@ -3995,6 +4088,30 @@ mod tests {
         );
     }
 
+    /// `NAME = value` from the stand-in host, which keeps its own copy of
+    /// these limits.
+    fn stand_in(name: &str) -> u64 {
+        let source = include_str!("../../../../examples/renderers/standin.py");
+        source
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} = ")))
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("standin.py has no {name}"))
+    }
+
+    #[test]
+    fn the_stand_in_holds_a_renderer_to_these_limits() {
+        assert_eq!(stand_in("FLOOD_LINES"), u64::from(LIMITS.flood_lines));
+        assert_eq!(
+            stand_in("FLOOD_SPAN_MS"),
+            LIMITS.flood_span.as_millis() as u64
+        );
+        assert_eq!(stand_in("FLOOD_SPANS"), u64::from(LIMITS.flood_spans));
+        assert_eq!(stand_in("REFUSED_RUN"), u64::from(LIMITS.refused_run));
+        assert_eq!(stand_in("MOVE_GAP_MS"), MOVE_GAP.as_millis() as u64);
+    }
+
     #[test]
     fn the_lines_say_only_what_the_card_names() {
         let named = Signal {
@@ -4035,7 +4152,7 @@ mod tests {
             ..Signal::default()
         };
 
-        let pool = pool_line(&[named, level, long, onset, total, beat]);
+        let pool = pool_line(&[named, level.clone(), long, onset, total, beat]);
         let read: serde_json::Value = serde_json::from_str(&pool).expect("json");
 
         // A signal's kind and the band it listens to describe the signal, so
@@ -4077,6 +4194,17 @@ mod tests {
             "{\"pointer\":{\"kind\":\"scroll\",\"x\":0.25,\"y\":1.0,\"dx\":0.0,\"dy\":-1.0}}\n"
         );
         assert_eq!(rounded(f64::NAN, 4), 0.);
+
+        // The values, the position and whether playback runs. Whether the
+        // music plays is part of what the playing position means, under the
+        // same card line, and says nothing about the track.
+        let hub = SignalHub::unfed(vec![level.clone()]);
+        let line: serde_json::Value =
+            serde_json::from_str(&signals_line(&[level], &hub, 61.23456, false)).expect("json");
+        assert_eq!(
+            line,
+            serde_json::json!({ "signals": [0.0], "time": 61.235, "playing": false })
+        );
 
         // A renderer granted nothing past the pool and the pointer is sent
         // no palette and written no cover, whatever the canvas hands over.

@@ -584,6 +584,9 @@ struct SettingsWindow {
     _library_repaint: Subscription,
     _library_jobs: Subscription,
     _backdrop_changed: Subscription,
+    /// A switch from elsewhere, the socket's `settings.set` among them,
+    /// leaves `language` behind.
+    _language_changed: Subscription,
     /// Layout events catch drags; the observe catches an import's set_center,
     /// which notifies without an event.
     _dock_changes: Vec<Subscription>,
@@ -697,6 +700,10 @@ impl SettingsWindow {
             );
         let _record_keys = Self::record_keys(window, cx);
         let _backdrop_changed = cx.observe(&state.now_art, |_, _, cx| cx.notify());
+        let _language_changed = cx.observe_global::<settings::LanguageSwitch>(|this, cx| {
+            this.language = Settings::load().language;
+            cx.notify();
+        });
         // The OS close button never runs our teardown, so save the frame
         // through the should-close hook.
         window.on_window_should_close(cx, move |window, _| {
@@ -1304,6 +1311,7 @@ impl SettingsWindow {
             _library_repaint,
             _library_jobs,
             _backdrop_changed,
+            _language_changed,
             _dock_changes,
             _search_changes,
             _player_changed,

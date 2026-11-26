@@ -3626,6 +3626,15 @@ enum LayoutDialog {
     ConfirmConvert,
 }
 
+/// The two canvases Convert to Canvas can build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Conversion {
+    /// The whole layout in one grid, splitters and all.
+    OneGrid,
+    /// Each tab group a grid of its own, where it shows now.
+    EachGroup,
+}
+
 impl LayoutDialog {
     /// Whether the yes destroys or replaces something saved. Such a confirm
     /// defaults to Cancel: Enter backs out, Cancel wears the accent, and the
@@ -4034,8 +4043,9 @@ impl Workspace {
             // the app rather than this window, because the tee it drains is
             // one switch in the transport.
             start_capture(&player, &library, cx);
-            // The plugin host, once per app like capture. Off unless plugins
-            // and experimental features are both on.
+            // The plugin host, once per app like capture. It always starts
+            // and scans the plugins folder, which renderers need too. Which
+            // plugins then run is up to Enable Plugins and their own switches.
             rox_services::plugins::start(library.clone(), player.clone(), cx);
             // The macOS bar is built once and lists the running plugins'
             // panels, so it's rebuilt whenever which plugins run can change.
@@ -4866,17 +4876,41 @@ impl Workspace {
         }
     }
 
-    /// The dock's whole layout becomes one grid in a canvas that fills the
-    /// window. The panels look the same afterwards, so the grid comes up
-    /// selected with the inspector open, in design mode, or the convert
-    /// reads as nothing having happened.
-    fn convert_confirmed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The dock's layout becomes a canvas that fills the window: one grid
+    /// holding all of it, or a grid for each tab group where it shows now.
+    /// The panels look the same afterwards, so a grid comes up selected with
+    /// the inspector open, in design mode, or the convert reads as nothing
+    /// having happened.
+    fn convert_confirmed(
+        &mut self,
+        conversion: Conversion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_layout_dialog(window, cx);
 
-        let Ok(dump) = self.dock_dump(cx) else {
+        // One grid keeps the layout's own weights, as any saved layout does.
+        let dump = match conversion {
+            Conversion::OneGrid => self.dock_dump(cx),
+            Conversion::EachGroup => self.solved_dump(cx),
+        };
+        let Ok(dump) = dump else {
             return;
         };
-        let wrapped = crate::panels::canvas::wrap_layout(dump, LAYOUT_VERSION);
+        let wrapped = match conversion {
+            Conversion::OneGrid => crate::panels::canvas::wrap_layout(dump, LAYOUT_VERSION),
+            Conversion::EachGroup => {
+                let bounds = self.dock.read(cx).bounds();
+                let mut area = [f32::from(bounds.size.width), f32::from(bounds.size.height)];
+
+                // A dock that hasn't painted has no bounds: the window's.
+                if area[0] <= 0. || area[1] <= 0. {
+                    let size = window.viewport_size();
+                    area = [f32::from(size.width), f32::from(size.height)];
+                }
+                crate::panels::canvas::split_layout(dump, area, LAYOUT_VERSION)
+            }
+        };
         if !self.apply_layout(wrapped, window, cx) {
             log::warn!("workspace: the converted layout didn't apply");
             return;
@@ -4980,6 +5014,44 @@ impl Workspace {
     fn dock_dump(&self, cx: &App) -> serde_json::Result<serde_json::Value> {
         let mut value = serde_json::to_value(self.dock.read(cx).dump(cx))?;
         denoise_f32(&mut value);
+        Ok(value)
+    }
+
+    /// [`dock_dump`](Self::dock_dump) with each split's sizes as laid out
+    /// now instead of its weights. A pinned row's weight can say more than
+    /// it gets, and the converted boxes have to be the ones on screen.
+    fn solved_dump(&self, cx: &App) -> serde_json::Result<serde_json::Value> {
+        fn solve(view: &Arc<dyn PanelView>, node: &mut serde_json::Value, cx: &App) {
+            let Ok(stack) = view.view().downcast::<StackPanel>() else {
+                return;
+            };
+            let stack = stack.read(cx);
+            let panels = stack.panels();
+            let sizes = stack.solved_sizes(cx);
+
+            let Some(children) = node.get_mut("children").and_then(|c| c.as_array_mut()) else {
+                return;
+            };
+            if children.len() != panels.len() {
+                return;
+            }
+            for (panel, child) in panels.iter().zip(children.iter_mut()) {
+                solve(panel, child, cx);
+            }
+
+            if sizes.len() == panels.len()
+                && let Some(stack_info) = node.pointer_mut("/info/stack")
+            {
+                let sizes: Vec<f32> = sizes.into_iter().map(f32::from).collect();
+                stack_info["sizes"] = serde_json::json!(sizes);
+            }
+        }
+
+        let mut value = self.dock_dump(cx)?;
+        let root = self.dock.read(cx).items().view();
+        if let Some(center) = value.get_mut("center") {
+            solve(&root, center, cx);
+        }
         Ok(value)
     }
 
@@ -6959,7 +7031,11 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(tokens::SPACE_MD)
-            .w(px(320.))
+            // The convert's two yeses and their sentences need the room.
+            .w(px(match dialog {
+                LayoutDialog::ConfirmConvert => 400.,
+                _ => 320.,
+            }))
             .p(tokens::SPACE_MD)
             .rounded(tokens::RADIUS)
             .bg(palette::bg_menu_opaque())
@@ -7298,31 +7374,48 @@ impl Workspace {
                             cx.listener(|this, _, window, cx| this.delete_confirmed(window, cx)),
                         )),
                 ),
-            LayoutDialog::ConfirmConvert => card
-                .child(div().child(rox_i18n::t!("workspace-dialog-convert-title")))
-                .child(
+            LayoutDialog::ConfirmConvert => {
+                let note = |key: &'static str| {
                     div()
                         .text_xs()
                         .text_color(palette::text_muted())
-                        .child(rox_i18n::t!("workspace-dialog-convert-body")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(tokens::SPACE_SM)
-                        .child(dialog_button(
-                            rox_i18n::t!("workspace-dialog-cancel"),
-                            destructive,
-                            cx.listener(|this, _, window, cx| this.close_layout_dialog(window, cx)),
-                        ))
-                        .child(dialog_button(
-                            rox_i18n::t!("workspace-dialog-convert"),
-                            !destructive,
-                            cx.listener(|this, _, window, cx| this.convert_confirmed(window, cx)),
-                        )),
-                ),
+                        .child(rox_i18n::t!(key))
+                };
+
+                card.child(div().child(rox_i18n::t!("workspace-dialog-convert-title")))
+                    .child(note("workspace-dialog-convert-one-body"))
+                    .child(note("workspace-dialog-convert-each-body"))
+                    .child(note("workspace-dialog-convert-body"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap(tokens::SPACE_SM)
+                            .child(dialog_button(
+                                rox_i18n::t!("workspace-dialog-cancel"),
+                                destructive,
+                                cx.listener(|this, _, window, cx| {
+                                    this.close_layout_dialog(window, cx)
+                                }),
+                            ))
+                            .child(dialog_button(
+                                rox_i18n::t!("workspace-dialog-convert-one"),
+                                !destructive,
+                                cx.listener(|this, _, window, cx| {
+                                    this.convert_confirmed(Conversion::OneGrid, window, cx)
+                                }),
+                            ))
+                            .child(dialog_button(
+                                rox_i18n::t!("workspace-dialog-convert-each"),
+                                !destructive,
+                                cx.listener(|this, _, window, cx| {
+                                    this.convert_confirmed(Conversion::EachGroup, window, cx)
+                                }),
+                            )),
+                    )
+            }
         };
         Some(
             div()

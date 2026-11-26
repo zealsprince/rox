@@ -87,11 +87,12 @@ def hex_colour(text):
         return None
 
 
-def draw(levels, position, pointer, pressed, accent, background, bands):
+def draw(levels, position, playing, pointer, pressed, accent, background, bands):
     """One frame as bytes, top row first: four bytes a pixel, R G B A."""
     count = max(len(levels), 1)
     edges = [width * i // count for i in range(count + 1)]
     stripe = int(width * (position % 10.0) / 10.0)  # one sweep every 10 s played
+    sweep = bytes((255, 255, 255, 255)) if playing else TRACK  # grey once the music stops
     dot = height // 24
     strip = height // 4 if bands else 0  # the spectrum's row along the top
     thin = [width * i // SPECTRUM_BARS for i in range(SPECTRUM_BARS + 1)]
@@ -100,7 +101,7 @@ def draw(levels, position, pointer, pressed, accent, background, bands):
     rows = []
     for y in range(height):
         if y >= height - 6:
-            rows.append(bytes((255, 255, 255, 255)) * stripe + background * (width - stripe))
+            rows.append(sweep * stripe + background * (width - stripe))
             continue
 
         row = bytearray()
@@ -148,7 +149,7 @@ def publish(n, pixels):
     sys.stdout.flush()
 
 
-levels, position = [], 0.0
+levels, position, playing = [], 0.0, False
 pointer, pressed, paused = None, False, False
 accent = None  # the theme's, once a palette line comes
 background = BACKGROUND  # the stage's, while a palette line names one
@@ -177,6 +178,7 @@ while True:
                 levels = [0.0] * len(message["pool"])
             elif "signals" in message:
                 levels, position = message["signals"], message["time"]
+                playing = message["playing"]
             elif "palette" in message:
                 accent = hex_colour(message["palette"].get("accent"))
                 stage = hex_colour(message["palette"].get("stage"))
@@ -201,6 +203,6 @@ while True:
             pairs = [max(row[2 * i], row[2 * i + 1]) for i in range(SPECTRUM_BARS)]
             bands = [max(new, old * FALL) for new, old in zip(pairs, bands)]
 
-    publish(frame, draw(levels, position, pointer, pressed, accent, background, bands))
+    publish(frame, draw(levels, position, playing, pointer, pressed, accent, background, bands))
     frame += 1
     due = max(due + 1 / FPS, now)  # fall behind, and it doesn't race to catch up

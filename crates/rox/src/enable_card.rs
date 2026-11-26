@@ -15,23 +15,47 @@ use rox_plugins::Loaded;
 use rox_plugins::manifest::{Manifest, ProviderDomain};
 use rox_services::plugins::{self as host, Change, Grant, Since};
 
-/// What the confirm reads out. Built once, when the switch is pressed.
+/// What the confirm reads out. The package and what changed are read once,
+/// when the switch is pressed, and the words are made at each render so the
+/// card follows a language switch while it's up.
 pub(crate) struct EnableCard {
     pub(crate) name: String,
     /// The folder as scanned when the card opened: its hash is what gets
     /// approved, not whatever is on disk by the time Switch On is pressed.
     folder: Loaded,
-    /// Who made it and what it says it is, above the dialog's body.
-    pub(crate) lead: Vec<SharedString>,
-    /// What it declares, the programs it uses, and what changed, below it.
-    pub(crate) lines: Vec<SharedString>,
+    manifest: Manifest,
+    /// What moved since the last approval. None for a first one.
+    since: Option<Since>,
 }
 
 impl EnableCard {
     pub(crate) fn of(folder: Loaded, record: Option<&PluginRecord>) -> Option<EnableCard> {
         let manifest = folder.manifest.clone()?;
+
+        // Only a re-approval has something to diff against.
+        let since = record
+            .filter(|record| !record.approved_manifest.is_null())
+            .map(|record| {
+                host::since(
+                    &record.approved_manifest,
+                    &record.hash,
+                    &folder.document,
+                    &folder.hash,
+                )
+            });
+
+        Some(EnableCard {
+            name: manifest.name.clone(),
+            folder,
+            manifest,
+            since,
+        })
+    }
+
+    /// Who made it and what it says it is, above the dialog's body.
+    pub(crate) fn lead(&self) -> Vec<SharedString> {
+        let manifest = &self.manifest;
         let mut lead: Vec<SharedString> = Vec::new();
-        let mut lines: Vec<SharedString> = Vec::new();
 
         let mut byline = Vec::new();
         if !manifest.meta.author.trim().is_empty() {
@@ -55,6 +79,15 @@ impl EnableCard {
         if !manifest.meta.description.trim().is_empty() {
             lead.push(manifest.meta.description.trim().to_string().into());
         }
+
+        lead
+    }
+
+    /// What it declares, the programs it uses, and what changed, below the
+    /// body.
+    pub(crate) fn lines(&self) -> Vec<SharedString> {
+        let manifest = &self.manifest;
+        let mut lines: Vec<SharedString> = Vec::new();
 
         if let Some(source) = &manifest.capabilities.source {
             lines.push(rox_i18n::t!(
@@ -89,9 +122,9 @@ impl EnableCard {
             ));
         }
         lines.extend(
-            host::grants(&manifest)
+            host::grants(manifest)
                 .into_iter()
-                .map(|grant| grant_line(grant, &manifest)),
+                .map(|grant| grant_line(grant, manifest)),
         );
 
         let providers = manifest.capabilities.providers;
@@ -107,7 +140,7 @@ impl EnableCard {
             ));
         }
 
-        for (program, found) in &folder.programs {
+        for (program, found) in &self.folder.programs {
             lines.push(match found {
                 true => rox_i18n::t!(
                     "settings-plugins-card-program-found",
@@ -120,38 +153,23 @@ impl EnableCard {
             });
         }
 
-        // Only a re-approval has something to diff against.
-        if let Some(record) = record.filter(|record| !record.approved_manifest.is_null()) {
-            let files = match manifest.is_renderer() {
-                true => "settings-plugins-card-unchanged-renderer",
-                false => "settings-plugins-card-unchanged",
-            };
-
-            let since = host::since(
-                &record.approved_manifest,
-                &record.hash,
-                &folder.document,
-                &folder.hash,
-            );
-            match since {
-                Since::Declared(changes) => {
-                    lines.push(rox_i18n::t!("settings-plugins-card-changed"));
-                    lines.extend(changes.iter().map(|change| change_line(change, &manifest)));
-                }
-                Since::Manifest => {
-                    lines.push(rox_i18n::t!("settings-plugins-card-manifest-changed"))
-                }
-                Since::Files => lines.push(rox_i18n::t!(files)),
-                Since::Nothing => {}
+        let files = match manifest.is_renderer() {
+            true => "settings-plugins-card-unchanged-renderer",
+            false => "settings-plugins-card-unchanged",
+        };
+        match &self.since {
+            Some(Since::Declared(changes)) => {
+                lines.push(rox_i18n::t!("settings-plugins-card-changed"));
+                lines.extend(changes.iter().map(|change| change_line(change, manifest)));
             }
+            Some(Since::Manifest) => {
+                lines.push(rox_i18n::t!("settings-plugins-card-manifest-changed"))
+            }
+            Some(Since::Files) => lines.push(rox_i18n::t!(files)),
+            Some(Since::Nothing) | None => {}
         }
 
-        Some(EnableCard {
-            name: manifest.name.clone(),
-            folder,
-            lead,
-            lines,
-        })
+        lines
     }
 
     /// The card for renderer `id` as the plugins folder holds it now, with
@@ -190,9 +208,9 @@ impl EnableCard {
             .flex_col()
             .gap(tokens::SPACE_MD)
             .child(div().child(self.title()))
-            .children(self.lead.iter().cloned().map(line))
+            .children(self.lead().into_iter().map(line))
             .child(line(rox_i18n::t!("settings-plugins-card-runs")))
-            .children(self.lines.iter().cloned().map(line))
+            .children(self.lines().into_iter().map(line))
     }
 
     /// Switch On's press: approves exactly the files the card read out and
@@ -333,12 +351,41 @@ mod tests {
 
         let card = EnableCard::of(provider, None).unwrap();
 
-        assert_eq!(card.lines.len(), 1, "{:?}", card.lines);
+        assert_eq!(card.lines().len(), 1, "{:?}", card.lines());
         assert!(
-            card.lines[0].contains("lyrics, artist info"),
+            card.lines()[0].contains("lyrics, artist info"),
             "{}",
-            card.lines[0]
+            card.lines()[0]
         );
+    }
+
+    #[test]
+    fn the_cards_words_follow_the_language_after_it_opens() {
+        let mut renderer = folder(&[("python3", true)]);
+        renderer.manifest = Some(
+            rox_plugins::manifest::parse(
+                r#"{ "id": "bars", "name": "Bars", "version": "2", "api": 1,
+                     "meta": { "author": "rox" },
+                     "entry": { "script": { "path": "draw.py", "interpreter": "python3" } },
+                     "capabilities": { "renderer": { "label": "Bars", "palette": true } } }"#,
+            )
+            .unwrap(),
+        );
+
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+        let card = EnableCard::of(renderer, None).unwrap();
+        let english = (card.lead(), card.lines());
+
+        rox_i18n::pin_thread_locale("de");
+        let german = (card.lead(), card.lines());
+        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
+
+        assert_eq!(english.0.len(), german.0.len());
+        assert_eq!(english.1.len(), german.1.len());
+        assert_ne!(english.0[0], german.0[0], "the by line");
+        for (en, de) in english.1.iter().zip(&german.1) {
+            assert_ne!(en, de, "every grant line");
+        }
     }
 
     #[test]
@@ -357,14 +404,14 @@ mod tests {
         let card = EnableCard::of(renderer.clone(), None).unwrap();
         let grants = host::grants(renderer.manifest.as_ref().unwrap());
         assert_eq!(
-            card.lines.len(),
+            card.lines().len(),
             1 + grants.len() + 1,
             "what it draws, each grant, the program: {:?}",
-            card.lines
+            card.lines()
         );
-        assert!(card.lines[0].contains("Bars"), "{}", card.lines[0]);
+        assert!(card.lines()[0].contains("Bars"), "{}", card.lines()[0]);
         let manifest = renderer.manifest.clone().unwrap();
-        for (line, grant) in card.lines[1..].iter().zip(&grants) {
+        for (line, grant) in card.lines()[1..].iter().zip(&grants) {
             assert_eq!(*line, grant_line(*grant, &manifest));
         }
 
@@ -377,7 +424,7 @@ mod tests {
         };
         let again = EnableCard::of(changed, Some(&approved)).unwrap();
         assert_eq!(
-            again.lines.last(),
+            again.lines().last(),
             Some(&rox_i18n::t!("settings-plugins-card-unchanged-renderer"))
         );
 
@@ -386,7 +433,7 @@ mod tests {
         described.document = json!({ "id": "bars", "meta": { "description": "Louder." } });
         let redescribed = EnableCard::of(described, Some(&approved)).unwrap();
         assert_eq!(
-            redescribed.lines.last(),
+            redescribed.lines().last(),
             Some(&rox_i18n::t!("settings-plugins-card-manifest-changed"))
         );
 
@@ -410,7 +457,7 @@ mod tests {
         let wanted = "Follows these signals: Kick (Band 30-120 Hz), Level. \
                       When you place a render target for it, rox offers to add the ones you don't have yet.";
         assert_eq!(
-            asks.lines[1..6],
+            asks.lines()[1..6],
             [
                 rox_i18n::t!("settings-plugins-card-renderer-signals"),
                 rox_i18n::t!("settings-plugins-card-renderer-pointer"),
@@ -433,7 +480,8 @@ mod tests {
             ..record(true, "old")
         };
         let regained = EnableCard::of(asking, Some(&before)).unwrap();
-        let tail = &regained.lines[regained.lines.len() - 3..];
+        let lines = regained.lines();
+        let tail = &lines[lines.len() - 3..];
         assert_eq!(
             tail,
             [
@@ -446,13 +494,13 @@ mod tests {
         );
 
         let everything: Vec<String> = card
-            .lines
-            .iter()
-            .chain(&again.lines)
-            .chain(&redescribed.lines)
-            .chain(&asks.lines)
-            .chain(&regained.lines)
-            .chain(&card.lead)
+            .lines()
+            .into_iter()
+            .chain(again.lines())
+            .chain(redescribed.lines())
+            .chain(asks.lines())
+            .chain(regained.lines())
+            .chain(card.lead())
             .map(|line| line.to_lowercase())
             .collect();
         assert!(

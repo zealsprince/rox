@@ -6,12 +6,13 @@
 //!
 //! A renderer is never a plugin host. It gets no `Host` and no plugin wire,
 //! answers no requests, and is started only when a render target asks, never
-//! with the plugins at launch. What it gets is its pipes, three variables,
-//! the `hello` line and one lent handle (fd 3 on Unix), then the cover's
-//! when its approved manifest asks for one, then a GPU texture's when it
-//! asks for that and the render target could make one, then the spectrum's
-//! when it asks for the music's spectrum. Restarting is the
-//! render target's job, on the plugin host's schedule through [`due`] and
+//! with the plugins at launch. What it gets is its pipes, the plugin
+//! environment with `ROX_RENDER_API`, the frame size and a variable for each
+//! handle lent, the `hello` line and one lent handle (fd 3 on Unix), then the
+//! cover's when its approved manifest asks for one, then a GPU texture's when
+//! it asks for that and the render target could make one, then the
+//! spectrum's when it asks for the music's spectrum. Restarting is the render
+//! target's job, on the plugin host's schedule through [`due`] and
 //! [`note_exit`].
 
 use std::collections::{HashMap, VecDeque};
@@ -815,6 +816,25 @@ const TRIGGER_SEED: f32 = 0.5;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `NAME = value` from the stand-in host, which keeps its own copy of
+    /// these numbers.
+    fn stand_in(name: &str) -> u64 {
+        let source = include_str!("../../../examples/renderers/standin.py");
+        source
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} = ")))
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("standin.py has no {name}"))
+    }
+
+    #[test]
+    fn the_stand_in_starts_a_renderer_as_rox_does() {
+        assert_eq!(stand_in("API"), u64::from(API));
+        assert_eq!(stand_in("FIRST_FD"), u64::from(FIRST_FD));
+        assert_eq!(stand_in("GRACE_MS"), GRACE.as_millis() as u64);
+    }
 
     use rox_plugins::Origin;
 

@@ -216,6 +216,21 @@ fn passes(name: &OsStr, escape: &[String]) -> bool {
 mod tests {
     use super::*;
 
+    /// The stand-in host hands a renderer this environment too, from a
+    /// copy of the list.
+    #[test]
+    fn the_stand_in_passes_the_same_names() {
+        let source = include_str!("../../../examples/renderers/standin.py");
+        let start = source
+            .find("\nALLOWED = [")
+            .expect("standin.py lists ALLOWED");
+        let list = &source[start..];
+        let list = &list[..list.find(']').expect("the list ends")];
+
+        let names: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        assert_eq!(names, ALLOWED);
+    }
+
     #[test]
     fn the_escape_splits_on_commas_and_drops_blanks() {
         assert_eq!(

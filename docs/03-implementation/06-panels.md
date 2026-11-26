@@ -378,13 +378,34 @@ window's root stays the dock: a full-window canvas is a dock holding one canvas 
 one tab group, which draws no tab chrome. Convert to Canvas, in the Composition window
 and the Workspace page's Composition section, builds exactly that from the current
 layout (`Workspace::convert_layout_to_canvas`; the keymap's `convert_layout_to_canvas`
-and the socket's `rox::ConvertLayoutToCanvas` reach the same call). The whole dump
-becomes one grid that fills the stage, so the window looks the same afterwards. Its
-panels lose their locks on the way in, since a locked panel can't be dragged inside the
+and the socket's `rox::ConvertLayoutToCanvas` reach the same call). Its confirm offers
+two forms, and the window looks the same afterwards in either.
+
+- As One Grid puts the whole dump in one grid that fills the stage (`wrap_layout`), so
+  its splits still resize the groups beside them.
+- Each Group as an Item makes each tab group a grid item of its own (`split_layout`).
+  Each group's box comes off the split tree, with every split's sizes as laid out at that
+  moment rather than the weights a dump saves, so a pinned row counts at the size it
+  shows (`solved_dump`), against the dock's bounds (`group_boxes`). The item gets that
+  box, the group's tabs in their order, its active tab and its panels' settings. The
+  dividers between groups are gone: each item moves and resizes on its own.
+
+An item's size is a fraction of the stage, and its position can only be units, so on
+each axis it takes the anchor that keeps its edges where the dock would put them at any
+size (`place_axis`): the start for a group against the left or top edge, the end for one
+against the right or bottom, the centre for a centred one, each with no offset. Those
+follow a window resize exactly. A group that touches neither edge and isn't centred, the
+middle one of three uneven columns, takes the anchor that drifts least and an offset in
+units, so a resize moves it by that offset's share of the change, and it can gap or
+overlap a neighbour. A pinned row scales with the window like the rest, since the pin
+was the split's. The stage takes the window's size, so switching the canvas to Contain
+afterwards shows the same picture.
+
+Its panels lose their locks on the way in, since a locked panel can't be dragged inside a
 grid. There's no undo, so it asks first, with Cancel as the default, and the only way
 back is a layout saved beforehand. A window with no panels, or one that's a canvas
-already, gets a toast saying so instead. Once converted, design mode is on and the grid
-comes up selected with the inspector open: a full-window grid has no strip to click,
+already, gets a toast saying so instead. Once converted, design mode is on and the first
+grid comes up selected with the inspector open: a full-window grid has no strip to click,
 and without that the convert reads as nothing having happened.
 
 The saved shape is `CanvasConfig` (`crates/rox/src/panels/canvas.rs`): the panel chrome,
@@ -483,7 +504,8 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 `crates/rox-panel-api/src/panel_settings.rs` (the Presets row, `PresetMarks`), and
 `crates/rox/src/composite.rs` (`Hosting`, `replace_hosted`, `hosted_docks`). Canvases span
 `crates/rox-canvas/src/` (the saved shape in `state.rs`, the projection in `project.rs`),
-`crates/rox/src/panels/canvas.rs` (`CanvasPanel`, `CanvasConfig`, `wrap_layout`),
+`crates/rox/src/panels/canvas.rs` (`CanvasPanel`, `CanvasConfig`, `wrap_layout`,
+`split_layout`),
 `crates/rox/src/canvas/mod.rs` (the live bodies and the nesting cap),
 `crates/rox/src/canvas/grid.rs` (a grid's dock area), `crates/rox/src/canvas/image.rs`
 (the decode and the quad), `crates/rox/src/canvas/states.rs` (items that follow state),

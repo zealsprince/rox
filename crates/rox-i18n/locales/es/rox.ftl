@@ -1550,6 +1550,7 @@ settings-plugins-card-renderer-pointer = Recibe el puntero mientras está sobre 
 settings-plugins-card-renderer-wanted = Sigue estas señales: { $signals }. Cuando colocas un destino de render para él, rox ofrece añadir las que aún no tienes.
 settings-plugins-card-renderer-palette = Recibe los colores del tema actual, que siguen a la portada cuando el color de la canción está activado.
 settings-plugins-card-renderer-cover = Recibe la portada de la pista que suena, como imagen.
+settings-plugins-card-renderer-spectrum = Recibe el espectro de la música: lo fuerte que suena cada frecuencia mientras se reproduce, nunca el sonido en sí.
 settings-plugins-card-unchanged-renderer = El manifiesto dice lo mismo que la última vez. Cambiaron archivos del renderizador.
 settings-plugins-renderer-failed-title = Este renderizador no puede ejecutarse
 settings-plugins-renderer-developer = Modo desarrollador: hasta que cierres rox, un cambio en la carpeta de este renderizador se aprueba solo. Un cambio en su manifiesto lo sigue desactivando

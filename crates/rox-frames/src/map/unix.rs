@@ -104,8 +104,17 @@ impl WritableView {
 /// The cover mapping: rox's writable view, then the handle a renderer gets
 /// and whether that handle can only read.
 pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), Error> {
+    create_readable(len, "rox-cover")
+}
+
+/// A mapping rox writes and a renderer only reads, as the cover is, under
+/// its own name: the memfd's on Linux, the shm object's prefix on macOS.
+pub(crate) fn create_readable(
+    len: usize,
+    name: &str,
+) -> Result<(Section, WritableView, bool), Error> {
     let size = libc::off_t::try_from(len).map_err(|_| Error::Overflow)?;
-    let (rw, child) = open_cover()?;
+    let (rw, child) = open_cover(name)?;
 
     // SAFETY: ftruncate on a file this function just made.
     if unsafe { libc::ftruncate(rw.as_raw_fd(), size) } != 0 {
@@ -123,8 +132,9 @@ pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), 
 /// One memfd: the renderer's fd is rox's own, and the seal is what keeps
 /// it from writing.
 #[cfg(target_os = "linux")]
-fn open_cover() -> Result<(OwnedFd, Option<OwnedFd>), Error> {
-    Ok((memfd(c"rox-cover")?, None))
+fn open_cover(name: &str) -> Result<(OwnedFd, Option<OwnedFd>), Error> {
+    let name = std::ffi::CString::new(name).map_err(|_| Error::Mismatch)?;
+    Ok((memfd(&name)?, None))
 }
 
 /// The future-write seal (Linux 5.1) refuses a write and a writable shared
@@ -170,6 +180,26 @@ pub(crate) fn map_readable(fd: BorrowedFd<'_>, len: usize) -> Result<View, Error
         return Err(Error::os("fstat"));
     }
     if usize::try_from(stat.st_size).ok() != Some(len) {
+        return Err(Error::Mismatch);
+    }
+
+    map(fd, len, libc::PROT_READ)
+}
+
+/// Maps the first `len` bytes of a handle read-only, after checking the
+/// file holds at least that many: a later layout can grow past them.
+#[cfg(any(test, feature = "cover-reader"))]
+pub(crate) fn map_readable_prefix(fd: BorrowedFd<'_>, len: usize) -> Result<View, Error> {
+    // SAFETY: as in `map_readable`.
+    let (stat, got) = unsafe {
+        let mut stat = std::mem::zeroed::<libc::stat>();
+        let got = libc::fstat(fd.as_raw_fd(), &mut stat);
+        (stat, got)
+    };
+    if got != 0 {
+        return Err(Error::os("fstat"));
+    }
+    if !usize::try_from(stat.st_size).is_ok_and(|size| size >= len) {
         return Err(Error::Mismatch);
     }
 
@@ -265,13 +295,13 @@ fn open() -> Result<OwnedFd, Error> {
 /// rox's read-write one and the renderer's read-only one, which can't map
 /// it writable. Never compiled or run.
 #[cfg(target_os = "macos")]
-fn open_cover() -> Result<(OwnedFd, Option<OwnedFd>), Error> {
+fn open_cover(prefix: &str) -> Result<(OwnedFd, Option<OwnedFd>), Error> {
     for _ in 0..8 {
         let mut random = [0u8; 8];
         // SAFETY: fills the eight bytes we own.
         unsafe { libc::arc4random_buf(random.as_mut_ptr().cast(), random.len()) };
 
-        let name = format!("/rox-cover-{:016x}", u64::from_ne_bytes(random));
+        let name = format!("/{prefix}-{:016x}", u64::from_ne_bytes(random));
         let name = std::ffi::CString::new(name).map_err(|_| Error::Mismatch)?;
 
         // SAFETY: shm_open with a NUL-terminated name; the mode goes

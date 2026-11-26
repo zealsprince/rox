@@ -1116,6 +1116,8 @@ pub enum Grant {
     Palette,
     /// It gets the playing track's cover as pixels.
     Cover,
+    /// It gets the music's frequency magnitudes, never the audio.
+    Spectrum,
 }
 
 pub fn grants(manifest: &Manifest) -> Vec<Grant> {
@@ -1136,6 +1138,7 @@ fn renderer_grants(cap: &RendererCap) -> Vec<Grant> {
         (Grant::WantedSignals, asks_signals),
         (Grant::Palette, cap.palette),
         (Grant::Cover, cap.cover),
+        (Grant::Spectrum, cap.spectrum),
     ]
     .into_iter()
     .filter(|(_, asked)| *asked)
@@ -3486,6 +3489,25 @@ mod tests {
                 json!({ "label": "B", "gpu": true }),
                 vec![MusicSignals, Pointer],
             ),
+            (
+                json!({ "label": "B", "spectrum": true }),
+                vec![MusicSignals, Pointer, Spectrum],
+            ),
+            (
+                json!({ "label": "B", "spectrum": false }),
+                vec![MusicSignals, Pointer],
+            ),
+            (
+                json!({ "label": "B", "signals": band, "palette": true, "cover": true, "spectrum": true }),
+                vec![
+                    MusicSignals,
+                    Pointer,
+                    WantedSignals,
+                    Palette,
+                    Cover,
+                    Spectrum,
+                ],
+            ),
         ];
 
         for (renderer, want) in cases {
@@ -3526,6 +3548,22 @@ mod tests {
         );
         assert!(changes(&with_band, &bare).is_empty());
         assert!(changes(&with_band, &with_band).is_empty());
+
+        // The spectrum is a grant of its own, beside whatever it had.
+        let with_spectrum =
+            doc(json!({ "label": "B", "signals": band, "cover": true, "spectrum": true }));
+        assert_eq!(
+            changes(&with_band, &with_spectrum),
+            [Change::Grant(Grant::Spectrum)]
+        );
+        assert_eq!(
+            since(&with_band, "a", &with_spectrum, "b"),
+            Since::Declared(vec![Change::Grant(Grant::Spectrum)])
+        );
+        assert!(
+            changes(&with_spectrum, &with_band).is_empty(),
+            "asking for less"
+        );
 
         // Asking for the GPU path is no grant, and still a changed manifest.
         let gpu = doc(json!({ "label": "B", "gpu": true }));

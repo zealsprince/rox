@@ -239,14 +239,21 @@ impl Host for Renderer {
             })
             .flatten();
 
+        // The app's one spectrum mapping, held for as long as the session
+        // runs. Lent only if the gate's manifest asks too.
+        let asks_spectrum = renderers::asks(&self.id).is_some_and(|asks| asks.spectrum);
+        let spectrum = asks_spectrum.then(crate::canvas::spectrum::lease).flatten();
+
         let mut session = renderers::start(
             &self.id,
             lent(mapping),
             cover.as_ref().map(lent_cover),
+            spectrum.as_ref().map(|lease| lease.lent()),
             texture,
             self.width,
             self.height,
         )?;
+        let spectrum = spectrum.filter(|_| session.asks().spectrum);
 
         let wants = Wants {
             palette: session.asks().palette,
@@ -267,8 +274,16 @@ impl Host for Renderer {
             log::warn!("render target {}: stdin may block: {e}", self.id);
         }
 
+        let run: Box<dyn Run> = match spectrum {
+            Some(lease) => Box::new(Leased {
+                run: Box::new(Live::new(session, &self.id)),
+                _lease: lease,
+            }),
+            None => Box::new(Live::new(session, &self.id)),
+        };
+
         Ok(Started {
-            run: Box::new(Live::new(session, &self.id)),
+            run,
             stdout: Box::new(stdout),
             wants,
             cover,
@@ -324,6 +339,31 @@ fn lent_cover(mapping: &Cover) -> process::Lent<'_> {
     process::Lent {
         handle: mapping.child_handle(),
         access: cover::CHILD_ACCESS,
+    }
+}
+
+/// A session granted the spectrum, with its lease, which goes back when
+/// the supervisor drops the run at the session's end.
+struct Leased {
+    run: Box<dyn Run>,
+    _lease: crate::canvas::spectrum::Lease,
+}
+
+impl Run for Leased {
+    fn send(&mut self, bytes: &[u8]) -> Sent {
+        self.run.send(bytes)
+    }
+
+    fn exited(&self) -> bool {
+        self.run.exited()
+    }
+
+    fn stopped(&self) -> bool {
+        self.run.stopped()
+    }
+
+    fn stop(&mut self) {
+        self.run.stop();
     }
 }
 

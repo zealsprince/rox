@@ -4021,6 +4021,7 @@ impl Workspace {
             crate::embeddings::follow(&library, cx);
             crate::replaygain_job::follow(&library, cx);
             crate::tempo_job::follow(&library, cx);
+            crate::canvas::spectrum::follow(&player, cx);
             rox_services::plugin_favourites::follow(&library, cx);
             // What a station is playing, built here rather than inside any
             // one consumer: the scrobbler files listens off its turnovers

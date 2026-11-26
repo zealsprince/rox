@@ -1501,6 +1501,7 @@ settings-plugins-card-renderer-pointer = 指针在渲染目标上方时接收指
 settings-plugins-card-renderer-wanted = 跟随这些信号：{ $signals }。为它放置渲染目标时，rox 会提议添加你还没有的信号。
 settings-plugins-card-renderer-palette = 接收当前主题的颜色；歌曲配色开着时，这些颜色跟随封面。
 settings-plugins-card-renderer-cover = 以图片形式接收正在播放曲目的封面。
+settings-plugins-card-renderer-spectrum = 接收音乐的频谱，即播放时每个频率的响度，但不接收声音本身。
 settings-plugins-card-unchanged-renderer = 清单内容和上次相同，渲染器里的文件变了。
 settings-plugins-renderer-failed-title = 此渲染器无法运行
 settings-plugins-renderer-developer = 开发者模式：在退出 rox 之前，这个渲染器文件夹里的改动会自动获批。清单有改动时，仍会关闭它

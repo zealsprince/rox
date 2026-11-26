@@ -1536,6 +1536,7 @@ settings-plugins-card-renderer-pointer = Получает указатель, п
 settings-plugins-card-renderer-wanted = Следует за этими сигналами: { $signals }. Когда вы размещаете для него цель рендера, rox предлагает добавить те, которых у вас ещё нет.
 settings-plugins-card-renderer-palette = Получает цвета текущей темы, которые следуют за обложкой, когда окраска по треку включена.
 settings-plugins-card-renderer-cover = Получает обложку текущего трека в виде изображения.
+settings-plugins-card-renderer-spectrum = Получает спектр музыки: насколько громка каждая частота во время воспроизведения, но не сам звук.
 settings-plugins-card-unchanged-renderer = По содержанию манифест тот же, что и в прошлый раз. Изменились файлы рендерера.
 settings-plugins-renderer-failed-title = Этот рендерер не может работать
 settings-plugins-renderer-developer = Режим разработчика: пока rox не закрыт, изменение в папке этого рендерера одобряется само. Изменение его манифеста по-прежнему выключает его

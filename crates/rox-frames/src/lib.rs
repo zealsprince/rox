@@ -17,11 +17,16 @@
 //! renderer only reads it. A renderer that was also lent a GPU texture
 //! announces a frame drawn there with `t` ([`parse_texture_announce`]); the
 //! texture itself is the render target's, not this crate's.
+//!
+//! [`spectrum`] is the third, with the cover's trust direction: rox writes
+//! the music's frequency magnitudes and every renderer granted them reads
+//! the one mapping.
 
 pub mod cover;
 mod layout;
 mod map;
 mod read;
+pub mod spectrum;
 #[cfg(any(test, feature = "writer"))]
 mod write;
 

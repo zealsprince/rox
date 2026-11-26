@@ -25,11 +25,11 @@ pub const BAND_MIN_HZ: f32 = 20.0;
 pub const BAND_MAX_HZ: f32 = 20_000.0;
 
 /// Signals pool whole bands, so a short reactive window beats a fine one.
-const HUB_FFT: usize = 2048;
+pub const HUB_FFT: usize = 2048;
 
 /// Silence longer than this reads as stopped audio rather than the gap between
 /// pump ticks, so signals don't strobe on high-refresh displays.
-const SILENT_AFTER: f32 = 0.15;
+pub const SILENT_AFTER: f32 = 0.15;
 
 /// Advances closer than this are one frame asking twice: several panels read
 /// the hub from their paint, and only the first should move the clock.

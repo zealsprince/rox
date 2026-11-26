@@ -7,5 +7,6 @@ pub mod analysis;
 pub mod curve;
 pub mod feed;
 pub mod signal;
+pub mod spectrum;
 
 pub use feed::AudioFeed;

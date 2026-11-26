@@ -9,7 +9,8 @@
 //! with the plugins at launch. What it gets is its pipes, three variables,
 //! the `hello` line and one lent handle (fd 3 on Unix), then the cover's
 //! when its approved manifest asks for one, then a GPU texture's when it
-//! asks for that and the render target could make one. Restarting is the
+//! asks for that and the render target could make one, then the spectrum's
+//! when it asks for the music's spectrum. Restarting is the
 //! render target's job, on the plugin host's schedule through [`due`] and
 //! [`note_exit`].
 
@@ -249,13 +250,15 @@ static EXITS: LazyLock<Mutex<HashMap<String, VecDeque<Instant>>>> =
 
 /// Starts renderer `id` drawing at `width` by `height` into the mapping
 /// behind `handle`, after the gate and the exit count agree. `cover` is
-/// lent only to a renderer whose approved manifest asks for the cover, and
-/// `texture` only to one whose approved manifest says `gpu`. Blocking: it
-/// may probe an interpreter, so never on the UI thread.
+/// lent only to a renderer whose approved manifest asks for the cover,
+/// `spectrum` only to one that asks for the spectrum, and `texture` only to
+/// one whose approved manifest says `gpu`. Blocking: it may probe an
+/// interpreter, so never on the UI thread.
 pub fn start(
     id: &str,
     handle: Lent<'_>,
     cover: Option<Lent<'_>>,
+    spectrum: Option<Lent<'_>>,
     texture: Option<&gpui::ExternalTexture>,
     width: u32,
     height: u32,
@@ -281,12 +284,14 @@ pub fn start(
         .unwrap_or_default();
     let cover = cover.filter(|_| asks.cover);
     asks.cover = cover.is_some();
+    let spectrum = spectrum.filter(|_| asks.spectrum);
+    asks.spectrum = spectrum.is_some();
     let texture = texture.filter(|_| asks.gpu);
     asks.gpu = texture.is_some();
 
     // A renderer that can't start counts as one that exits, as a plugin's
     // failed start does, so a broken one stops rather than looping.
-    let started = launch(folder, handle, cover, texture, width, height);
+    let started = launch(folder, handle, cover, spectrum, texture, width, height);
     if started.is_err() {
         note_exit(id);
     }
@@ -325,6 +330,7 @@ fn launch(
     folder: &Loaded,
     handle: Lent,
     cover: Option<Lent>,
+    spectrum: Option<Lent>,
     texture: Option<&gpui::ExternalTexture>,
     width: u32,
     height: u32,
@@ -342,10 +348,11 @@ fn launch(
     // The frames first, always: they're the fallback a renderer that can't
     // import the texture draws into.
     let texture_fd = texture.and_then(lent_texture);
-    let fds = places(cover.is_some(), texture_fd.is_some());
+    let fds = places(cover.is_some(), texture_fd.is_some(), spectrum.is_some());
     let mut lent = vec![handle];
     lent.extend(cover);
     lent.extend(texture_fd);
+    lent.extend(spectrum);
 
     #[cfg(unix)]
     {
@@ -355,6 +362,9 @@ fn launch(
         }
         if let Some(fd) = fds.texture {
             command.env("ROX_TEXTURE_FD", fd.to_string());
+        }
+        if let Some(fd) = fds.spectrum {
+            command.env("ROX_SPECTRUM_FD", fd.to_string());
         }
     }
 
@@ -379,6 +389,9 @@ fn launch(
     if let (Some(texture), Some(fd)) = (texture, fds.texture) {
         hello["texture"] = texture_hello(texture, fd);
     }
+    if let Some(fd) = fds.spectrum {
+        hello["spectrum"] = spectrum_hello(&process, fd);
+    }
     let line = format!("{hello}\n");
     if let Err(e) = stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
         process.kill();
@@ -390,9 +403,10 @@ fn launch(
 
 /// Where each lent handle lands in a renderer on Unix. The order is fixed:
 /// the frames always, then the cover when it's lent, then the texture when
-/// it's lent. Each is named in the environment and in `hello`, so a
-/// renderer never works one out by position. On Windows the lending order
-/// is the same and `hello` carries the values.
+/// it's lent, then the spectrum when it's lent. Each is named in the
+/// environment and in `hello`, so a renderer never works one out by
+/// position. On Windows the lending order is the same and `hello` carries
+/// the values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Places {
     // Read where the environment names it, which Windows has no use for.
@@ -400,19 +414,23 @@ struct Places {
     frames: u32,
     cover: Option<u32>,
     texture: Option<u32>,
+    spectrum: Option<u32>,
 }
 
 /// The fd the first lent handle arrives as on Unix.
 const FIRST_FD: u32 = 3;
 
-fn places(cover: bool, texture: bool) -> Places {
+fn places(cover: bool, texture: bool, spectrum: bool) -> Places {
     let cover = cover.then_some(FIRST_FD + 1);
     let texture = texture.then_some(FIRST_FD + 1 + u32::from(cover.is_some()));
+    let spectrum = spectrum
+        .then_some(FIRST_FD + 1 + u32::from(cover.is_some()) + u32::from(texture.is_some()));
 
     Places {
         frames: FIRST_FD,
         cover,
         texture,
+        spectrum,
     }
 }
 
@@ -432,6 +450,42 @@ fn cover_hello(_process: &Process, fd: u32) -> serde_json::Value {
 fn cover_hello(process: &Process, _fd: u32) -> serde_json::Value {
     let handle = process.handles().get(1).copied().unwrap_or(0);
     json!({ "handle": handle, "width": COVER_SIDE, "height": COVER_SIDE })
+}
+
+/// The spectrum mapping's size and rows, for `hello`: the constants of
+/// `rox_frames::spectrum`, which this crate doesn't link. A test in the
+/// render target pins them equal.
+pub const SPECTRUM_BYTES: u32 = 4096;
+pub const SPECTRUM_LOG_BINS: u32 = 128;
+pub const SPECTRUM_LINEAR_BINS: u32 = 512;
+pub const SPECTRUM_RATE: f32 = 62.5;
+
+/// Where the spectrum is and what it holds, for `hello`.
+#[cfg(unix)]
+fn spectrum_hello(_process: &Process, fd: u32) -> serde_json::Value {
+    json!({
+        "fd": fd,
+        "bytes": SPECTRUM_BYTES,
+        "log_bins": SPECTRUM_LOG_BINS,
+        "linear_bins": SPECTRUM_LINEAR_BINS,
+        "rate": SPECTRUM_RATE,
+    })
+}
+
+/// Never compiled: no Windows target builds here. The handles are lent in
+/// the order [`places`] gives, so the spectrum's is at its place past the
+/// first fd.
+#[cfg(windows)]
+fn spectrum_hello(process: &Process, fd: u32) -> serde_json::Value {
+    let at = (fd - FIRST_FD) as usize;
+    let handle = process.handles().get(at).copied().unwrap_or(0);
+    json!({
+        "handle": handle,
+        "bytes": SPECTRUM_BYTES,
+        "log_bins": SPECTRUM_LOG_BINS,
+        "linear_bins": SPECTRUM_LINEAR_BINS,
+        "rate": SPECTRUM_RATE,
+    })
 }
 
 /// The texture's memory, borrowed for the spawn.
@@ -1152,22 +1206,34 @@ mod tests {
 
     #[test]
     fn the_handles_land_in_a_fixed_order() {
-        let at = |cover, texture| {
-            let places = places(cover, texture);
-            (places.frames, places.cover, places.texture)
+        let at = |cover, texture, spectrum| {
+            let places = places(cover, texture, spectrum);
+            (places.frames, places.cover, places.texture, places.spectrum)
         };
 
-        assert_eq!(at(false, false), (3, None, None));
-        assert_eq!(at(true, false), (3, Some(4), None));
-        assert_eq!(at(false, true), (3, None, Some(4)));
-        assert_eq!(at(true, true), (3, Some(4), Some(5)));
+        assert_eq!(at(false, false, false), (3, None, None, None));
+        assert_eq!(at(true, false, false), (3, Some(4), None, None));
+        assert_eq!(at(false, true, false), (3, None, Some(4), None));
+        assert_eq!(at(true, true, false), (3, Some(4), Some(5), None));
+
+        // The spectrum goes after every handle there was before it.
+        assert_eq!(at(false, false, true), (3, None, None, Some(4)));
+        assert_eq!(at(true, false, true), (3, Some(4), None, Some(5)));
+        assert_eq!(at(false, true, true), (3, None, Some(4), Some(5)));
+        assert_eq!(at(true, true, true), (3, Some(4), Some(5), Some(6)));
     }
 
-    /// Starts a renderer package whose script prints `hello`, the three fd
-    /// variables and what each lent fd holds, with the frames, and the cover
-    /// and the texture when asked, each a file holding its own name.
+    /// Starts a renderer package whose script prints `hello`, the four fd
+    /// variables and what each lent fd holds, with the frames, and the
+    /// cover, the texture and the spectrum when asked, each a file holding
+    /// its own name.
     #[cfg(unix)]
-    fn spawned(tag: &str, cover: bool, texture: bool) -> (serde_json::Value, String, String) {
+    fn spawned(
+        tag: &str,
+        cover: bool,
+        texture: bool,
+        spectrum: bool,
+    ) -> (serde_json::Value, String, String) {
         use std::io::Read as _;
         use std::os::fd::AsFd;
 
@@ -1177,7 +1243,7 @@ mod tests {
             dir.join("draw.sh"),
             r#"read hello
 printf '%s\n' "$hello"
-printf '%s|%s|%s\n' "$ROX_FRAMES_FD" "${ROX_COVER_FD-}" "${ROX_TEXTURE_FD-}"
+printf '%s|%s|%s|%s\n' "$ROX_FRAMES_FD" "${ROX_COVER_FD-}" "${ROX_TEXTURE_FD-}" "${ROX_SPECTRUM_FD-unset}"
 n=3; while [ $n -le 24 ]; do
   if [ -e /dev/fd/$n ]; then printf '%s=' $n; eval "cat <&$n"; fi
   n=$((n+1))
@@ -1193,6 +1259,7 @@ done
         };
         let frames = file("frames");
         let cover_file = file("cover");
+        let spectrum_file = file("spectrum");
         drop(file("texture"));
         let memory = texture.then(|| external(&dir.join("texture")));
 
@@ -1202,6 +1269,7 @@ done
             &folder,
             frames.as_fd(),
             cover.then(|| cover_file.as_fd()),
+            spectrum.then(|| spectrum_file.as_fd()),
             memory.as_ref(),
             64,
             32,
@@ -1225,15 +1293,44 @@ done
     #[test]
     fn each_handle_is_named_where_it_lands() {
         let cases = [
-            (false, false, "3||", "3=frames\n"),
-            (true, false, "3|4|", "3=frames\n4=cover\n"),
-            (false, true, "3||4", "3=frames\n4=texture\n"),
-            (true, true, "3|4|5", "3=frames\n4=cover\n5=texture\n"),
+            (false, false, false, "3|||unset", "3=frames\n"),
+            (true, false, false, "3|4||unset", "3=frames\n4=cover\n"),
+            (false, true, false, "3||4|unset", "3=frames\n4=texture\n"),
+            (
+                true,
+                true,
+                false,
+                "3|4|5|unset",
+                "3=frames\n4=cover\n5=texture\n",
+            ),
+            (false, false, true, "3|||4", "3=frames\n4=spectrum\n"),
+            (
+                true,
+                false,
+                true,
+                "3|4||5",
+                "3=frames\n4=cover\n5=spectrum\n",
+            ),
+            (
+                false,
+                true,
+                true,
+                "3||4|5",
+                "3=frames\n4=texture\n5=spectrum\n",
+            ),
+            (
+                true,
+                true,
+                true,
+                "3|4|5|6",
+                "3=frames\n4=cover\n5=texture\n6=spectrum\n",
+            ),
         ];
 
-        for (n, (cover, texture, vars, held)) in cases.into_iter().enumerate() {
-            let (hello, got_vars, got_held) = spawned(&format!("order-{n}"), cover, texture);
-            let case = format!("cover {cover}, texture {texture}");
+        for (n, (cover, texture, spectrum, vars, held)) in cases.into_iter().enumerate() {
+            let (hello, got_vars, got_held) =
+                spawned(&format!("order-{n}"), cover, texture, spectrum);
+            let case = format!("cover {cover}, texture {texture}, spectrum {spectrum}");
 
             assert_eq!(got_vars, vars, "{case}");
             assert_eq!(got_held, held, "{case}: nothing else is inherited");
@@ -1249,7 +1346,34 @@ done
             let texture_fd = hello.get("texture").map(|texture| texture["fd"].clone());
             let expected = texture.then(|| json!(if cover { 5 } else { 4 }));
             assert_eq!(texture_fd, expected, "{case}: hello names the texture's fd");
+
+            let spectrum_fd = hello.get("spectrum").map(|spectrum| spectrum["fd"].clone());
+            let expected = spectrum.then(|| json!(4 + u32::from(cover) + u32::from(texture)));
+            assert_eq!(
+                spectrum_fd, expected,
+                "{case}: hello names the spectrum's fd"
+            );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_renderer_that_asks_for_nothing_is_lent_no_spectrum() {
+        let (hello, vars, held) = spawned("no-spectrum", false, false, false);
+
+        assert_eq!(held, "3=frames\n", "no fd past the frames");
+        assert!(vars.ends_with("|unset"), "no ROX_SPECTRUM_FD: {vars}");
+        assert_eq!(
+            hello,
+            json!({ "hello": API, "width": 64, "height": 32, "handle": 0 }),
+            "hello is what it was before any grant"
+        );
+
+        let (hello, _, _) = spawned("spectrum-hello", false, false, true);
+        assert_eq!(
+            hello["spectrum"],
+            json!({ "fd": 4, "bytes": 4096, "log_bins": 128, "linear_bins": 512, "rate": 62.5 })
+        );
     }
 
     #[test]

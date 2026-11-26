@@ -1,7 +1,8 @@
 """A rox renderer in plain Python: one bar per signal, a stripe for the
 playing position, and a dot under the pointer. Its manifest asks for the
 palette, so the bars take the theme's accent once rox sends it, and the
-background takes the stage's colour when rox names one.
+background takes the stage's colour when rox names one. It asks for the
+spectrum too, and draws a row of thin bars from it along the top.
 
 rox starts this program for a render target, hands it a block of shared
 memory as fd 3 and writes one JSON object per line to its stdin. The program
@@ -27,6 +28,8 @@ PIXELS = 64  # a frame's pixels start this far into its slot
 COLOURS = [(255, 179, 0), (0, 200, 170), (230, 70, 120), (110, 140, 255)]
 BACKGROUND = bytes((18, 18, 24, 255))
 TRACK = bytes((40, 40, 52, 255))
+SPECTRUM_BARS = 64  # each the louder of two of the spectrum's 128 log bins
+FALL = 0.85  # how much of a spectrum bar is left a frame later, if it drops
 
 
 def fail(why):
@@ -50,6 +53,29 @@ if (magic, version, w, h, stride, slots) != (b"RXF1", 1, width, height, width * 
 if len(mem) != HEADER + 2 * slot_bytes:
     fail("the mapping isn't the size its header says")
 
+# The spectrum, lent only when the approved manifest asks for it. rox writes
+# it and this end can only read it.
+spectrum = None
+if "ROX_SPECTRUM_FD" in os.environ:
+    spectrum = mmap.mmap(int(os.environ["ROX_SPECTRUM_FD"]), 0, prot=mmap.PROT_READ)
+    magic, version = struct.unpack_from("<4sI", spectrum, 0)
+    (log_bins,) = struct.unpack_from("<I", spectrum, 36)
+    (log_at,) = struct.unpack_from("<I", spectrum, 64)
+    if magic != b"RXS1" or version < 1 or log_bins != 2 * SPECTRUM_BARS:
+        fail("the spectrum's header isn't the one this example knows")
+
+
+def read_spectrum():
+    """The log row, 128 values from 0 to 1, or None if rox is mid-write."""
+    for _ in range(3):
+        (seq,) = struct.unpack_from("<Q", spectrum, 8)
+        if seq & 1:
+            continue  # odd: rox is writing it
+        row = struct.unpack_from(f"<{log_bins}f", spectrum, log_at)
+        if struct.unpack_from("<Q", spectrum, 8)[0] == seq:
+            return row  # the counter didn't move, so the copy is whole
+    return None
+
 
 def hex_colour(text):
     """`#rrggbb` as an (r, g, b) tuple, or None for anything else."""
@@ -61,12 +87,15 @@ def hex_colour(text):
         return None
 
 
-def draw(levels, position, pointer, pressed, accent, background):
+def draw(levels, position, pointer, pressed, accent, background, bands):
     """One frame as bytes, top row first: four bytes a pixel, R G B A."""
     count = max(len(levels), 1)
     edges = [width * i // count for i in range(count + 1)]
     stripe = int(width * (position % 10.0) / 10.0)  # one sweep every 10 s played
     dot = height // 24
+    strip = height // 4 if bands else 0  # the spectrum's row along the top
+    thin = [width * i // SPECTRUM_BARS for i in range(SPECTRUM_BARS + 1)]
+    faint = bytes(tuple((a + b) // 2 for a, b in zip(accent or COLOURS[0], background)) + (255,))
 
     rows = []
     for y in range(height):
@@ -75,10 +104,19 @@ def draw(levels, position, pointer, pressed, accent, background):
             continue
 
         row = bytearray()
+        if y < strip:
+            for i in range(SPECTRUM_BARS):
+                span = thin[i + 1] - thin[i]
+                lit = (strip - y) <= bands[i] * (strip - 4)
+                gap = 1 if span > 1 else 0
+                row += (faint if lit else background) * (span - gap) + background * gap
+            rows.append(bytes(row))
+            continue
+
         for i in range(count):
             span = edges[i + 1] - edges[i]
             gap = max(span // 8, 1)
-            lit = i < len(levels) and (height - y) <= levels[i] * (height - 12)
+            lit = i < len(levels) and (height - y) <= levels[i] * (height - 12 - strip)
             hue = accent or COLOURS[i % len(COLOURS)]
             colour = bytes(hue + (255,)) if lit else TRACK
             row += background * gap + colour * (span - 2 * gap) + background * gap
@@ -114,6 +152,7 @@ levels, position = [], 0.0
 pointer, pressed, paused = None, False, False
 accent = None  # the theme's, once a palette line comes
 background = BACKGROUND  # the stage's, while a palette line names one
+bands = [0.0] * SPECTRUM_BARS if spectrum else None
 pending = b""
 frame = 0
 due = time.monotonic()
@@ -155,6 +194,13 @@ while True:
     if paused or now < due:
         continue
 
-    publish(frame, draw(levels, position, pointer, pressed, accent, background))
+    if spectrum:
+        row = read_spectrum()
+        if row:
+            # Raw each write, so the bars fall back slowly on their own.
+            pairs = [max(row[2 * i], row[2 * i + 1]) for i in range(SPECTRUM_BARS)]
+            bands = [max(new, old * FALL) for new, old in zip(pairs, bands)]
+
+    publish(frame, draw(levels, position, pointer, pressed, accent, background, bands))
     frame += 1
     due = max(due + 1 / FPS, now)  # fall behind, and it doesn't race to catch up

@@ -12,6 +12,12 @@ the line's `stage`, the colour around the canvas's items, when rox sends one. Ta
 line out of `plugin.json` and the bars keep their own four colours on their own
 background.
 
+It asks for the music's spectrum too (`"spectrum": true`), so its card says it gets the
+music's spectrum, and it draws 64 thin bars along the top from the spectrum's log row,
+each the louder of two neighbouring bins, falling back slowly when the music drops. Take
+that line out and the row isn't drawn: rox lends no spectrum to a renderer that doesn't
+ask.
+
 The contract it follows is in [the renderers doc](../../../docs/03-implementation/11-renderers.md).
 
 ## Trying it

@@ -21,7 +21,8 @@ in Rust on rox's own `rox-frames`.
 Version-sensitive: rox starts a renderer with `ROX_RENDER_API=1`, and `hello` says 1
 (`API`, `rox-services/src/renderers.rs:33`). The shared memory is layout version 1 behind
 the magic `RXF1` (`VERSION` and `MAGIC`, `rox-frames/src/layout.rs:10-12`), and the cover
-mapping is layout version 1 behind `RXC1` (`rox-frames/src/cover.rs`). The manifest
+mapping is layout version 1 behind `RXC1` (`rox-frames/src/cover.rs`), and the spectrum
+mapping is layout version 1 behind `RXS1` (`rox-frames/src/spectrum.rs`). The manifest
 is plugin API 1 (`SUPPORTED_API`, `rox-plugins/src/manifest.rs:24`). `rox-frames` uses
 libc 0.2 on Unix (0.2.186 in rox's lockfile, 0.2.190 in the plasma example's) and
 windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
@@ -40,8 +41,9 @@ windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
    the left end of the menubar) the Panels menu lists it under Visualizers. Press Pick a Renderer and pick Bars, marked "switched off". Its enable
    card comes up over the window: it says Bars draws in a Renderer panel or a render
    target on a canvas, gets the music's signals and the playing position, gets the
-   pointer while it's over the render target, and gets the colours of the current theme,
-   since its manifest asks for the palette. Switch On approves exactly the files in the
+   pointer while it's over the render target, gets the colours of the current theme,
+   since its manifest asks for the palette, and gets the music's spectrum, since it asks
+   for that too. Switch On approves exactly the files in the
    package and switches it on, as the switch on the Renderers page does, and the panel
    starts it.
 3. Or on a canvas: with design mode on, right-click empty stage, or press the
@@ -52,7 +54,8 @@ windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
    inspector's Resolution row changes the pixel size, and Status says whether the
    renderer runs, with a button that fixes what it can.
 4. Play something. Bars draws a bar for each signal in the pool (Application > Signals
-   edits it) in the theme's accent, so a pool with nothing in it draws one empty bar.
+   edits it) in the theme's accent, so a pool with nothing in it draws one empty bar. Along the top it draws 64 thin bars
+   from the spectrum.
 
 The Python example needs Python 3.7 or later and a Unix that lends it fd 3, so it exits
 on Windows (see [Platforms](#platforms)). Plasma is a Cargo project. Its README says how to build it and put the build in a package folder.
@@ -78,7 +81,7 @@ and nothing else. The bars example's:
     "license": "AGPL-3.0-only"
   },
   "capabilities": {
-    "renderer": { "label": "Bars", "palette": true }
+    "renderer": { "label": "Bars", "palette": true, "spectrum": true }
   }
 }
 ```
@@ -92,7 +95,7 @@ plugin wire. Unknown keys inside `capabilities` are ignored, as they are for a p
 
 ### What a renderer asks for
 
-Three more keys under `capabilities.renderer` ask for something past the signals and
+Four more keys under `capabilities.renderer` ask for something past the signals and
 the pointer every renderer gets. Each is a grant: the enable card says it, and rox sends
 or offers it only to a renderer whose approved manifest asks (`grants`,
 `rox-services/src/plugins.rs:1090`). Left out, each is off, and the card says nothing of
@@ -103,6 +106,7 @@ it.
 | `signals` | a list | rox offers to add these to the user's pool | Follows these signals: Kick (Band 30-120 Hz), Level. When you place a render target for it, rox offers to add the ones you don't have yet. |
 | `palette` | `true` or `false` | the theme's colours, on [`palette` lines](#rox-to-the-renderer) | Gets the colours of the current theme, which follow the cover when song theming is on. |
 | `cover` | `true` or `false` | the playing track's cover as pixels, through [the cover mapping](#the-cover-mapping) | Gets the cover of the playing track, as a picture. |
+| `spectrum` | `true` or `false` | the music's frequency magnitudes, through [the spectrum mapping](#the-spectrum) | Gets the music's spectrum: how loud each frequency is as it plays, never the sound itself. |
 
 A fourth key, `gpu`, says the renderer can draw into a GPU texture rox lends it (see
 [A GPU texture](#a-gpu-texture)). It's `true` or `false`, off when left out, and refused
@@ -126,6 +130,7 @@ A manifest asking for everything:
     "label": "Pulse",
     "palette": true,
     "cover": true,
+    "spectrum": true,
     "gpu": true,
     "signals": [
       { "kind": "band", "low": 30, "high": 120, "name": "Kick", "response": 20 },
@@ -212,12 +217,15 @@ starts with](#what-a-native-renderer-starts-with) has the whole of it. On top of
 | `ROX_FRAMES_FD` | `3`, on Unix only |
 | `ROX_COVER_FD` | `4`, on Unix only, and only for a renderer granted the cover |
 | `ROX_TEXTURE_FD` | The texture's fd, on Linux only, and only for a renderer lent one: `4`, or `5` when the cover is lent too |
+| `ROX_SPECTRUM_FD` | The spectrum's fd, on Unix only, and only for a renderer granted it: the next one after every handle above that was lent, so `4`, `5` or `6` |
 
 On Unix the renderer leads its own process group and gets its handles from fd 3 up in a
 fixed order: the frame mapping at 3 always, then the cover mapping when it's granted,
-then the GPU texture when it's lent (`places`, `rox-services/src/renderers.rs`). Each is
-named in the environment and in `hello`, so read the number from there rather than
-counting. Every fd past the last one lent is marked to close at exec (`lend` and
+then the GPU texture when it's lent, then the spectrum mapping when it's granted
+(`places`, `rox-services/src/renderers.rs`). A handle added to the contract later goes
+after the ones before it, so no handle's number moves for a renderer that doesn't ask
+for the new one. Each is named in the environment and in `hello`, so read the number
+from there rather than counting. Every fd past the last one lent is marked to close at exec (`lend` and
 `close_from`, `process.rs:204-288`).
 rox writes `hello` as soon as the process runs. A renderer that can't be spawned, or
 whose `hello` can't be written, counts as an exit (`launch`, `renderers.rs:333`).
@@ -458,6 +466,178 @@ The handle a renderer gets can only read:
 - On Windows the section's copy is duplicated with map read alone
   (`COVER_CHILD_ACCESS`, `rox-frames/src/map/windows.rs`). Never compiled or run.
 
+## The spectrum
+
+A renderer granted the spectrum gets a third block of shared memory: the music's
+frequency magnitudes, worked out from the same FFT the signal pool reads. The trust runs
+the cover's way. rox makes it, rox writes it, and the renderer only reads it
+(`Spectrum`, `rox-frames/src/spectrum.rs`). It's magnitudes only, never samples and
+never phase. A full-rate waveform is the audio itself, and a renderer could record what
+the user plays with it.
+
+There's one block for the whole app, lent to every renderer granted it, since they all
+want the same numbers and none of them can write any. rox makes it the first time a
+granted session starts and keeps it until it quits (`lease`,
+`rox/src/canvas/spectrum.rs`). It's one 4,096-byte page, little-endian:
+
+| Offset | Field | Type | Value |
+|---|---|---|---|
+| 0 | magic | 4 bytes | `RXS1` |
+| 4 | version | u32 | 1 |
+| 8 | seq | u64 | The write counter: odd while rox writes, even when whole |
+| 16 | stamp_ns | u64 | `CLOCK_MONOTONIC` in nanoseconds when the write finished, the clock a slot's `stamp_ns` uses |
+| 24 | flags | u32 | Bit 0 set while music plays |
+| 28 | sample_rate | u32 | The rate of the audio the FFT ran on, 0 with nothing playing |
+| 32 | rate | f32 | 62.5, the most writes a second |
+| 36 | log_bins | u32 | 128 |
+| 40 | log_low | f32 | 20.0, the log row's lowest edge in Hz |
+| 44 | log_high | f32 | 20000.0, its highest edge |
+| 48 | linear_bins | u32 | 512 |
+| 52 | linear_bin_hz | f32 | 21.533203, the linear row's spacing |
+| 56 | floor_db | f32 | -66.0 |
+| 60 | max_db | f32 | -12.0 |
+| 64 | log_at | u32 | 128, where the log row starts |
+| 68 | linear_at | u32 | 640, where the linear row starts |
+| 72 | log_bytes_at | u32 | 2688, where the log row's bytes start |
+| 76 | linear_bytes_at | u32 | 2816, where the linear row's bytes start |
+| 80 to 127 | | | Unused |
+| 128 | log | 128 f32 | The log row |
+| 640 | linear | 512 f32 | The linear row |
+| 2688 | log bytes | 128 u8 | The log row as bytes |
+| 2816 | linear bytes | 512 u8 | The linear row as bytes |
+
+The rows end at 3,328. A later layout only adds rows after these and keeps every offset
+above, with a higher version, so check `version` is at least 1, `magic` is `RXS1` and
+the block is at least 4,096 bytes long, and read the offsets from the header.
+
+### The rows
+
+Every value runs from 0 to 1 in the hub's own dB window: a magnitude `m`, with a
+full-scale sine at 0 dB, reads `(20 * log10(m) + 66) / 54`, held between 0 and 1. That's
+the mapping a pool `band` reads, so -66 dB is 0, -39 dB is 0.5 and -12 dB is 1. The byte
+copy of each value is `round(value * 255)`, there so a shader can upload a row as a
+texture in one call.
+
+The log row is 128 bins spaced evenly in pitch from 20 Hz to 20 kHz. Bin `i` runs from
+`20 * 1000^(i / 128)` to `20 * 1000^((i + 1) / 128)` Hz, about 5.5% wide, and a
+frequency `f` lands in bin `floor(128 * ln(f / 20) / ln(1000))`:
+
+| Bin | From | To | Centre |
+|---|---|---|---|
+| 0 | 20.0 Hz | 21.1 Hz | 20.5 Hz |
+| 16 | 47.4 Hz | 50.1 Hz | 48.7 Hz |
+| 32 | 112.5 Hz | 118.7 Hz | 115.5 Hz |
+| 48 | 266.7 Hz | 281.5 Hz | 274.0 Hz |
+| 64 | 632.5 Hz | 667.5 Hz | 649.8 Hz |
+| 72 | 973.9 Hz | 1027.9 Hz | 1000.6 Hz |
+| 96 | 3556.6 Hz | 3753.8 Hz | 3653.8 Hz |
+| 112 | 8433.9 Hz | 8901.6 Hz | 8664.6 Hz |
+| 127 | 18949.3 Hz | 20000.0 Hz | 19467.5 Hz |
+
+The FFT under it is the pool's: 2048 points of the mono mix with a Hann window, so at
+48 kHz an FFT bin is 23.4 Hz wide (`HUB_FFT`, `rox-viz/src/signal.rs`). A log bin at
+least that wide, from about 420 Hz up at 48 kHz and 390 Hz at 44.1 kHz, reads the
+loudest of the FFT bins whose centres fall inside it, a peak as a pool band's is. Below
+that, several log bins share one FFT bin, and each reads a parabola fitted in dB through
+the three FFT bins nearest its centre, so the row moves smoothly instead of in 23 Hz
+steps (`Rows::fill`, `rox-viz/src/spectrum.rs`). That's interpolation, not resolution: a
+tone at 100 Hz peaks in its own bin, 29, and lights its neighbours for about 45 Hz either
+side. Under about 40 Hz the window holds less than two cycles of the tone, and anything
+there reads as one hump around 35 Hz.
+
+A peak reads a sine at its own level whatever the bin's width, and it reads noise higher
+in a wide bin than in a narrow one. White noise reads about 9 dB higher in the top third
+of the row than in the bottom third, and pink noise, which carries the same energy in
+every octave, falls about 2 dB an octave, 0.65 at the bottom of the row to 0.26 at the top
+in rox's own measurement. A renderer that wants pink noise flat can add `0.056 * log2(f
+/ 1000)` to bin `f`'s value, 3 dB an octave in this window.
+
+The linear row is the layout ShaderToy-style audio shaders read: 512 bins of 44,100 /
+2048 = 21.533 Hz each, from 0 Hz. Bin `j` is the magnitude at `j * 21.533` Hz, so bin 0
+is DC, bin 46 is 990.5 Hz and bin 511 is 11,003.5 Hz. At 44.1 kHz that's the hub's FFT
+bins exactly. At any other rate rox interpolates between the two FFT bins either side, in
+magnitude, so the row means the same frequencies on every device. What it doesn't match is
+the dB window: a WebAudio `AnalyserNode` maps -100 to -30 dB onto its bytes. A shader
+written for that reads `(dB + 100) / 70`, where `dB = -66 + 54 * value`.
+
+Both rows are each FFT as it is, unsmoothed. A bar that falls as fast as the music does
+flickers, so smooth on your own clock: keep the higher of the new value and the old one
+times about 0.85 a frame at 30 frames a second, or move toward the new value at the pool's
+own rates, rising at about 21 a second and falling at about 6, which is what a band at
+the pool's default Response does.
+
+### Reading it
+
+rox writes the block the way it writes the cover: the next odd counter, then the rows,
+the flags, the rate and the stamp, then the even counter after it, with a release fence
+after each counter store (`Spectrum::write`). There's no line on the wire: read it
+whenever you draw.
+
+1. Read `seq`. If it's odd, rox is writing: read again.
+2. Copy what you need, from the header's flags to the rows.
+3. Read `seq` again. If it moved, the copy is torn: throw it away and read again. If it's
+   the same even number, the copy is one whole write.
+
+A write takes rox tens of microseconds and comes about every 16 ms, so a retry or two
+always finds a whole one.
+
+`rox_frames::spectrum::SpectrumReader` does that in Rust. `read` fills a `Snapshot`, both
+rows as f32 and as bytes with the counter, the stamp, the rate and the playing bit, and
+answers `Whole(seq)`, `Torn` or `Empty`. It's behind the crate's `cover-reader` feature,
+which rox's own build never turns on, and `SpectrumReader::open(handle)` checks the size
+and header first. The layout is public there as constants: `rows::LOG`, `LOG_BINS`,
+`LINEAR_BIN_HZ` and the rest.
+
+In Python, with the fd from `ROX_SPECTRUM_FD`:
+
+```python
+import mmap, os, struct
+
+spectrum = mmap.mmap(int(os.environ["ROX_SPECTRUM_FD"]), 0, prot=mmap.PROT_READ)
+magic, version = struct.unpack_from("<4sI", spectrum, 0)
+assert magic == b"RXS1" and version >= 1 and len(spectrum) >= 4096
+(log_at,) = struct.unpack_from("<I", spectrum, 64)
+
+def log_row():
+    """128 values from 0 to 1, or None if rox was writing all three times."""
+    for _ in range(3):
+        (seq,) = struct.unpack_from("<Q", spectrum, 8)
+        if seq & 1:
+            continue
+        row = struct.unpack_from("<128f", spectrum, log_at)
+        if struct.unpack_from("<Q", spectrum, 8)[0] == seq:
+            return row
+    return None
+```
+
+The bars example reads it the same way (`read_spectrum`, `examples/renderers/bars/bars.py`).
+
+### When it's written
+
+rox writes it on the player's pump, the 16 ms tick that hands the visualizers new audio,
+on rox's UI thread and never on the audio thread (`follow`, `rox/src/canvas/spectrum.rs`).
+That's one write for each fresh window of audio, which came to 61 a second in rox's own
+measurement. It doesn't ride on the canvas's paints the way a `signals` line does, so a
+renderer gets the spectrum at that rate whatever its own frame rate, and whether or not
+it publishes frames. The FFT is the one the pool and a spectrum panel share, so with one
+of those showing, the spectrum costs rox no FFT of its own. The audio comes from before
+the volume control: at volume 0 the spectrum still moves, as the signals do.
+
+rox writes it only while a session granted it runs. With none, a pump tick costs one
+atomic load and no FFT. When music pauses, stops, or has been silent for 0.15 s, rox
+writes zeros once with the playing bit clear and then leaves the block alone, so the
+counter stops. The first fresh audio after that is written at once. A paused target's
+renderer doesn't read it, and rox goes on writing while any granted session runs. When
+the last one ends, rox leaves zeros behind with the playing bit clear, so the next
+renderer to start never reads old music as playing.
+
+The handle a renderer gets can only read, on the cover's terms: a `memfd` named
+`rox-spectrum` with `F_SEAL_FUTURE_WRITE` on Linux 5.1 and later, a second read-only open
+of the shm object on macOS, and a section duplicated with map read alone on Windows
+(`create_readable`, `rox-frames/src/map/unix.rs` and `windows.rs`). The macOS and Windows
+halves have never been compiled or run. On a Linux before 5.1 a renderer could write the
+numbers every other renderer reads. rox never reads them back.
+
 ## The wire
 
 ### rox to the renderer
@@ -472,6 +652,7 @@ These are every line rox writes (`target.rs:1327-1592`):
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
 {"hello":1,"width":1280,"height":720,"handle":0,"cover":{"fd":4,"width":256,"height":256}}
+{"hello":1,"width":1280,"height":720,"handle":0,"spectrum":{"fd":4,"bytes":4096,"log_bins":128,"linear_bins":512,"rate":62.5}}
 {"hello":1,"width":1920,"height":1080,"handle":0,"texture":{"fd":4,"width":1920,"height":1080,"allocation_size":8847360,"memory_type":0,"handle_type":"opaque-fd","format":37,"view_formats":[43,37],"flags":8,"usage":31,"tiling":0,"layout":1,"device_uuid":"00000000100000000000000000000000","driver_uuid":"414d442d4d4553412d44525600000000"}}
 {"pool":[{"id":1,"name":"Kick","kind":"band","low":30,"high":120},{"id":2,"name":"onset 30-120 Hz","kind":"onset","low":30,"high":120},{"id":3,"name":"level","kind":"level"},{"id":4,"name":"total of 1","kind":"aggregate"}]}
 {"signals":[0.3958,0.0,1.0],"time":4.224}
@@ -488,7 +669,10 @@ under `cover`: `fd` 4 on Unix, `handle` on Windows, the section's handle value i
 renderer, and the square's `width` and `height`, both 256. Without the grant `hello` has no
 `cover` key. A renderer lent the GPU texture finds what it needs to import it under
 `texture` ([hello's texture](#hellos-texture)). One that wasn't lent it, for any reason,
-gets no `texture` key.
+gets no `texture` key. A renderer granted the spectrum finds it under `spectrum`: `fd`,
+the same number as `ROX_SPECTRUM_FD` on Unix, or `handle` on Windows, then the block's
+`bytes`, the two rows' bin counts and the most writes a second, each also in [the
+block's header](#the-spectrum). Without the grant `hello` has no `spectrum` key.
 
 `pool` describes the signal pool by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
@@ -745,6 +929,7 @@ stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 K
 | Wanted signals | 16 | `MAX_WANTED_SIGNALS`, `manifest.rs:176` |
 | A wanted signal's name | 32 characters | `WANTED_NAME_MAX` |
 | The cover | 256 by 256 pixels | `SIZE`, `rox-frames/src/cover.rs` |
+| The spectrum | 128 log bins and 512 linear bins, at most 62.5 writes a second | `LOG_BINS`, `LINEAR_BINS`, `RATE`, `rox-frames/src/spectrum.rs` |
 | The GPU texture | One per target, at its resolution; Linux only; the canvas's wait to make it is 2 s, then the session runs on slots | `LIMITS.texture_wait`, `target.rs` |
 | `t` from a session lent no texture | Counts as a refused frame: 60 in a row stop the renderer | `show_texture`, `target.rs` |
 
@@ -759,14 +944,23 @@ its approved manifest asks. The enable card names the two grants behind them: "G
 music's signals and the playing position" and "Gets the pointer while it's over the
 render target" (`plugins::grants`, `rox-services/src/plugins.rs`). A renderer that asks
 for the palette also gets `palette` lines, and one that asks for the cover gets the cover
-mapping, fd 4 and `ROX_COVER_FD`, `cover` in `hello`, and `cover` lines. Each has its own
-card line. The grants are read from the manifest the gate approved when the session
+mapping, fd 4 and `ROX_COVER_FD`, `cover` in `hello`, and `cover` lines. One that asks
+for the spectrum gets the spectrum mapping, its fd and `ROX_SPECTRUM_FD`, and `spectrum`
+in `hello`. Each has its own card line. The grants are read from the manifest the gate approved when the session
 starts (`Session::asks`, `rox-services/src/renderers.rs`), so a renderer whose files
 change can't widen them without the card. A renderer that asks for nothing gets exactly
 what it got before these grants existed.
 
 A renderer isn't told the track, a path, a key press, or anything about another item,
-and its wire has no way to call into rox. The cover is pixels with a counter. The
+and its wire has no way to call into rox. The cover is pixels with a counter.
+
+The spectrum says how loud each frequency was, about 61 times a second, and nothing else
+about the audio. From it a renderer can tell the tempo, the loudness and the timbre, and
+could match it against fingerprints of known recordings to guess the track. It can't get
+the recording back. There's no phase, nothing above 11 kHz in the linear row, nothing
+outside the 54 dB window, and the windows come at the pump's uneven pace. What a hostile
+renderer could synthesize from it is a rough sketch of the music, the way a vocoder
+sounds: a melody and a rhythm someone could recognize, never a copy of the sound. The
 palette says something about the track too: with song theming on, the theme's colours
 follow the playing track's cover. A renderer granted the palette gets a new `palette`
 line whenever a cover brings other colours, which tells it the album changed, and gets
@@ -788,7 +982,9 @@ Placed in another rox, the renderer reads that rox's pool.
 
 On Linux the block is a sealed `memfd`, lent as fd 3 with `ROX_FRAMES_FD=3`, and
 `hello`'s `handle` is 0. The cover is a second `memfd`, future-write sealed, lent as fd 4
-with `ROX_COVER_FD=4`. The GPU texture is lent on Linux alone, after the cover. On macOS
+with `ROX_COVER_FD=4`. The GPU texture is lent on Linux alone, after the cover. The
+spectrum is a third `memfd`, future-write sealed, lent after all of those with its
+number in `ROX_SPECTRUM_FD`. On macOS
 and Windows gpui answers unsupported, rox never asks the canvas for one, and every target
 draws through the slots. That code compiles on both by `cfg`, and no macOS or Windows
 build of it has been made.
@@ -807,7 +1003,7 @@ renderer's stdin is blocking there, so the lines go through a writer thread that
 up to 16 before rox counts the pipe as full (`WRITER_LINES`, `target.rs:334`). The
 renderer starts with no console window and inside a job object, as a plugin does. The
 cover is a second section, duplicated with map read alone, and its value is `hello`'s
-`cover.handle`.
+`cover.handle`. The spectrum is a third, duplicated the same way, at `spectrum.handle`.
 Python's `mmap` maps a file or a named mapping and has no way to take a section handle,
 so the Python example logs that and exits on Windows. The Rust example takes the handle
 from `hello`.
@@ -917,7 +1113,7 @@ rox was started with from being handed on.
 | `PATH` | The plugin search path: the package's `bin` folder, the Program Folders from the Plugins page, then rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`) |
 | `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED`, `PYTHONUTF8` | `1` each |
 | `ROX_RENDER_API`, `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | rox, always |
-| `ROX_FRAMES_FD`, `ROX_COVER_FD`, `ROX_TEXTURE_FD` | rox, on Unix, each only when that handle is lent. The [Lifecycle](#lifecycle) table has their values |
+| `ROX_FRAMES_FD`, `ROX_COVER_FD`, `ROX_TEXTURE_FD`, `ROX_SPECTRUM_FD` | rox, on Unix, each only when that handle is lent. The [Lifecycle](#lifecycle) table has their values |
 
 The GPU variables pass through as rox has them and rox adds none of its own:
 `LD_LIBRARY_PATH`, the Vulkan loader's `VK_ICD_FILENAMES`, `VK_DRIVER_FILES`,
@@ -1301,7 +1497,8 @@ The shared memory is `crates/rox-frames`: `layout.rs` (the offsets, `Spec`, the 
 `map.rs` with `map/unix.rs` and `map/windows.rs` (making, sealing and lending the block),
 `read.rs` (`copy_slot`, `Read`, `Refusal`), `write.rs` (`Writer`, behind the `writer`
 feature), `cover.rs` (the cover mapping: its layout, `fit`, `letterbox`, `Cover`, and
-`CoverReader` behind the `cover-reader` feature) and `lib.rs` (`ANNOUNCE_MAX`,
+`CoverReader` behind the `cover-reader` feature), `spectrum.rs` (the spectrum mapping:
+its layout, `Spectrum`, and `SpectrumReader` behind the same feature) and `lib.rs` (`ANNOUNCE_MAX`,
 `parse_announce`, `announce`, `clock_ns`).
 
 The package side is `crates/rox-services/src/renderers.rs` (the listing, the gate,
@@ -1311,6 +1508,10 @@ on top of `crates/rox-plugins`: `manifest.rs` (`capabilities.renderer`, `check_r
 the Windows handles, stderr, `never_block`) and `host.rs` (`BACKOFF`, `CRASH_WINDOW`). The
 approval card's grants are `grants` in `crates/rox-services/src/plugins.rs`, with the
 re-approval diff in `changes`.
+
+The spectrum's rows are `crates/rox-viz/src/spectrum.rs` (`Rows`, `log_edge`,
+`normalise`), and the one shared mapping, its leases and its writes on the pump are
+`crates/rox/src/canvas/spectrum.rs`.
 
 The item is `crates/rox/src/canvas/target.rs` (the supervisor, the limits, the reader,
 the copy, the texture's handoff in `Lend` and `Supervisor::texture`, every line sent, the

@@ -118,6 +118,15 @@ impl WritableView {
 /// The cover section and rox's writable view of it. The renderer's copy is
 /// duplicated with [`COVER_CHILD_ACCESS`], so it can only read.
 pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), Error> {
+    create_readable(len, "rox-cover")
+}
+
+/// A section rox writes and a renderer only reads, as the cover is. The
+/// section is unnamed, so the name goes nowhere.
+pub(crate) fn create_readable(
+    len: usize,
+    _name: &str,
+) -> Result<(Section, WritableView, bool), Error> {
     let size = len as u64;
 
     // SAFETY: as in `create`.
@@ -145,6 +154,13 @@ pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), 
 /// map.
 #[cfg(any(test, feature = "cover-reader"))]
 pub(crate) fn map_readable(section: BorrowedHandle<'_>, len: usize) -> Result<View, Error> {
+    map(section, FILE_MAP_READ, len)
+}
+
+/// Maps the first `len` bytes of a section read-only. A section smaller
+/// than `len` fails the map, and a larger one is a later layout.
+#[cfg(any(test, feature = "cover-reader"))]
+pub(crate) fn map_readable_prefix(section: BorrowedHandle<'_>, len: usize) -> Result<View, Error> {
     map(section, FILE_MAP_READ, len)
 }
 

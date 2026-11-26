@@ -213,6 +213,7 @@ fn grant_line(grant: Grant, manifest: &Manifest) -> SharedString {
         ),
         Grant::Palette => rox_i18n::t!("settings-plugins-card-renderer-palette"),
         Grant::Cover => rox_i18n::t!("settings-plugins-card-renderer-cover"),
+        Grant::Spectrum => rox_i18n::t!("settings-plugins-card-renderer-spectrum"),
     }
 }
 

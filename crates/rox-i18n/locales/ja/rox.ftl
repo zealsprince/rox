@@ -1501,6 +1501,7 @@ settings-plugins-card-renderer-pointer = ポインターがレンダーターゲ
 settings-plugins-card-renderer-wanted = 次のシグナルに追従します: { $signals }。レンダーターゲットを配置すると、まだないシグナルを追加するか rox が尋ねます。
 settings-plugins-card-renderer-palette = 現在のテーマの色を受け取ります。曲テーマがオンのときはカバーに合わせて変わります。
 settings-plugins-card-renderer-cover = 再生中のトラックのカバーを画像として受け取ります。
+settings-plugins-card-renderer-spectrum = 音楽のスペクトル（再生中の各周波数の大きさ）を受け取ります。音そのものは受け取りません。
 settings-plugins-card-unchanged-renderer = マニフェストの内容は前回と同じです。レンダラーのファイルが変わりました。
 settings-plugins-renderer-failed-title = このレンダラーは動かせません
 settings-plugins-renderer-developer = 開発者モード: rox を終了するまで、このレンダラーのフォルダーの変更は自動で承認される。マニフェストが変わった場合は、これまでどおりオフになる

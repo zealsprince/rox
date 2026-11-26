@@ -107,6 +107,10 @@ pub struct RendererCap {
     /// Sent the playing track's cover as pixels.
     #[serde(default)]
     pub cover: bool,
+    /// Sent the music's frequency magnitudes through the spectrum mapping.
+    /// Never samples or phase, which would be the audio itself.
+    #[serde(default)]
+    pub spectrum: bool,
     /// Can draw into a GPU texture rox lends it beside the frame mapping.
     /// Not a grant: it tells the renderer nothing and reaches only the
     /// target's own pixels, which every renderer already draws.
@@ -1686,6 +1690,28 @@ mod tests {
 
         let err = renderer_asking(r#""cover": "yes""#).unwrap_err();
         assert!(err.contains("plugin.json"), "{err}");
+    }
+
+    #[test]
+    fn a_renderer_asks_for_the_spectrum() {
+        let cap = renderer_asking(r#""spectrum": true"#).unwrap();
+        assert!(cap.spectrum && !cap.palette && !cap.cover && !cap.gpu);
+
+        assert!(!renderer_asking(r#""spectrum": false"#).unwrap().spectrum);
+        assert!(
+            !renderer_asking(r#""cover": true"#).unwrap().spectrum,
+            "off unless asked"
+        );
+
+        for bad in [
+            r#""spectrum": "yes""#,
+            r#""spectrum": 1"#,
+            r#""spectrum": null"#,
+            r#""spectrum": {}"#,
+        ] {
+            let err = renderer_asking(bad).unwrap_err();
+            assert!(err.contains("plugin.json"), "{bad}: {err}");
+        }
     }
 
     #[test]

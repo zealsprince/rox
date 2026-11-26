@@ -1562,6 +1562,7 @@ settings-plugins-card-renderer-pointer = Reçoit le pointeur tant qu'il survole 
 settings-plugins-card-renderer-wanted = Suit ces signaux : { $signals }. Quand vous placez une cible de rendu pour lui, rox propose d'ajouter ceux qui vous manquent.
 settings-plugins-card-renderer-palette = Reçoit les couleurs du thème actuel, qui suivent la pochette quand les couleurs du morceau sont actives.
 settings-plugins-card-renderer-cover = Reçoit la pochette du morceau en cours, sous forme d'image.
+settings-plugins-card-renderer-spectrum = Reçoit le spectre de la musique : le volume de chaque fréquence pendant la lecture, jamais le son lui-même.
 settings-plugins-card-unchanged-renderer = Le manifeste dit la même chose que la dernière fois. Des fichiers du moteur de rendu ont changé.
 settings-plugins-renderer-failed-title = Ce moteur de rendu ne peut pas s'exécuter
 settings-plugins-renderer-developer = Mode développeur : jusqu'à ce que vous quittiez rox, une modification du dossier de ce moteur de rendu est approuvée d'elle-même. Une modification de son manifeste le désactive toujours

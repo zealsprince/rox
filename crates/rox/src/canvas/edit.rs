@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use rox_canvas::{
     Anchor, Camera, CanvasItem, CanvasState, Content, Frame, Length, Live, MAX_DEPTH, Mat4, Place,
-    Viewport, child_frame, paint_order, project, unproject_delta,
+    Position, Viewport, child_frame, paint_order, project, unproject_delta,
 };
 
 /// How far an edge or a center is pulled to a snap line, in pixels.
@@ -218,22 +218,23 @@ pub(crate) fn fits(canvas: &CanvasState, levels_left: usize) -> bool {
 // ── Moving ──
 
 /// The position that carries `item` by `screen_delta` pixels from where it
-/// sat at `start`, at its own depth.
+/// sat at `start`, at its own depth. Each axis stays in its unit, so a drag
+/// on a fractional axis writes a fraction.
 pub(crate) fn moved(
     item: &CanvasItem,
     parent: &Frame,
     camera: &Camera,
     viewport: Viewport,
-    start: [f32; 3],
+    start: Position,
     screen_delta: [f32; 2],
     flat: bool,
-) -> [f32; 3] {
+) -> Position {
     let mut at_start = item.clone();
     at_start.place.position = start;
 
     let [du, dv] = unproject_delta(&at_start, parent, camera, viewport, flat, screen_delta);
 
-    [start[0] + du, start[1] + dv, start[2]]
+    start.shifted([du, dv], parent.size)
 }
 
 /// The nudge that pulls a box's edges or center onto the nearest line within
@@ -325,6 +326,20 @@ pub(crate) fn resized(
     }
 
     let k = if parent.k > 0. { parent.k } else { 1. };
+    held_to_limits(
+        &item.place,
+        0,
+        [edges.left, edges.right],
+        [&mut left, &mut right],
+        k,
+    );
+    held_to_limits(
+        &item.place,
+        1,
+        [edges.top, edges.bottom],
+        [&mut top, &mut bottom],
+        k,
+    );
     let units = [(right - left) / k, (bottom - top) / k];
 
     let mut next = item.clone();
@@ -354,19 +369,32 @@ pub(crate) fn resized(
         let shift = [target[0] - landed[0], target[1] - landed[1]];
 
         let [du, dv] = unproject_delta(&next, parent, camera, viewport, flat, shift);
-        next.place.position[0] += du;
-        next.place.position[1] += dv;
+        next.place.position = next.place.position.shifted([du, dv], parent.size);
     }
 
     next.place
 }
 
+/// A dragged side of a size with limits stops at them, measured from the
+/// side that isn't dragged. `ends` are the near and far edge in pixels.
+fn held_to_limits(place: &Place, axis: usize, dragged: [bool; 2], ends: [&mut f32; 2], k: f32) {
+    let limited = place.min_size[axis].is_some() || place.max_size[axis].is_some();
+    if !limited || !(dragged[0] || dragged[1]) {
+        return;
+    }
+
+    let [near, far] = ends;
+    let span = place.limited(axis, (*far - *near) / k) * k;
+    if dragged[0] {
+        *near = *far - span;
+    } else {
+        *far = *near + span;
+    }
+}
+
 /// The same place measured from another anchor, so the item stays put.
 pub(crate) fn with_anchor(item: &CanvasItem, parent: &Frame, anchor: Anchor) -> Place {
-    let size = [
-        item.place.size[0].resolve(parent.size[0]),
-        item.place.size[1].resolve(parent.size[1]),
-    ];
+    let size = item.place.size_in(parent.size);
     let from = item.place.anchor.fraction();
     let to = anchor.fraction();
 
@@ -375,7 +403,8 @@ pub(crate) fn with_anchor(item: &CanvasItem, parent: &Frame, anchor: Anchor) -> 
     let mut place = item.place;
     place.anchor = anchor;
     for axis in 0..2 {
-        place.position[axis] += (from[axis] - to[axis]) * (parent.size[axis] - size[axis]);
+        let by = (from[axis] - to[axis]) * (parent.size[axis] - size[axis]);
+        place.position.xy[axis] = place.position.xy[axis].shifted(by, parent.size[axis]);
     }
 
     place
@@ -479,10 +508,10 @@ pub(crate) fn depths(siblings: &[CanvasItem], parent: &Frame) -> Vec<f32> {
 pub(crate) fn z_for_depth(item: &CanvasItem, parent: &Frame, current: f32, target: f32) -> f32 {
     let along = parent.transform.vector([0., 0., 1.])[2];
     if along.abs() <= f32::EPSILON {
-        return item.place.position[2];
+        return item.place.position.z;
     }
 
-    item.place.position[2] + (target - current) / along
+    item.place.position.z + (target - current) / along
 }
 
 // ── Placing ──
@@ -492,21 +521,23 @@ pub(crate) fn z_for_depth(item: &CanvasItem, parent: &Frame, current: f32, targe
 /// size on the same anchor already stands there, the way a design tool
 /// cascades a duplicate. A copy over an identical one reads as a single item.
 /// Size counts so a new item over a converted window's full-stage grid stays
-/// centred.
-pub(crate) fn cascaded(siblings: &[CanvasItem], place: &Place) -> [f32; 3] {
-    let taken = |spot: [f32; 3]| {
+/// centred. Positions compare where they land in a parent box of `parent`,
+/// and a fractional axis steps by the same units.
+pub(crate) fn cascaded(siblings: &[CanvasItem], place: &Place, parent: [f32; 2]) -> Position {
+    let taken = |spot: Position| {
+        let [x, y, _] = spot.resolve(parent);
         siblings.iter().any(|item| {
+            let [sx, sy, _] = item.place.offset_in(parent);
             item.place.anchor == place.anchor
                 && item.place.size == place.size
-                && (item.place.position[0] - spot[0]).abs() < 0.5
-                && (item.place.position[1] - spot[1]).abs() < 0.5
+                && (sx - x).abs() < 0.5
+                && (sy - y).abs() < 0.5
         })
     };
 
     let mut spot = place.position;
     while taken(spot) {
-        spot[0] += CASCADE_STEP;
-        spot[1] += CASCADE_STEP;
+        spot = spot.shifted([CASCADE_STEP; 2], parent);
     }
 
     spot
@@ -661,11 +692,15 @@ pub(crate) fn reexpress(item: &CanvasItem, from: &Frame, to: &Frame) -> Place {
     let [fx, fy] = item.place.anchor.fraction();
     let pivot = [(0.5 - fx) * size[0], (0.5 - fy) * size[1]];
     let local = back.point(center);
-    let position = [
+    let units = [
         local[0] - pivot[0] - fx * to.size[0],
         local[1] - pivot[1] - fy * to.size[1],
-        local[2],
     ];
+    let xy = item.place.position.xy;
+    let position = Position {
+        xy: [0, 1].map(|axis| xy[axis].with_units(units[axis], to.size[axis])),
+        z: local[2],
+    };
 
     let length = |old: Length, units: f32, axis: usize| match old {
         Length::Stage(_) if to.size[axis] > 0. => Length::Stage(units / to.size[axis]),
@@ -686,6 +721,7 @@ pub(crate) fn reexpress(item: &CanvasItem, from: &Frame, to: &Frame) -> Place {
         } else {
             item.place.scale
         },
+        ..item.place
     }
 }
 
@@ -773,13 +809,14 @@ mod tests {
         CanvasItem {
             id: id.into(),
             place: Place {
-                position,
+                position: Position::units(position),
                 size: [Length::Units(size[0]), Length::Units(size[1])],
                 ..Place::default()
             },
             content: Content::Image {
                 asset: "a".into(),
                 fit: Default::default(),
+                slice: None,
             },
             ..CanvasItem::default()
         }
@@ -789,7 +826,7 @@ mod tests {
         CanvasItem {
             id: id.into(),
             place: Place {
-                position,
+                position: Position::units(position),
                 size,
                 ..Place::default()
             },
@@ -800,6 +837,11 @@ mod tests {
         }
     }
 
+    /// Where [`cascaded`] puts a new item, in units on the test stage.
+    fn cascade_at(siblings: &[CanvasItem], place: &Place) -> [f32; 3] {
+        cascaded(siblings, place, stage().size).resolve(stage().size)
+    }
+
     /// A new 100 by 100 item at the stage centre.
     fn new_at_centre() -> Place {
         image("new", [0.; 3], [100., 100.]).place
@@ -808,8 +850,8 @@ mod tests {
     #[test]
     fn a_first_item_takes_the_spot_it_was_given() {
         let others = [image("a", [200., 0., 0.], [100., 100.])];
-        assert_eq!(cascaded(&others, &new_at_centre()), [0.; 3]);
-        assert_eq!(cascaded(&[], &new_at_centre()), [0.; 3]);
+        assert_eq!(cascade_at(&others, &new_at_centre()), [0.; 3]);
+        assert_eq!(cascade_at(&[], &new_at_centre()), [0.; 3]);
     }
 
     #[test]
@@ -819,7 +861,7 @@ mod tests {
 
         let mut spots = Vec::new();
         for n in 0..4 {
-            let spot = cascaded(&siblings, &new_at_centre());
+            let spot = cascade_at(&siblings, &new_at_centre());
             spots.push(spot);
             siblings.push(image(&format!("copy{n}"), spot, [100., 100.]));
         }
@@ -838,24 +880,24 @@ mod tests {
     #[test]
     fn a_gap_in_the_cascade_is_filled_first() {
         let siblings = [image("b", [CASCADE_STEP, CASCADE_STEP, 0.], [100., 100.])];
-        assert_eq!(cascaded(&siblings, &new_at_centre()), [0.; 3]);
+        assert_eq!(cascade_at(&siblings, &new_at_centre()), [0.; 3]);
     }
 
     #[test]
     fn an_item_of_another_size_or_on_another_anchor_leaves_the_spot_free() {
         let full = grid("grid", [0.; 3], [Length::Stage(1.), Length::Stage(1.)]);
-        assert_eq!(cascaded(&[full], &new_at_centre()), [0.; 3]);
+        assert_eq!(cascade_at(&[full], &new_at_centre()), [0.; 3]);
 
         let mut corner = image("corner", [0.; 3], [100., 100.]);
         corner.place.anchor = Anchor::TopLeft;
-        assert_eq!(cascaded(&[corner], &new_at_centre()), [0.; 3]);
+        assert_eq!(cascade_at(&[corner], &new_at_centre()), [0.; 3]);
     }
 
     #[test]
     fn a_copy_at_another_depth_still_covers_the_spot_on_screen() {
         let deeper = image("deeper", [0., 0., 300.], [100., 100.]);
         assert_eq!(
-            cascaded(&[deeper], &new_at_centre()),
+            cascade_at(&[deeper], &new_at_centre()),
             [CASCADE_STEP, CASCADE_STEP, 0.]
         );
     }
@@ -907,7 +949,7 @@ mod tests {
             &stage(),
             &camera(),
             VIEW,
-            [0., 0., 0.],
+            Position::units([0.; 3]),
             [40., -25.],
             is_flat(&item.content),
         );
@@ -927,7 +969,7 @@ mod tests {
             &stage(),
             &camera(),
             VIEW,
-            [0., 0., 0.],
+            Position::units([0.; 3]),
             [30., 0.],
             is_flat(&near_item.content),
         );
@@ -936,14 +978,18 @@ mod tests {
             &stage(),
             &camera(),
             VIEW,
-            [0., 0., -800.],
+            Position::units([0., 0., -800.]),
             [30., 0.],
             is_flat(&far_item.content),
         );
 
-        assert!(near(near_move[0], 30.));
-        assert!(far_move[0] > near_move[0] * 1.5, "{far_move:?}");
-        assert_eq!(far_move[2], -800.);
+        let units = |p: Position| p.resolve(stage().size);
+        assert!(near(units(near_move)[0], 30.));
+        assert!(
+            units(far_move)[0] > units(near_move)[0] * 1.5,
+            "{far_move:?}"
+        );
+        assert_eq!(far_move.z, -800.);
     }
 
     #[test]
@@ -1053,6 +1099,152 @@ mod tests {
         switched.place.size[0] = other_unit(item.place.size[0], stage().size[0]);
         assert!(matches!(switched.place.size[0], Length::Stage(_)));
         assert!(same_corners(&before, &put(&switched, &stage())));
+    }
+
+    /// An item whose x is a quarter of the stage and whose y is units.
+    fn fractional(id: &str) -> CanvasItem {
+        let mut item = image(id, [0.; 3], [200., 100.]);
+        item.place.anchor = Anchor::TopLeft;
+        item.place.position = Position {
+            xy: [Length::Stage(0.25), Length::Units(40.)],
+            z: 0.,
+        };
+        item
+    }
+
+    fn fraction_near(length: Length, want: f32) -> bool {
+        matches!(length, Length::Stage(f) if (f - want).abs() < 1e-4)
+    }
+
+    #[test]
+    fn a_drag_on_a_fractional_axis_writes_a_fraction() {
+        let mut item = fractional("a");
+        let before = center(&put(&item, &stage()));
+
+        let position = moved(
+            &item,
+            &stage(),
+            &camera(),
+            VIEW,
+            item.place.position,
+            [160., 30.],
+            false,
+        );
+
+        // 160 of the stage's 1600 is a tenth more, and y stays units.
+        assert!(fraction_near(position.xy[0], 0.35), "{position:?}");
+        assert!(matches!(position.xy[1], Length::Units(n) if near(n, 70.)));
+
+        item.place.position = position;
+        let after = center(&put(&item, &stage()));
+        assert!(near(after[0] - before[0], 160.), "{before:?} {after:?}");
+        assert!(near(after[1] - before[1], 30.), "{before:?} {after:?}");
+    }
+
+    #[test]
+    fn a_resize_stops_at_a_limit_and_keeps_the_edge_not_dragged() {
+        let mut item = grid(
+            "g",
+            [0., 0., 0.],
+            [Length::Stage(0.25), Length::Units(300.)],
+        );
+        item.place.min_size = [Some(300.), None];
+        item.place.max_size = [Some(500.), None];
+
+        let (origin, extent) = super::super::bbox(&put(&item, &stage()).corners);
+        let start = [
+            origin[0],
+            origin[1],
+            origin[0] + extent[0],
+            origin[1] + extent[1],
+        ];
+        let resize = |edges: Edges, delta: [f32; 2]| {
+            let mut next = item.clone();
+            next.place = resized(
+                &item,
+                &stage(),
+                &camera(),
+                VIEW,
+                start,
+                edges,
+                delta,
+                [10., 10.],
+                true,
+            );
+            (
+                next.place.size[0],
+                super::super::bbox(&put(&next, &stage()).corners),
+            )
+        };
+
+        // 300 more to the left asks for 700 and stops at 500, the right edge
+        // where it was.
+        let left = Edges {
+            left: true,
+            ..Edges::default()
+        };
+        let (width, (origin, extent)) = resize(left, [-300., 0.]);
+        assert!(fraction_near(width, 500. / 1600.), "{width:?}");
+        assert!(
+            near(origin[0] + extent[0], start[2]),
+            "{origin:?} {extent:?}"
+        );
+        assert!(near(extent[0], 500.));
+
+        // 250 off the right asks for 150 and stops at 300 from the left edge.
+        let right = Edges {
+            right: true,
+            ..Edges::default()
+        };
+        let (width, (origin, extent)) = resize(right, [-250., 0.]);
+        assert!(fraction_near(width, 300. / 1600.), "{width:?}");
+        assert!(near(origin[0], start[0]), "{origin:?}");
+        assert!(near(extent[0], 300.));
+    }
+
+    #[test]
+    fn a_new_anchor_or_a_new_group_keeps_a_fractional_axis_fractional_and_in_place() {
+        let item = fractional("pic");
+        let before = put(&item, &stage());
+
+        for anchor in [Anchor::Center, Anchor::BottomRight] {
+            let mut moved = item.clone();
+            moved.place = with_anchor(&item, &stage(), anchor);
+            assert!(moved.place.position.xy[0].is_fraction(), "{anchor:?}");
+            assert!(!moved.place.position.xy[1].is_fraction(), "{anchor:?}");
+            assert!(same_corners(&before, &put(&moved, &stage())), "{anchor:?}");
+        }
+
+        let mut turned = image("turned", [100., -50., -80.], [600., 400.]);
+        turned.place.rotation = [0., 20., 0.];
+        turned.content = Content::Group { items: Vec::new() };
+        let mut canvas = CanvasState {
+            items: vec![item, turned],
+            ..CanvasState::default()
+        };
+
+        assert!(move_into(
+            &mut canvas,
+            "pic",
+            Some("turned"),
+            VIEW,
+            MAX_DEPTH
+        ));
+        let inside = canvas.find("pic").expect("present");
+        assert!(inside.place.position.xy[0].is_fraction());
+        assert!(same_corners(&before, &on_screen(&canvas, "pic")));
+    }
+
+    #[test]
+    fn a_cascade_steps_a_fractional_axis_by_the_same_units() {
+        let first = fractional("first");
+        let spot = cascaded(std::slice::from_ref(&first), &first.place, stage().size);
+
+        assert!(
+            fraction_near(spot.xy[0], 0.25 + CASCADE_STEP / 1600.),
+            "{spot:?}"
+        );
+        assert_eq!(spot.xy[1], Length::Units(40. + CASCADE_STEP));
     }
 
     #[test]
@@ -1165,7 +1357,7 @@ mod tests {
         let mut wrapper = CanvasItem {
             id: "group".into(),
             place: Place {
-                position: [200., 50., -100.],
+                position: Position::units([200., 50., -100.]),
                 size: [Length::Units(500.), Length::Units(400.)],
                 rotation: [15., -20., 10.],
                 scale: 0.8,
@@ -1206,7 +1398,7 @@ mod tests {
         let turned = CanvasItem {
             id: "turned".into(),
             place: Place {
-                position: [250., -60., -150.],
+                position: Position::units([250., -60., -150.]),
                 rotation: [-20., 35., 5.],
                 scale: 1.25,
                 ..Place::default()
@@ -1307,7 +1499,7 @@ mod tests {
                 &stage(),
                 &camera(),
                 VIEW,
-                [0.; 3],
+                Position::units([0.; 3]),
                 [step as f32 * 5., 0.],
                 is_flat(&start.items[0].content),
             );

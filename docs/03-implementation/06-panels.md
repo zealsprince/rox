@@ -390,16 +390,14 @@ two forms, and the window looks the same afterwards in either.
   box, the group's tabs in their order, its active tab and its panels' settings. The
   dividers between groups are gone: each item moves and resizes on its own.
 
-An item's size is a fraction of the stage, and its position can only be units, so on
-each axis it takes the anchor that keeps its edges where the dock would put them at any
-size (`place_axis`): the start for a group against the left or top edge, the end for one
-against the right or bottom, the centre for a centred one, each with no offset. Those
-follow a window resize exactly. A group that touches neither edge and isn't centred, the
-middle one of three uneven columns, takes the anchor that drifts least and an offset in
-units, so a resize moves it by that offset's share of the change, and it can gap or
-overlap a neighbour. A pinned row scales with the window like the rest, since the pin
-was the split's. The stage takes the window's size, so switching the canvas to Contain
-afterwards shows the same picture.
+Each item sits on the top-left anchor with its position and its size as fractions of
+the stage, the group's edges as the split shares them out. The dock keeps every split's
+shares when the window resizes, so at any size the items land where the dock would put
+the groups, with no gap or overlap between neighbours. The one place they part is a
+panel at its own minimum or maximum: the dock holds it there and hands the difference
+to its siblings, while a converted item keeps its fraction. A pinned row scales with the
+window like the rest, since the pin was the split's. The stage takes the window's size,
+so switching the canvas to Contain afterwards shows the same picture.
 
 Its panels lose their locks on the way in, since a locked panel can't be dragged inside a
 grid. There's no undo, so it asks first, with Cancel as the default, and the only way
@@ -412,11 +410,47 @@ The saved shape is `CanvasConfig` (`crates/rox/src/panels/canvas.rs`): the panel
 a `rox_canvas::CanvasState` flattened beside it, and the canvas's signal routes. A canvas
 holds a stage size and fit, a camera (vertical field of view, with 0 for orthographic,
 and pointer parallax), and a list of items. Each item has an id that's unique across the
-whole canvas, a place (an anchor on its parent's box, a position, a size in units or as a
-fraction of the parent, a rotation and a scale), visibility, a lock, an opacity, and its
-content. Grid, group, image, text and shader content draw. A kind this build doesn't
-know and a known kind whose body doesn't parse are both kept as read and written back
-unchanged.
+whole canvas, a place (an anchor on its parent's box, a position, a size, limits on the
+size, a rotation and a scale), visibility, a lock, an opacity, and its content. Grid,
+group, image, text and shader content draw. A kind this build doesn't know and a known
+kind whose body doesn't parse are both kept as read and written back unchanged.
+
+Each of a size's sides and each of a position's x and y is units or a fraction of the
+parent's box along that axis: the stage's, or the group's. A position's z is units only,
+since the box has no depth. A fraction reads the same in both, and a position in units
+saves as a bare number, so a place saved before fractional positions reads and writes
+the same bytes (`crates/rox-canvas/src/place.rs`):
+
+```json
+"place": {
+  "anchor": "top_left",
+  "position": [{ "stage": 0.25 }, 40.0, 0.0],
+  "size": [{ "stage": 0.5 }, { "units": 300.0 }],
+  "min_size": [320.0, null],
+  "max_size": [960.0, null]
+}
+```
+
+A fractional position measures from the anchor's point, so `0.25` on a top-left anchor
+puts the left edge a quarter of the way across, and on a centred one a quarter of the
+width right of the middle. `min_size` and `max_size` are units, `null` for no limit, and
+a side resolves to its length held between them, so a fractional width stops shrinking
+or growing at its limits. A minimum over its maximum wins, as CSS settles it. A place
+with no limit writes neither key. The fields are additive with serde defaults, and no
+released build reads a canvas, so neither `CANVAS_VERSION` nor the workspace version
+moves for them.
+
+In the editor every axis keeps its unit. A drag works out the move in the parent's
+units at the item's depth and adds it to each axis in its own unit, so dragging a
+fractional axis writes a fraction, and so do a resize from a handle, an arrow-key nudge
+(one unit, ten with shift, divided by the parent's length on a fractional axis), the
+align, fill and fit tools, a change of anchor, and grouping or moving into a group. A
+resize stops at a side's limits, measured from the edge not dragged. The inspector's x
+and y rows carry the Units or Percent toggle the size rows have, which re-expresses the
+axis at the same place, and a fractional side, or one with a limit, shows its minimum
+and maximum under it, where an empty field clears the limit. A route on `x` or `y` keeps
+its meaning on a fractional axis: its sway is units added on top of wherever the
+fraction puts the item.
 
 `rox_canvas` does the placing. An item's transform is its parent frame's times its own,
 and it turns and scales about its centre whatever its anchor. A point at depth `z`
@@ -432,6 +466,25 @@ since a live panel can't be drawn tilted. Images take real perspective through
 header is read first so an image over the pixel cap (`MAX_PIXELS`, `MAX_SIDE` in
 `crates/rox/src/canvas/image.rs`) is refused before its body is decoded. A missing
 image shows as a dashed outline with its asset id, only in design mode.
+
+An image can be nine-sliced: `"slice": [left, top, right, bottom]` in its content, insets
+in the image's own pixels. The cut (`crates/rox/src/canvas/slice.rs`) keeps the corners at
+their size, stretches the edges along their side and the middle both ways, and a sliced
+image fills its box whatever its fit. An inset draws as that many of the item's units,
+so a corner follows the item's scale and the stage's and never the stretch. A box
+smaller than two corners side by side shrinks every inset by the same factor, so the
+corners keep their shape and meet, and insets that pass the image are given back in
+proportion, leaving a texel between them to stretch. The face's sixteen grid points are
+projected once (`rox_canvas::project_points`) and each patch is its own quad from those
+shared corners, sampling its own texels through `Window::paint_image_patch`. That's the
+gpui patch `e7-image-patch-inner-edges.patch`: a polychrome sprite fades its alpha over
+the half pixel inside each side, which on a seam between two patches leaves a faint line
+wherever the seam misses a pixel boundary, and on a tilted face it always does. A patch
+draws the sides it shares hard, so each pixel along a seam is covered once. Each sampler
+clamps to its own patch's texels, so the edge texels of neighbouring patches don't blend
+across a seam. The image's preview with the cut drawn over it sits under the four inset
+fields in the inspector, and each inset is one undo step. The weight line counts items,
+not quads, so a sliced image weighs what any image does.
 
 An item can follow a piece of state from the table Custom Controls picks from (`STATES`
 in `crates/rox-panel-api/src/buttons.rs`). It names one state id, and for each of that
@@ -565,12 +618,17 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 `crates/rox/src/preset_sources.rs` (the tiers gathered per kind),
 `crates/rox-panel-api/src/panel_settings.rs` (the Presets row, `PresetMarks`), and
 `crates/rox/src/composite.rs` (`Hosting`, `replace_hosted`, `hosted_docks`). Canvases span
-`crates/rox-canvas/src/` (the saved shape in `state.rs`, the projection in `project.rs`),
+`crates/rox-canvas/src/` (the saved shape in `state.rs`, positions and size limits in
+`place.rs`, the projection in `project.rs`),
 `crates/rox/src/panels/canvas.rs` (`CanvasPanel`, `CanvasConfig`, `wrap_layout`,
 `split_layout`),
 `crates/rox/src/canvas/mod.rs` (the live bodies and the nesting cap),
 `crates/rox/src/canvas/grid.rs` (a grid's dock area), `crates/rox/src/canvas/image.rs`
-(the decode and the quad), `crates/rox/src/canvas/states.rs` (items that follow state),
+(the decode, the quad and the nine patches), `crates/rox/src/canvas/slice.rs` (the
+nine-slice cut), `crates/rox/src/canvas/edit.rs` and `align.rs` (the editor's
+arithmetic), `crates/rox/src/canvas/overlay.rs` with `overlay/place_rows.rs` and
+`overlay/slice_rows.rs` (the inspector), `patches/gpui/e7-image-patch-inner-edges.patch`
+(`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
 `crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock),
 `crates/rox/src/canvas/cost.rs` (the weight line),

@@ -8,6 +8,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::place::{Position, no_limits};
+
 pub const CANVAS_VERSION: u32 = 1;
 
 /// Canvases inside canvases and groups inside groups, counted together.
@@ -307,9 +309,16 @@ pub struct Place {
     /// there. It only places the item, which turns and scales about its
     /// centre.
     pub anchor: Anchor,
-    /// Units, in the parent's space, from the anchor's point.
-    pub position: [f32; 3],
+    /// From the anchor's point: x and y each in units or as a fraction of
+    /// the parent's box, and z in units.
+    pub position: Position,
     pub size: [Length; 2],
+    /// The least each side resolves to, in units. Null for no limit.
+    #[serde(skip_serializing_if = "no_limits")]
+    pub min_size: [Option<f32>; 2],
+    /// The most each side resolves to, in units. Null for no limit.
+    #[serde(skip_serializing_if = "no_limits")]
+    pub max_size: [Option<f32>; 2],
     /// Degrees about x, y, z.
     pub rotation: [f32; 3],
     pub scale: f32,
@@ -319,8 +328,10 @@ impl Default for Place {
     fn default() -> Self {
         Self {
             anchor: Anchor::Center,
-            position: [0.; 3],
+            position: Position::default(),
             size: [Length::Units(480.), Length::Units(320.)],
+            min_size: [None; 2],
+            max_size: [None; 2],
             rotation: [0.; 3],
             scale: 1.,
         }
@@ -425,6 +436,10 @@ pub enum Content {
         asset: String,
         #[serde(default)]
         fit: ImageFit,
+        /// Nine-slice insets in the image's own pixels: left, top, right,
+        /// bottom. Set, the image fills its box whatever its fit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slice: Option<[u32; 4]>,
     },
     Text {
         text: String,
@@ -766,10 +781,11 @@ mod tests {
                         name: "Cover".into(),
                         place: Place {
                             anchor: Anchor::TopRight,
-                            position: [-20., 20., 40.],
+                            position: Position::units([-20., 20., 40.]),
                             size: [Length::Stage(0.5), Length::Units(200.)],
                             rotation: [0., 25., 0.],
                             scale: 1.5,
+                            ..Place::default()
                         },
                         locked: true,
                         opacity: 0.8,
@@ -781,6 +797,7 @@ mod tests {
                         content: Content::Image {
                             asset: "a1b2".into(),
                             fit: ImageFit::Cover,
+                            slice: None,
                         },
                         ..CanvasItem::default()
                     }],
@@ -888,7 +905,7 @@ mod tests {
         assert_eq!(canvas.camera.fov, 35.);
 
         let item = &canvas.items[0];
-        assert_eq!(item.place.position, [10., 0., 0.]);
+        assert_eq!(item.place.position, Position::units([10., 0., 0.]));
         assert_eq!(item.place.size, [Length::Units(480.), Length::Units(320.)]);
         assert_eq!(item.place.anchor, Anchor::Center);
         assert_eq!(item.place.scale, 1.);
@@ -898,7 +915,8 @@ mod tests {
             item.content,
             Content::Image {
                 asset: "x".into(),
-                fit: ImageFit::Contain
+                fit: ImageFit::Contain,
+                slice: None,
             }
         );
     }
@@ -1165,6 +1183,7 @@ mod tests {
             content: Content::Image {
                 asset: "play".into(),
                 fit: ImageFit::Contain,
+                slice: None,
             },
             cases: vec![
                 Case {
@@ -1298,6 +1317,7 @@ mod tests {
         let image = Content::Image {
             asset: "a".into(),
             fit: ImageFit::Stretch,
+            slice: None,
         };
 
         assert_eq!(image.asset(), Some("a"));
@@ -1305,6 +1325,7 @@ mod tests {
             Content::Image {
                 asset: String::new(),
                 fit: ImageFit::Contain,
+                slice: None,
             }
             .asset(),
             None

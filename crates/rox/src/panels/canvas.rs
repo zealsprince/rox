@@ -36,7 +36,7 @@ use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_canvas::{
     Anchor, Camera, CanvasItem, CanvasState, Content, Frame, ImageFit, Length, Live, Place,
-    Viewport, child_frame, inside, paint_order, project, unit_point,
+    Position, Viewport, child_frame, inside, paint_order, project, unit_point,
 };
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
@@ -404,52 +404,6 @@ fn boxes_in(node: &Value, edges: [f32; 4], out: &mut Vec<GroupBox>) {
     }
 }
 
-/// How one axis of a converted group is placed: the anchor's fraction, the
-/// offset from it in units at `extent`, and the size as a fraction.
-///
-/// The size is a fraction of the stage, so it follows a resize. The position
-/// can only be units, so the anchor is the one that keeps the box's edges
-/// where the window's would be at any size: the start for a box from the
-/// start, the end for one to the end, the centre for a centred one. Any
-/// other box drifts by the offset's share of a resize, and takes the anchor
-/// that drifts least.
-pub(crate) fn place_axis(start: f32, end: f32, extent: f32) -> (f32, f32, f32) {
-    let size = (end - start).max(0.);
-
-    // Where the box's start lands, as a fraction, with no offset.
-    let drift = |anchor: f32| anchor * (1. - size) - start;
-    let anchor = [0., 1., 0.5]
-        .into_iter()
-        .min_by(|a: &f32, b: &f32| drift(*a).abs().total_cmp(&drift(*b).abs()))
-        .unwrap_or(0.);
-
-    let offset = match drift(anchor).abs() < 1e-4 {
-        true => 0.,
-        false => -drift(anchor) * extent,
-    };
-    (anchor, offset, size)
-}
-
-fn anchor_at(x: f32, y: f32) -> Anchor {
-    let third = |f: f32| match f {
-        f if f < 0.25 => 0,
-        f if f > 0.75 => 2,
-        _ => 1,
-    };
-
-    match (third(x), third(y)) {
-        (0, 0) => Anchor::TopLeft,
-        (1, 0) => Anchor::Top,
-        (2, 0) => Anchor::TopRight,
-        (0, 1) => Anchor::Left,
-        (1, 1) => Anchor::Center,
-        (2, 1) => Anchor::Right,
-        (0, _) => Anchor::BottomLeft,
-        (1, _) => Anchor::Bottom,
-        _ => Anchor::BottomRight,
-    }
-}
-
 /// A layout as a canvas with each of its tab groups a grid item of its
 /// own, where the group shows in a window of `area` units, with its tabs,
 /// active tab and panels as they were. The splitters between groups go:
@@ -466,10 +420,10 @@ pub(crate) fn split_layout(mut dump: Value, area: [f32; 2], version: usize) -> D
         ..CanvasState::default()
     };
 
+    // Every edge is a fraction of the stage, as the split's shares are of
+    // the window, so the items keep the groups' boxes at any size.
     for group in group_boxes(&dump) {
         let [left, top, right, bottom] = group.edges;
-        let (ax, x, width) = place_axis(left, right, area[0]);
-        let (ay, y, height) = place_axis(top, bottom, area[1]);
 
         let root = PanelState {
             panel_name: "StackPanel".to_string(),
@@ -482,9 +436,15 @@ pub(crate) fn split_layout(mut dump: Value, area: [f32; 2], version: usize) -> D
         let item = CanvasItem {
             id: canvas.fresh_id(WRAPPED_GRID),
             place: Place {
-                anchor: anchor_at(ax, ay),
-                position: [x, y, 0.],
-                size: [Length::Stage(width), Length::Stage(height)],
+                anchor: Anchor::TopLeft,
+                position: Position {
+                    xy: [Length::Stage(left), Length::Stage(top)],
+                    z: 0.,
+                },
+                size: [
+                    Length::Stage((right - left).max(0.)),
+                    Length::Stage((bottom - top).max(0.)),
+                ],
                 ..Place::default()
             },
             content: Content::Grid {
@@ -953,6 +913,10 @@ impl CanvasPanel {
 
     pub(crate) fn images_mut(&mut self) -> &mut Images {
         &mut self.images
+    }
+
+    pub(crate) fn images(&self) -> &Images {
+        &self.images
     }
 
     /// A target item's status line, as its session last left it.
@@ -2523,6 +2487,7 @@ impl CanvasPanel {
                 Content::Image {
                     asset,
                     fit: ImageFit::Contain,
+                    slice: None,
                 },
                 Some([400., 300.]),
             ),
@@ -2597,18 +2562,26 @@ impl CanvasPanel {
                     at[0] - (origin[0] + extent[0] / 2.),
                     at[1] - (origin[1] + extent[1] / 2.),
                 ];
-                item.place.position =
-                    edit::moved(&item, &stage, &camera, viewport, [0.; 3], shift, flat);
+                item.place.position = edit::moved(
+                    &item,
+                    &stage,
+                    &camera,
+                    viewport,
+                    item.place.position,
+                    shift,
+                    flat,
+                );
             }
         }
 
         // A press is where the user pointed. The stage center cascades, so a
         // second add there doesn't land exactly over the first.
         let cascade = at.is_none();
+        let stage = Frame::stage(&self.config.canvas.stage, viewport).size;
         self.change(
             move |canvas| {
                 if cascade {
-                    item.place.position = edit::cascaded(&canvas.items, &item.place);
+                    item.place.position = edit::cascaded(&canvas.items, &item.place, stage);
                 }
                 canvas.items.push(item);
             },
@@ -2943,7 +2916,7 @@ impl CanvasPanel {
                 let z = edit::z_for_depth(&siblings[index], &parent, depths[index], target);
 
                 if let Some(item) = canvas.find_mut(&id) {
-                    item.place.position[2] = z;
+                    item.place.position.z = z;
                 }
             },
             window,
@@ -2977,7 +2950,7 @@ impl CanvasPanel {
                 let z = edit::z_for_depth(&siblings[index], &parent, depths[index], target);
 
                 if let Some(item) = canvas.find_mut(&id) {
-                    item.place.position[2] = z;
+                    item.place.position.z = z;
                 }
             },
             window,
@@ -3032,12 +3005,15 @@ impl CanvasPanel {
             return;
         }
 
+        let viewport = self.viewport();
         self.change_keyed(
             Some("nudge"),
             |canvas| {
+                let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
+                    return;
+                };
                 if let Some(item) = canvas.find_mut(&id) {
-                    item.place.position[0] += by[0];
-                    item.place.position[1] += by[1];
+                    item.place.position = item.place.position.shifted(by, parent.size);
                 }
             },
             window,
@@ -4042,9 +4018,9 @@ mod tests {
             assert!(close(*got, want), "{got:?} against {want:?}");
         }
 
-        // Converted at 1000 by 800, each item draws where its group did.
-        // Each one touches the edges it started from, so a resize keeps every
-        // one where the window would have put it.
+        // Converted at 1000 by 800, each item draws where its group did, and
+        // placed by fraction it stays where the window would put it at
+        // another size.
         let area = [1000., 800.];
         let items = split_items(layout, area);
         assert_eq!(items.len(), 3);
@@ -4065,7 +4041,7 @@ mod tests {
     }
 
     #[test]
-    fn a_middle_group_keeps_its_place_and_an_off_centre_one_drifts_least() {
+    fn an_off_centre_group_keeps_its_place_at_any_size() {
         let layout = dump(split(
             0,
             &[200., 300., 500.],
@@ -4079,20 +4055,19 @@ mod tests {
         let items = split_items(layout, area);
 
         let middle = &items[1];
-        assert_eq!(middle.place.anchor, Anchor::Top);
+        assert_eq!(middle.place.anchor, Anchor::TopLeft);
         assert!(matches!(middle.place.size[0], Length::Stage(w) if (w - 0.3).abs() < 1e-6));
-        assert!((middle.place.position[0] + 150.).abs() < 0.01);
-        let got = drawn(middle, area);
-        assert!((got[0] - 200.).abs() < 0.01 && (got[2] - 500.).abs() < 0.01);
+        assert!(matches!(middle.place.position.xy[0], Length::Stage(x) if (x - 0.2).abs() < 1e-6));
 
-        // 400 wider, the window would put it at 280. Its width follows, and
-        // its offset drifts it by 0.15 of the resize: 60 to the right.
-        let got = drawn(middle, [1400., 600.]);
-        assert!((got[0] - 340.).abs() < 0.01, "{got:?}");
-
-        // A centred box is exact at any size.
-        assert_eq!(place_axis(0.25, 0.75, 1000.), (0.5, 0., 0.5));
-        assert_eq!(place_axis(0., 1., 1000.), (0., 0., 1.));
+        // Wider, narrower or taller, it stays where the window puts its group,
+        // with no gap or overlap against its neighbours.
+        for size in [area, [1400., 600.], [640., 900.]] {
+            let got: Vec<[f32; 4]> = items.iter().map(|item| drawn(item, size)).collect();
+            assert!((got[1][0] - 0.2 * size[0]).abs() < 0.01, "{got:?}");
+            assert!((got[1][2] - 0.5 * size[0]).abs() < 0.01, "{got:?}");
+            assert!((got[0][2] - got[1][0]).abs() < 0.01, "{got:?}");
+            assert!((got[1][2] - got[2][0]).abs() < 0.01, "{got:?}");
+        }
     }
 
     #[test]
@@ -4101,7 +4076,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].place.anchor, Anchor::TopLeft);
-        assert_eq!(items[0].place.position, [0.; 3]);
+        assert_eq!(items[0].place.position.resolve([1280., 720.]), [0.; 3]);
         assert_eq!(items[0].place.size, [Length::Stage(1.), Length::Stage(1.)]);
     }
 

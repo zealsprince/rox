@@ -163,6 +163,27 @@ pub fn child_frame(item: &CanvasItem, parent: &Frame, live: &Live) -> Frame {
     }
 }
 
+/// Points on a frame's own box, in its units from its top-left, to pixels:
+/// the corners of patches cut from one face, each projected once so two
+/// patches sharing a corner share it exactly. None when any falls behind
+/// the camera.
+pub fn project_points<const N: usize>(
+    frame: &Frame,
+    camera: &Camera,
+    viewport: Viewport,
+    pointer: Option<[f32; 2]>,
+    points: [[f32; 2]; N],
+) -> Option<[[f32; 2]; N]> {
+    let view = View::new(camera, viewport, pointer, frame.k);
+    let mut out = [[0.; 2]; N];
+
+    for (out, [x, y]) in out.iter_mut().zip(points) {
+        *out = view.project(frame.transform.point([x, y, 0.]))?.0;
+    }
+
+    Some(out)
+}
+
 /// Indices, back to front, stable.
 pub fn paint_order(depths: &[f32]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..depths.len()).collect();
@@ -374,8 +395,7 @@ impl View {
 }
 
 fn item_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
-    let [w, h] = item.place.size;
-    [w.resolve(parent.size[0]), h.resolve(parent.size[1])]
+    item.place.size_in(parent.size)
 }
 
 /// The item's top-left in its own space. Its anchor point is the origin.
@@ -396,10 +416,11 @@ fn center_offset(item: &CanvasItem, size: [f32; 2]) -> [f32; 3] {
 fn local(item: &CanvasItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
     let place = &item.place;
     let [fx, fy] = place.anchor.fraction();
+    let offset = place.offset_in(parent.size);
     let at = [
-        fx * parent.size[0] + place.position[0] + live.position[0],
-        fy * parent.size[1] + place.position[1] + live.position[1],
-        place.position[2] + live.position[2],
+        fx * parent.size[0] + offset[0] + live.position[0],
+        fy * parent.size[1] + offset[1] + live.position[1],
+        offset[2] + live.position[2],
     ];
     let moved = Mat4::translate(at);
 
@@ -423,6 +444,7 @@ fn local(item: &CanvasItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::place::Position;
     use crate::state::{Anchor, Content, Length, Place};
 
     const VIEW: Viewport = Viewport {
@@ -443,7 +465,7 @@ mod tests {
         CanvasItem {
             place: Place {
                 anchor,
-                position,
+                position: Position::units(position),
                 size: [Length::Units(size[0]), Length::Units(size[1])],
                 ..Place::default()
             },
@@ -673,6 +695,70 @@ mod tests {
     }
 
     #[test]
+    fn a_fractional_position_follows_its_parent_and_a_limit_holds_the_size() {
+        let mut item = item(Anchor::TopLeft, [0.; 3], [0., 0.]);
+        item.place.position.xy = [Length::Stage(0.25), Length::Stage(0.5)];
+        item.place.size = [Length::Stage(0.5), Length::Units(100.)];
+        item.place.min_size[0] = Some(500.);
+
+        let p = put(&item, &stage_frame(), &ORTHO, false);
+        assert!(
+            same(p.corners, rect(200., 300., 700., 400.)),
+            "{:?}",
+            p.corners
+        );
+
+        let wide = Viewport {
+            width: 1600.,
+            height: 900.,
+        };
+        let frame = Frame::stage(&Stage::default(), wide);
+        let p = project(&item, &frame, &ORTHO, wide, None, false, &Live::default()).unwrap();
+        assert!(
+            same(p.corners, rect(400., 450., 1200., 550.)),
+            "{:?}",
+            p.corners
+        );
+
+        // In a group, the fraction is of the group's box.
+        let frame = child_frame(
+            &group([0.; 3], [0.; 3], [400., 200.]),
+            &stage_frame(),
+            &Live::default(),
+        );
+        let p = put(&item, &frame, &ORTHO, false);
+        assert!(
+            same(p.corners, rect(300., 300., 800., 400.)),
+            "{:?}",
+            p.corners
+        );
+    }
+
+    #[test]
+    fn projected_points_land_where_the_item_draws() {
+        let mut tilted = item(Anchor::Center, [30., -20., 40.], [300., 200.]);
+        tilted.place.rotation = [15., 30., 5.];
+        let camera = Camera::default();
+
+        let drawn = put(&tilted, &stage_frame(), &camera, false);
+        let frame = child_frame(&tilted, &stage_frame(), &Live::default());
+        let points = project_points(
+            &frame,
+            &camera,
+            VIEW,
+            None,
+            [[0., 0.], [300., 0.], [300., 200.], [0., 200.]],
+        )
+        .expect("in front of the camera");
+
+        assert!(
+            same(points, drawn.corners),
+            "{points:?} {:?}",
+            drawn.corners
+        );
+    }
+
+    #[test]
     fn a_child_moves_with_its_group() {
         let child = item(Anchor::Center, [0.; 3], [40., 40.]);
         let still = child_frame(
@@ -865,7 +951,7 @@ mod tests {
         };
 
         let mut folded = base.clone();
-        folded.place.position = [15., -3., 30.];
+        folded.place.position = Position::units([15., -3., 30.]);
         folded.place.rotation = [0., 30., 10.];
         folded.place.scale = 3.;
 
@@ -979,8 +1065,7 @@ mod tests {
             let [dx, dy] = unproject_delta(it, parent, &camera, VIEW, flat, drag);
 
             let mut moved = it.clone();
-            moved.place.position[0] += dx;
-            moved.place.position[1] += dy;
+            moved.place.position = moved.place.position.shifted([dx, dy], parent.size);
             let after = center(put(&moved, parent, &camera, flat).corners);
 
             assert!(

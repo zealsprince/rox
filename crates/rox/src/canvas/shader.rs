@@ -695,6 +695,7 @@ mod tests {
         let image = Content::Image {
             asset: String::new(),
             fit: rox_canvas::ImageFit::Contain,
+            slice: None,
         };
         assert!(!sits_flat(&image, Some(true)));
     }

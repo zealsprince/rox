@@ -42,6 +42,9 @@ use crate::objects::{self, Dialog};
 use crate::panels::canvas::{self, CanvasPanel};
 use crate::panels::controls;
 
+mod place_rows;
+mod slice_rows;
+
 const WIDTH: f32 = 340.;
 
 /// Each level of the item tree steps in this far.
@@ -730,26 +733,38 @@ fn item_rows(
     ];
     for (axis, label) in axes.into_iter().enumerate() {
         let property = ["x", "y", "z"][axis];
-        let setter = id.clone();
-        let value = number(
-            panel,
-            &format!("{property}:{id}"),
-            place.position[axis],
-            false,
-            move |canvas, v| {
-                if let Some(item) = canvas.find_mut(&setter) {
-                    item.place.position[axis] = v;
-                }
-            },
-            cx,
-        );
+        let control = match axis {
+            2 => {
+                let setter = id.clone();
+                div().child(number(
+                    panel,
+                    &format!("{property}:{id}"),
+                    place.position.z,
+                    false,
+                    move |canvas, v| {
+                        if let Some(item) = canvas.find_mut(&setter) {
+                            item.place.position.z = v;
+                        }
+                    },
+                    cx,
+                ))
+            }
+            _ => place_rows::position_control(
+                panel,
+                &id,
+                axis,
+                place.position.xy[axis],
+                viewport,
+                cx,
+            ),
+        };
 
         rows = rows.child(bindable_row(
             panel,
             label,
             None,
             format!("{id}.{property}"),
-            div().child(value),
+            control,
             cx,
         ));
         if bound(property) {
@@ -757,9 +772,14 @@ fn item_rows(
         }
     }
 
-    rows = rows
-        .child(length_row(panel, &id, 0, place.size[0], viewport, cx))
-        .child(length_row(panel, &id, 1, place.size[1], viewport, cx));
+    for axis in 0..2 {
+        rows = rows.child(length_row(panel, &id, axis, place.size[axis], viewport, cx));
+
+        let limits = [place.min_size[axis], place.max_size[axis]];
+        if place.size[axis].is_fraction() || limits.iter().any(Option::is_some) {
+            rows = rows.child(place_rows::limit_rows(panel, &id, axis, limits, cx));
+        }
+    }
 
     // A flat item stores its turn and scale and draws neither, so those rows
     // stay inert and take no route.
@@ -1533,7 +1553,9 @@ fn content_rows(
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     match &item.content {
-        Content::Image { asset, fit } => image_rows(panel, &item.id, asset, *fit, window, cx),
+        Content::Image { asset, fit, slice } => {
+            image_rows(panel, &item.id, asset, *fit, *slice, window, cx)
+        }
         Content::Shader { .. } => shader_rows(panel, item, window, cx),
         Content::Text {
             font,
@@ -1553,10 +1575,11 @@ fn content_rows(
 }
 
 fn image_rows(
-    _panel: &CanvasPanel,
+    panel: &CanvasPanel,
     id: &str,
     asset: &str,
     fit: ImageFit,
+    slice: Option<[u32; 4]>,
     _window: &mut Window,
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
@@ -1615,36 +1638,40 @@ fn image_rows(
     .keyed("canvas-image-asset");
 
     let fit_id = id.to_string();
+    let sliced = slice.is_some();
     div()
         .flex()
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(setting_row(rox_i18n::t!("canvas-image-asset"), None, pick))
-        .child(setting_row(
-            rox_i18n::t!("canvas-image-fit"),
-            None,
-            panel::choices_shared(
-                &fits,
-                fit,
-                move |this: &mut CanvasPanel, picked, cx| {
-                    let id = fit_id.clone();
-                    this.change_later(
-                        "image.fit",
-                        move |s| {
-                            if let Some(CanvasItem {
-                                content: Content::Image { fit, .. },
-                                ..
-                            }) = s.find_mut(&id)
-                            {
-                                *fit = picked;
-                            }
-                        },
-                        cx,
-                    )
-                },
-                cx,
-            ),
-        ))
+        .when(!sliced, |d| {
+            d.child(setting_row(
+                rox_i18n::t!("canvas-image-fit"),
+                None,
+                panel::choices_shared(
+                    &fits,
+                    fit,
+                    move |this: &mut CanvasPanel, picked, cx| {
+                        let id = fit_id.clone();
+                        this.change_later(
+                            "image.fit",
+                            move |s| {
+                                if let Some(CanvasItem {
+                                    content: Content::Image { fit, .. },
+                                    ..
+                                }) = s.find_mut(&id)
+                                {
+                                    *fit = picked;
+                                }
+                            },
+                            cx,
+                        )
+                    },
+                    cx,
+                ),
+            ))
+        })
+        .child(slice_rows::rows(panel, id, asset, slice, cx))
         .into_any_element()
 }
 

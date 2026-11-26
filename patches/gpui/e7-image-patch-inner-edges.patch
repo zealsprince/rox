@@ -1,0 +1,216 @@
+A polychrome sprite can draw some of its sides hard, for a face cut into
+patches that meet edge to edge: the canvas's nine-slice images.
+
+Every polychrome sprite fades its alpha over the half pixel inside each
+side (`saturate(0.5 - distance)` on the quad SDF), which smooths a lone
+quad's edge. Nine patches of one face share six inner sides, and there the
+fade costs alpha on both sides of the seam: a pixel whose center falls
+within half a pixel of it is drawn once, at 50 to 100 percent, so every
+seam showed as a faint line wherever it didn't land on a pixel boundary.
+On a tilted face no seam does.
+
+`paint_image_patch` is `paint_image_quad` with `inner: [bool; 4]` (left,
+top, right, bottom), and `paint_image_quad` calls it with none. The sprite
+carries the sides as a bitmask in the slot `pad2` held, so its layout
+doesn't move on any backend. The fragment stage measures the fade from the
+soft sides only. Rasterization covers a pixel whose center lies on a
+shared side once, so two patches built from the same corners leave neither
+a gap nor a doubled line. Blade (wgsl) and DirectX 11 (hlsl) both. The
+Metal renderer is compiled out (rox builds gpui with `macos-blade`), and
+its header would be regenerated from the Rust struct anyway.
+
+Not droppable on a gpui bump: no release has a perspective image face.
+
+Diffed against the tree with every earlier patch applied.
+
+--- a/src/platform/blade/shaders.wgsl
++++ b/src/platform/blade/shaders.wgsl
+@@ -1204,8 +1204,10 @@
+     tile: AtlasTile,
+     // rox patch: the same per-sprite transform MonochromeSprite carries.
+     transformation: TransformationMatrix,
+-    // rox patch: vec4 alignment for the fields below.
+-    pad2: vec2<f32>,
++    // rox patch: the sides that draw hard (1 left, 2 top, 4 right, 8
++    // bottom), and vec4 alignment for the fields below.
++    inner_edges: u32,
++    pad2: u32,
+     // rox patch: the homography's perspective row as (gx, gy, w0, 0) with
+     // w = w0 + gx * px + gy * py ((0, 0, 1, 0) = affine), the per-corner
+     // alpha ramp (tl, tr, br, bl), and a straight-alpha wash mixed over
+@@ -1254,6 +1256,19 @@
+     return out;
+ }
+ 
++// rox patch: the distance past the nearest side not in `inner`, negative
++// inside, and far inside when every side is inner.
++fn soft_edge_distance(point: vec2<f32>, bounds: Bounds, inner: u32) -> f32 {
++    let near = bounds.origin - point;
++    let far = point - (bounds.origin + bounds.size);
++    var distance = -1e9;
++    if ((inner & 1u) == 0u) { distance = max(distance, near.x); }
++    if ((inner & 2u) == 0u) { distance = max(distance, near.y); }
++    if ((inner & 4u) == 0u) { distance = max(distance, far.x); }
++    if ((inner & 8u) == 0u) { distance = max(distance, far.y); }
++    return distance;
++}
++
+ @fragment
+ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
+     let sprite = b_poly_sprites[input.sprite_id];
+@@ -1274,7 +1289,12 @@
+         return vec4<f32>(0.0);
+     }
+ 
+-    let distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
++    var distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
++    // rox patch: a side that meets another patch draws hard, so only the
++    // soft sides measure the edge fade. Patches are never rounded.
++    if (sprite.inner_edges != 0u) {
++        distance = soft_edge_distance(input.local_position, sprite.bounds, sprite.inner_edges);
++    }
+ 
+     var color = sample;
+     if ((sprite.grayscale & 0xFFu) != 0u) {
+--- a/src/platform/windows/shaders.hlsl
++++ b/src/platform/windows/shaders.hlsl
+@@ -1136,8 +1136,10 @@
+     AtlasTile tile;
+     // rox patch: the same per-sprite transform MonochromeSprite carries.
+     TransformationMatrix transformation;
+-    // rox patch: vec4 alignment for the fields below.
+-    float2 pad2;
++    // rox patch: the sides that draw hard (1 left, 2 top, 4 right, 8
++    // bottom), and alignment for the fields below.
++    uint inner_edges;
++    uint pad2;
+     // rox patch: the homography's perspective row as (gx, gy, w0, 0) with
+     // w = w0 + gx * px + gy * py ((0, 0, 1, 0) = affine), the per-corner
+     // alpha ramp (tl, tr, br, bl), and a straight-alpha wash mixed over
+@@ -1196,6 +1198,19 @@
+     return output;
+ }
+ 
++// rox patch: the distance past the nearest side not in `inner`, negative
++// inside, and far inside when every side is inner.
++float soft_edge_distance(float2 pt, Bounds bounds, uint inner) {
++    float2 near_side = bounds.origin - pt;
++    float2 far_side = pt - (bounds.origin + bounds.size);
++    float distance = -1e9;
++    if ((inner & 1) == 0) { distance = max(distance, near_side.x); }
++    if ((inner & 2) == 0) { distance = max(distance, near_side.y); }
++    if ((inner & 4) == 0) { distance = max(distance, far_side.x); }
++    if ((inner & 8) == 0) { distance = max(distance, far_side.y); }
++    return distance;
++}
++
+ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
+     PolychromeSprite sprite = poly_sprites[input.sprite_id];
+     // rox patch: atlas tiles pack with no gutter, so a rotated or scaled
+@@ -1212,6 +1227,11 @@
+     float2 tile_max = (max(edge_a, edge_b) - 0.5) / atlas_size;
+     float4 sample = t_sprite.Sample(s_sprite, clamp(input.tile_position, tile_min, tile_max));
+     float distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
++    // rox patch: a side that meets another patch draws hard, so only the
++    // soft sides measure the edge fade. Patches are never rounded.
++    if (sprite.inner_edges != 0) {
++        distance = soft_edge_distance(input.local_position, sprite.bounds, sprite.inner_edges);
++    }
+ 
+     float4 color = sample;
+     if ((sprite.grayscale & 0xFFu) != 0u) {
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -920,8 +920,13 @@
+     // rox patch: the same per-sprite transform MonochromeSprite carries, so
+     // images can rotate and scale on the GPU (paint_image_transformed).
+     pub transformation: TransformationMatrix,
++    // rox patch: the sides (bits 1 left, 2 top, 4 right, 8 bottom) that
++    // meet another sprite of the same face and draw hard, without the
++    // half-pixel edge fade, so patches laid edge to edge show no seam
++    // (paint_image_patch). Zero is the stock edge on every side.
++    pub inner_edges: u32,
+     // rox patch: pads the fields below to vec4 alignment on the GPU side.
+-    pub pad2: [f32; 2],
++    pub pad2: u32,
+     // rox patch: the perspective row of a homography as (gx, gy, w0, 0),
+     // making w = w0 + gx * px + gy * py; (0, 0, 1, 0) is affine. The
+     // constant rides along because the map is normalized at the quad's
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -3134,7 +3134,8 @@
+                 tile,
+                 opacity,
+                 transformation: TransformationMatrix::unit(),
+-                pad2: [0.; 2],
++                inner_edges: 0,
++                pad2: 0,
+                 perspective: [0., 0., 1., 0.],
+                 fade: [1.; 4],
+                 wash: [0.; 4],
+@@ -3284,7 +3285,8 @@
+             tile,
+             opacity,
+             transformation,
+-            pad2: [0.; 2],
++            inner_edges: 0,
++            pad2: 0,
+             perspective: [0., 0., 1., 0.],
+             fade: [1.; 4],
+             wash: [0.; 4],
+@@ -3318,6 +3320,41 @@
+         fade: [f32; 4],
+         wash: Hsla,
+     ) -> Result<()> {
++        self.paint_image_patch(
++            corners,
++            source,
++            data,
++            frame_index,
++            grayscale,
++            fade,
++            wash,
++            [false; 4],
++        )
++    }
++
++    /// [`Window::paint_image_quad`] for one patch of a face cut into
++    /// several, such as a nine-slice frame. `inner` names the sides (left,
++    /// top, right, bottom) that meet another patch: they draw hard, where
++    /// every other side keeps the half-pixel fade that smooths a lone
++    /// quad's edge. Two patches sharing a side at the same corners cover
++    /// each pixel along it once, so the seam shows neither a gap nor a
++    /// doubled line at any scale or tilt.
++    ///
++    /// This method should only be called as part of the paint phase of element drawing.
++    ///
++    /// rox patch: the canvas's nine-slice images.
++    #[allow(clippy::too_many_arguments)]
++    pub fn paint_image_patch(
++        &mut self,
++        corners: [Point<Pixels>; 4],
++        source: Bounds<f32>,
++        data: Arc<RenderImage>,
++        frame_index: usize,
++        grayscale: bool,
++        fade: [f32; 4],
++        wash: Hsla,
++        inner: [bool; 4],
++    ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+ 
+         let scale_factor = self.scale_factor();
+@@ -3383,7 +3420,12 @@
+             tile,
+             opacity,
+             transformation,
+-            pad2: [0.; 2],
++            inner_edges: inner
++                .iter()
++                .enumerate()
++                .filter(|(_, inner)| **inner)
++                .fold(0, |bits, (side, _)| bits | 1 << side),
++            pad2: 0,
+             perspective,
+             fade,
+             wash: {

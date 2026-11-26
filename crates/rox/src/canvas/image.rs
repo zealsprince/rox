@@ -25,11 +25,13 @@ use gpui::{
 use image::{AnimationDecoder, ImageDecoder, ImageFormat};
 use rox_canvas::{
     Anchor, CanvasItem, Content, Frame, ImageFit, Length, Live, Place, child_frame, project,
+    project_points,
 };
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_design::palette;
 
+use crate::canvas::slice::{self, Slices};
 use crate::canvas::{Placing, bbox, on_stage};
 use crate::panels::canvas::CanvasPanel;
 
@@ -204,6 +206,14 @@ impl Images {
             .ok();
         });
         self.wake = Some((due, task));
+    }
+
+    /// The decoded image under `id`, if it has landed. Starts nothing.
+    pub(crate) fn ready(&self, id: &str) -> Option<Arc<RenderImage>> {
+        match self.slots.get(id) {
+            Some(Slot::Ready(image)) => Some(image.clone()),
+            _ => None,
+        }
     }
 
     /// A miss starts one decode and answers Pending until it lands.
@@ -481,10 +491,12 @@ pub(crate) fn element(
     let Content::Image {
         asset: own,
         fit: how,
+        slice,
     } = &item.content
     else {
         return None;
     };
+    let insets = slice.filter(|insets| insets.iter().any(|n| *n > 0));
 
     // Every case's image starts decoding with the item's own, so a case
     // flip has its picture ready. Each one decodes once per store revision.
@@ -522,8 +534,16 @@ pub(crate) fn element(
     match images.look(asset, cx) {
         Look::Ready(image) => {
             let pixels = image.size(0);
+            let texels = [pixels.width.0.max(0) as u32, pixels.height.0.max(0) as u32];
+
+            // A sliced image fills its box, whatever its fit.
+            let how = if insets.is_some() {
+                ImageFit::Stretch
+            } else {
+                *how
+            };
             let (source, face) = fit(
-                *how,
+                how,
                 frame.size,
                 [pixels.width.0 as f32, pixels.height.0 as f32],
             );
@@ -533,12 +553,25 @@ pub(crate) fn element(
             if !on_stage(&projected.corners, at.viewport) {
                 return None;
             }
+
+            let cut = match insets {
+                Some(insets) => {
+                    let slices = slice::cut(insets, texels, frame.size);
+                    let grid = std::array::from_fn(|i| [slices.xs[i % 4], slices.ys[i / 4]]);
+                    let points = project_points(&frame, &at.camera, at.viewport, at.pointer, grid)?;
+                    Some((slices, points))
+                }
+                None => None,
+            };
             let frame = images.frame(&item.id, &image, Instant::now());
 
-            Some((
-                projected.depth,
-                quad(projected.corners, image, frame, source, projected.opacity),
-            ))
+            let element = match cut {
+                Some((slices, points)) => {
+                    nine(slices, points, texels, image, frame, projected.opacity)
+                }
+                None => quad(projected.corners, image, frame, source, projected.opacity),
+            };
+            Some((projected.depth, element))
         }
 
         Look::Pending => None,
@@ -580,6 +613,61 @@ fn quad(
                     gpui::transparent_black(),
                 )
                 .ok();
+        },
+    )
+    .absolute()
+    .left(px(origin[0]))
+    .top(px(origin[1]))
+    .w(px(extent[0]))
+    .h(px(extent[1]))
+    .into_any_element()
+}
+
+/// A nine-slice image: one canvas over the face's box painting each patch
+/// from its own texels. `points` are the cut's sixteen grid points, row by
+/// row, projected once, so neighbouring patches share their corners
+/// exactly and the shared sides draw hard.
+fn nine(
+    slices: Slices,
+    points: [[f32; 2]; 16],
+    texels: [u32; 2],
+    image: Arc<RenderImage>,
+    frame: usize,
+    opacity: f32,
+) -> AnyElement {
+    let (origin, extent) = bbox(&[points[0], points[3], points[15], points[12]]);
+    let local = points.map(|[x, y]| [x - origin[0], y - origin[1]]);
+
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let at = |ix: usize| {
+                let [x, y] = local[ix];
+                point(bounds.origin.x + px(x), bounds.origin.y + px(y))
+            };
+
+            for patch in &slices.patches {
+                let [column, row] = patch.cell;
+                let corner = |dx: usize, dy: usize| at((row + dy) * 4 + column + dx);
+                let [x, y, w, h] = patch.texels;
+                let source = Bounds {
+                    origin: point(slice::fraction(x, texels[0]), slice::fraction(y, texels[1])),
+                    size: size(slice::fraction(w, texels[0]), slice::fraction(h, texels[1])),
+                };
+
+                window
+                    .paint_image_patch(
+                        [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)],
+                        source,
+                        image.clone(),
+                        frame,
+                        false,
+                        [opacity; 4],
+                        gpui::transparent_black(),
+                        patch.inner,
+                    )
+                    .ok();
+            }
         },
     )
     .absolute()

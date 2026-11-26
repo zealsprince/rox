@@ -8,13 +8,15 @@
 //! each item's live route offsets, and paints what comes back.
 
 mod mat;
+mod place;
 mod project;
 mod state;
 
 pub use mat::Mat4;
+pub use place::Position;
 pub use project::{
-    Frame, Live, Projected, Viewport, child_frame, inside, paint_order, project, unit_point,
-    unproject_delta,
+    Frame, Live, Projected, Viewport, child_frame, inside, paint_order, project, project_points,
+    unit_point, unproject_delta,
 };
 pub use state::{
     Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Idle,

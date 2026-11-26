@@ -20,7 +20,7 @@ use gpui::{
     Window,
 };
 use gpui_component::input::InputState;
-use rox_canvas::{Anchor, CanvasItem, CanvasState, Content};
+use rox_canvas::{Anchor, CanvasItem, CanvasState, Content, Length};
 use rox_core::settings::roxo::{self, ObjectBundle};
 use rox_core::settings::{
     self, Asset, NamedLayout, NamedShader, WorkspaceBundle, WorkspaceMeta, assets,
@@ -591,13 +591,18 @@ pub(crate) fn place(
         &signal_ids,
     );
     item.place.anchor = Anchor::Center;
-    item.place.position[0] = 0.;
-    item.place.position[1] = 0.;
+    for axis in &mut item.place.position.xy {
+        *axis = match axis {
+            Length::Units(_) => Length::Units(0.),
+            Length::Stage(_) => Length::Stage(0.),
+        };
+    }
 
     let id = item.id.clone();
+    let stage = rox_canvas::Frame::stage(&canvas.config.canvas.stage, canvas.viewport()).size;
     canvas.change_routed(
         move |canvas, all| {
-            item.place.position = edit::cascaded(&canvas.items, &item.place);
+            item.place.position = edit::cascaded(&canvas.items, &item.place, stage);
             canvas.items.push(item);
             all.extend(routes);
         },

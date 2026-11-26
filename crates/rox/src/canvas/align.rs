@@ -8,7 +8,8 @@
 //! is its size. A turned item aligns by that unturned box, which the
 //! inspector says under the row. The anchor and the units of each side
 //! stay as they were: only the position moves for an align, and the size
-//! changes in its own unit for a fill or a fit.
+//! changes in its own unit for a fill or a fit. A fractional x or y is
+//! written back as a fraction.
 
 use rox_canvas::{Length, Place};
 
@@ -79,7 +80,8 @@ pub(crate) fn arranged(
             let drawn = size[axis] * scale;
             let mut at = center(place, parent, size);
             at[axis] = drawn / 2. + end * (parent[axis] - drawn);
-            out.position[axis] = position_for(place, parent, size, at)[axis];
+            let units = position_for(place, parent, size, at)[axis];
+            out.position.xy[axis] = out.position.xy[axis].with_units(units, parent[axis]);
         }
 
         Arrange::Fill => {
@@ -90,9 +92,8 @@ pub(crate) fn arranged(
             ];
             let size = sizes(&out, parent);
             let middle = [parent[0] / 2., parent[1] / 2.];
-            let [x, y] = position_for(&out, parent, size, middle);
-            out.position[0] = x;
-            out.position[1] = y;
+            let units = position_for(&out, parent, size, middle);
+            moved_to(&mut out, parent, units);
         }
 
         Arrange::Fit => {
@@ -103,9 +104,8 @@ pub(crate) fn arranged(
             ];
             let size = sizes(&out, parent);
             let middle = [parent[0] / 2., parent[1] / 2.];
-            let [x, y] = position_for(&out, parent, size, middle);
-            out.position[0] = x;
-            out.position[1] = y;
+            let units = position_for(&out, parent, size, middle);
+            moved_to(&mut out, parent, units);
         }
     }
 
@@ -113,10 +113,14 @@ pub(crate) fn arranged(
 }
 
 fn sizes(place: &Place, parent: [f32; 2]) -> [f32; 2] {
-    [
-        place.size[0].resolve(parent[0]),
-        place.size[1].resolve(parent[1]),
-    ]
+    place.size_in(parent)
+}
+
+/// x and y set to `units`, each axis written in the unit it already uses.
+fn moved_to(place: &mut Place, parent: [f32; 2], units: [f32; 2]) {
+    for axis in 0..2 {
+        place.position.xy[axis] = place.position.xy[axis].with_units(units[axis], parent[axis]);
+    }
 }
 
 fn drawn_scale(place: &Place, flat: bool) -> f32 {
@@ -127,9 +131,10 @@ fn drawn_scale(place: &Place, flat: bool) -> f32 {
 /// anchor point placed on it, as the projection lays it out.
 fn center(place: &Place, parent: [f32; 2], size: [f32; 2]) -> [f32; 2] {
     let [fx, fy] = place.anchor.fraction();
+    let [x, y, _] = place.offset_in(parent);
     [
-        fx * parent[0] + place.position[0] - fx * size[0] + size[0] / 2.,
-        fy * parent[1] + place.position[1] - fy * size[1] + size[1] / 2.,
+        fx * parent[0] + x - fx * size[0] + size[0] / 2.,
+        fy * parent[1] + y - fy * size[1] + size[1] / 2.,
     ]
 }
 
@@ -175,7 +180,7 @@ mod tests {
     fn place(anchor: Anchor, position: [f32; 2], size: [Length; 2]) -> Place {
         Place {
             anchor,
-            position: [position[0], position[1], 7.],
+            position: rox_canvas::Position::units([position[0], position[1], 7.]),
             size,
             ..Place::default()
         }
@@ -191,7 +196,7 @@ mod tests {
 
     fn after(place: &Place, flat: bool, arrange: Arrange) -> [f32; 4] {
         let out = arranged(place, STAGE, flat, arrange).expect("an item with an area");
-        assert_eq!(out.position[2], 7., "an arrange never moves depth");
+        assert_eq!(out.position.z, 7., "an arrange never moves depth");
         assert_eq!(out.anchor, place.anchor, "nor the anchor");
         drawn_box(&out, STAGE, flat)
     }
@@ -260,11 +265,36 @@ mod tests {
 
         let out = arranged(&item, STAGE, true, Arrange::Align(Line::Right)).unwrap();
         assert_eq!(out.size, item.size);
-        assert_eq!(out.position[1], 40., "the other axis stays");
+        assert_eq!(
+            out.position.xy[1],
+            Length::Units(40.),
+            "the other axis stays"
+        );
         assert!(close(
             drawn_box(&out, STAGE, true),
             [750., 165., 250., 250.]
         ));
+    }
+
+    #[test]
+    fn an_align_writes_a_fractional_position_as_a_fraction() {
+        let mut item = place(Anchor::TopLeft, [0., 0.], units(200., 100.));
+        item.position.xy = [Length::Stage(0.1), Length::Stage(0.3)];
+
+        let out = arranged(&item, STAGE, true, Arrange::Align(Line::Right)).unwrap();
+        assert_eq!(out.position.xy[0], Length::Stage(0.8));
+        assert_eq!(
+            out.position.xy[1],
+            Length::Stage(0.3),
+            "the other axis stays"
+        );
+        assert!(close(
+            drawn_box(&out, STAGE, true),
+            [800., 150., 200., 100.]
+        ));
+
+        let out = arranged(&item, STAGE, true, Arrange::Fill).unwrap();
+        assert_eq!(out.position.xy, [Length::Stage(0.), Length::Stage(0.)]);
     }
 
     #[test]

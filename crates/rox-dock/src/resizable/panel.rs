@@ -172,8 +172,8 @@ impl RenderOnce for ResizablePanelGroup {
                 canvas(
                     {
                         let state = state.clone();
-                        move |bounds, _, cx| {
-                            state.update(cx, |state, cx| {
+                        move |bounds, window, cx| {
+                            let size_changed = state.update(cx, |state, cx| {
                                 let size_changed = state.bounds.size.along(self.axis)
                                     != bounds.size.along(self.axis);
 
@@ -182,7 +182,16 @@ impl RenderOnce for ResizablePanelGroup {
                                 if size_changed {
                                     state.adjust_to_container_size(cx);
                                 }
-                            })
+                                size_changed
+                            });
+
+                            // rox addition: the solve lands after this frame's
+                            // layout, which drew the old sizes with the new space
+                            // shared out equally. Without another frame a grown
+                            // window kept that until something else redrew.
+                            if size_changed {
+                                window.request_animation_frame();
+                            }
                         }
                     },
                     |_, _, _, _| {},

@@ -351,7 +351,9 @@ def sheet():
     screen = item("screen", group([
         item("screen-frame", image("glass_screen"), size=(S(1.07), S(1.1)), opacity=0.8,
              **themed("glass_screen_night")),
-        item("renderer", {"kind": "target", "owner": "", "width": 640, "height": 360, "rests": True,
+        # 1.4 to 1, the pane's shape at 1920x1080, so a renderer's picture isn't squeezed. It
+        # doesn't rest with the music: a renderer says so itself if it wants to.
+        item("renderer", {"kind": "target", "owner": "", "width": 560, "height": 400, "rests": False,
                           "config": None}, size=(S(0.93), S(0.88)), pos=(0, 0, 1), name="Render target"),
         item("screen-gloss", image("cover_gloss"), size=(S(0.95), S(0.92)), pos=(0, 0, 2), opacity=0.55,
              state="app.theme", cases=[case("dark", opacity=0.4)]),

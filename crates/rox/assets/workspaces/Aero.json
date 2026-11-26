@@ -3001,9 +3001,9 @@
                                             "content": {
                                               "kind": "target",
                                               "owner": "",
-                                              "width": 640,
-                                              "height": 360,
-                                              "rests": true,
+                                              "width": 560,
+                                              "height": 400,
+                                              "rests": false,
                                               "config": null
                                             }
                                           },

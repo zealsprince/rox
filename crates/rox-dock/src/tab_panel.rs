@@ -1704,14 +1704,23 @@ impl TabPanel {
 
         // Insert into new tabs
         if let Some(placement) = self.will_split_placement {
-            self.split_panel(panel, placement, None, window, cx);
+            // rox: the split's new group holds the panel alone, so it's that
+            // group's active one. Its add finds the index already 0 and
+            // focuses nothing.
+            self.split_panel(panel.clone(), placement, None, window, cx);
+            panel.focus_handle(cx).focus(window);
         } else if let Some(mut ix) = ix {
             if same_tab_from_ix.is_some_and(|from_ix| from_ix < ix) {
                 ix -= 1;
             }
-            self.insert_panel_at(panel, ix, window, cx)
+            self.insert_panel_at(panel, ix, window, cx);
+            // rox: a reorder can land on the index already active, which
+            // focuses nothing, and the drag left keys with no panel.
+            self.focus_active_panel(window, cx);
         } else {
-            self.add_panel_with_active(panel, active, window, cx)
+            self.add_panel_with_active(panel, active, window, cx);
+            // rox: as above, for a tab dropped at the end of the strip.
+            self.focus_active_panel(window, cx);
         }
 
         self.remove_self_if_empty(window, cx);

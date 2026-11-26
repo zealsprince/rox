@@ -54,6 +54,7 @@ signal-label-band = { signal-kind-band } { $range }
 signal-label-onset = { signal-kind-onset } { $range }
 signal-label-trigger = { signal-kind-trigger } { $range }
 signal-label-total = { signal-kind-total } { $rate }/s
+signal-label-total-of = { signal-kind-total } сигналу { $signal }, { $rate }/s
 
 signal-response = Відгук
 signal-response-pulse = Як довго дзвенить кожен імпульс, перш ніж згаснути
@@ -4216,7 +4217,7 @@ track-info-menu-overflow = Переповнення
 track-info-next = Далі: { $line }
 track-info-opening = відкриваємо...
 track-info-output-fallback = Пристрій відмовив ексклюзивному виходу, тож відтворення йде через спільний мікшер. Пристрій повідомив: { $reason }
-track-info-output-exclusive = Ексклюзивний { $rate } kHz { $format }
+track-info-output-exclusive = Ексклюзивний { $rate } кГц { $format }
 track-info-queue-finished = (черга скінчилася)
 expr-problem-stray = неочікуваний символ
 expr-problem-unknown = невідоме ім'я
@@ -4524,6 +4525,8 @@ span-pair = { $first }, { $second }
 ## A percentage. The space before the sign is a locale question, not a
 ## notation one, so each locale spells the whole thing out.
 unit-percent = { $value }%
+unit-hz = Гц
+unit-khz = кГц
 
 settings-audio-output-headline = { $mode }{ $note } на { $device }, { $rate } Гц, { $channels } кан., { $format }
 settings-audio-output-experimental =  (експериментальний)

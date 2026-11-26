@@ -124,7 +124,7 @@ pub(crate) fn create_cover(len: usize) -> Result<(Section, WritableView, bool), 
 /// it from writing.
 #[cfg(target_os = "linux")]
 fn open_cover() -> Result<(OwnedFd, Option<OwnedFd>), Error> {
-    Ok((open()?, None))
+    Ok((memfd(c"rox-cover")?, None))
 }
 
 /// The future-write seal (Linux 5.1) refuses a write and a writable shared
@@ -176,17 +176,19 @@ pub(crate) fn map_readable(fd: BorrowedFd<'_>, len: usize) -> Result<View, Error
     map(fd, len, libc::PROT_READ)
 }
 
-/// A fresh anonymous memfd, close-on-exec and open to sealing.
 #[cfg(target_os = "linux")]
 fn open() -> Result<OwnedFd, Error> {
-    // SAFETY: memfd_create with a static name; the fd is checked and owned
-    // at once.
-    let fd = unsafe {
-        libc::memfd_create(
-            c"rox-frames".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
+    memfd(c"rox-frames")
+}
+
+/// A fresh anonymous memfd, close-on-exec and open to sealing. The name
+/// is what `/proc/<pid>/fd` shows, so each mapping has its own.
+#[cfg(target_os = "linux")]
+fn memfd(name: &std::ffi::CStr) -> Result<OwnedFd, Error> {
+    // SAFETY: memfd_create with a NUL-terminated name; the fd is checked
+    // and owned at once.
+    let fd =
+        unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
     if fd < 0 {
         return Err(Error::os("memfd_create"));
     }

@@ -87,6 +87,9 @@ struct SignalsWindow {
     /// Restarts the meters after a pause: the frame loop only sustains itself
     /// while playing.
     _player_changed: Option<Subscription>,
+    /// The pool changes from elsewhere too: a canvas adding what a renderer
+    /// follows, an object placed with its signals, a workspace applied.
+    _pool_changed: Subscription,
 }
 
 impl SignalsWindow {
@@ -138,6 +141,7 @@ impl SignalsWindow {
             about,
             scroll: ScrollHandle::new(),
             _player_changed,
+            _pool_changed: signal_ui::observe_pool(cx),
         }
     }
 

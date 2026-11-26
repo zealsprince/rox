@@ -60,6 +60,7 @@ signal-label-band = { signal-kind-band } { $range }
 signal-label-onset = { signal-kind-onset } { $range }
 signal-label-trigger = { signal-kind-trigger } { $range }
 signal-label-total = { signal-kind-total } { $rate }/s
+signal-label-total-of = { signal-kind-total } of { $signal }, { $rate }/s
 
 signal-response = Response
 signal-response-pulse = How long each pulse rings before it dies away
@@ -4550,6 +4551,8 @@ span-pair = { $first }, { $second }
 ## A percentage. The space before the sign is a locale question, not a
 ## notation one, so each locale spells the whole thing out.
 unit-percent = { $value }%
+unit-hz = Hz
+unit-khz = kHz
 
 settings-audio-output-headline = { $mode }{ $note } on { $device }, { $rate } Hz, { $channels } ch, { $format }
 settings-audio-output-experimental =  (experimental)

@@ -23,8 +23,8 @@ mapping is layout version 1 behind `RXC1` (`rox-frames/src/cover.rs`). The manif
 is plugin API 1 (`SUPPORTED_API`, `rox-plugins/src/manifest.rs:24`). `rox-frames` uses
 libc 0.2 on Unix (0.2.186 in rox's lockfile, 0.2.190 in the plasma example's) and
 windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
-[A GPU texture](#a-gpu-texture) say of wgpu was read in wgpu 30.0.2 and wgpu-hal 30.0.2,
-which rox doesn't depend on. The texture comes from blade-graphics 0.7.1, vendored with
+[A GPU texture](#a-gpu-texture) say of wgpu was read in wgpu, wgpu-core and wgpu-hal
+30.0.2, which rox doesn't depend on. The texture comes from blade-graphics 0.7.1, vendored with
 `patches/blade-graphics/a0-shared-textures.patch`, through gpui's
 `Window::register_external_texture` (`patches/gpui/e5-external-user-textures.patch`).
 
@@ -411,7 +411,7 @@ These are every line rox writes (`target.rs:1327-1592`):
 {"pool":[{"id":1,"name":"Kick","kind":"band","low":30,"high":120},{"id":2,"name":"onset 30-120 Hz","kind":"onset","low":30,"high":120},{"id":3,"name":"level","kind":"level"},{"id":4,"name":"total of 1","kind":"aggregate"}]}
 {"signals":[0.3958,0.0,1.0],"time":4.224}
 {"pointer":{"kind":"move","x":0.27,"y":0.36}}
-{"palette":{"background":"#121212","surface":"#181818","text":"#c0c0c0","muted":"#808080","accent":"#ffb300","highlight":"#facc15","dark":true}}
+{"palette":{"background":"#121212","surface":"#181818","text":"#c0c0c0","muted":"#808080","accent":"#ffb300","highlight":"#facc15","dark":true,"stage":"#121212"}}
 {"cover":2}
 {"cover":null}
 {"pause":true}
@@ -467,11 +467,11 @@ the canvas, and when design mode comes on, and it ends any press. An `up` can co
 no `down` before it, from a press that started elsewhere.
 
 `palette` goes only to a renderer granted it: the theme's colours as `#rrggbb`, under
-fixed names, and whether the theme is dark (`palette_line`, `target.rs:1373`):
+fixed names, and whether the theme is dark (`palette_line`, `target.rs:1620`):
 
 | Key | The theme's |
 |---|---|
-| `background` | Window background |
+| `background` | Window background, the colour of the target's window |
 | `surface` | Panel surface |
 | `text` | Body text |
 | `muted` | Muted text |
@@ -479,12 +479,30 @@ fixed names, and whether the theme is dark (`palette_line`, `target.rs:1373`):
 | `highlight` | The mark drawn over accent fills. With song theming on it's the cover's second colour |
 | `dark` | `true` when the background wants light text over it |
 | `art_primary`, `art_secondary` | The cover's two colours, only while song theming is on and the cover has them |
+| `stage` | The solid colour around the canvas's items, only when there is one (below) |
+
+`stage` is what shows behind and around the canvas's items where none covers the stage,
+so a renderer can fill its background with it and blend into what surrounds the target.
+A canvas has no background of its own: what shows is what its container paints under it.
+For a canvas held directly in a tab group, that's the theme's background as the widget
+theme has it, which follows the focused window's colours and can differ from
+`background` in a window that isn't focused (`theme_target`, `rox-design/src/palette.rs`).
+rox sends `stage` only when it's one solid colour, and leaves it out:
+
+- while Surface Opacity is under 100%, since the tab group's background is then
+  transparent and the backdrop shows through: the cover, the backdrop shader, or the
+  window's own transparency;
+- for a popped-out canvas, and a canvas inside a Group, Overlay, Slide or Drawer, which
+  sit on surfaces rox doesn't name.
+
+Another item behind the target isn't the stage either. With no `stage`, a renderer that
+wants to blend in has to stay see-through: alpha below 255 shows whatever is behind it.
 
 The colours are the theme's as the target's window shows it once a change has eased in,
 so a theme that eases over a third of a second sends one line, not one a frame. The line
 comes once the session runs and the canvas draws, then again whenever a colour changes:
-a theme switch, song theming switched on or off, and with song theming on, a track whose
-cover gives other colours. It rides on the redraw the theme's own change already makes,
+a theme switch, song theming switched on or off, Surface Opacity crossing 100%, and with
+song theming on, a track whose cover gives other colours. It rides on the redraw the theme's own change already makes,
 and asks for none. With song theming on, the palette changing tells a renderer that the
 album changed, though not which album.
 
@@ -547,30 +565,64 @@ following that signal. Its Threshold has already gated it too: under the thresho
 reads 0, and above it the output climbs from 0 again. On a trigger the threshold is the
 fire level instead.
 
+The numbers below are the ones a renderer needs to tell what it's looking at, or to
+imitate a kind on audio of its own. Response and Threshold are the Signals window's 0 to
+100, read as 0 to 1. Every rate is per second and is an exponential approach, not a
+linear ramp: each step moves the value toward where it's going by `rate * dt` of the
+distance left, at most all of it, with `dt` the seconds since the hub last stepped, at
+most 0.1. A
+rate that Response sets runs from its value at Response 0 to its value at 100
+geometrically, `fast * (slow / fast) ^ (response / 100)`, so Response 50 on a band's rise
+is about 12 a second, not 26.5.
+
 - `band` is the loudest bin of a 2048-point FFT of the mono mix between `low` and `high`,
-  a peak and not a mean. It's in decibels against a full-scale sine, mapped from -66 dB
-  at 0 to -12 dB at 1 and held between them (`FLOOR_DB` and `MAX_DB`). A loud master
-  peaks above -12 dB in its bass much of the time, so a band there sits at or near 1.
-  Response sets how fast it follows: it rises at 50 a second at Response 0 down to 3 at
-  100, and falls at 12 down to 1.
+  a peak and not a mean (`HUB_FFT`). It's in decibels against a full-scale sine, mapped
+  from -66 dB at 0 to -12 dB at 1 and held between them (`FLOOR_DB` and `MAX_DB`). It
+  rises toward that reading at 50 a second at Response 0 down to 3 at 100, and falls at
+  12 down to 1 (`ATTACK_FAST`, `ATTACK_SLOW`, `RELEASE_FAST`, `RELEASE_SLOW`).
 - `level` is the same measure across the whole spectrum, 20 Hz to 20 kHz.
-- `onset` is a pulse. When the band jumps more than 0.12 above its own slow average, and
-  is above 0.15, the value goes to 1. It then decays each frame, at 16 a second at
-  Response 0 down to 1.5 at 100. At 60 frames a second that's about an eighth of a
-  second to fall to a tenth at Response 0, and about a second and a half at 100. A hit
-  reads as a jump and a tail over many frames, never a single 1 between zeroes. It fires
-  again only once the band has fallen back close to its average.
-- `trigger` has the same shape, a jump to 1 and the same decay. It fires when the band
-  reaches the Threshold and can't fire again until the band falls under three quarters
-  of it. At Threshold 0 it never fires and reads 0.
-- `aggregate`, Total in the Signals window, adds up another signal: each frame it grows
-  by that signal's value times its Rate, at most 8 laps a second, and wraps from 1 to 0.
-  A renderer using it as a phase has to unwrap it. When a value is more than half below
-  the one before, it wrapped, so add 1. A smaller fall is a drain to 0, from Reset on
-  Track at a new song or from Flush, which takes a moment and doesn't snap.
+- `onset` is a pulse. It reads the band's reading before any smoothing, never the smoothed
+  `band` value, and keeps a slow average of that reading, which rises toward it at 2.5 a
+  second and falls at 2 (`ONSET_REF_ATTACK`, `ONSET_REF_RELEASE`). When the reading is
+  above 0.15 and more than 0.12 above the average, the value goes to 1 (`ONSET_FLOOR`,
+  `ONSET_MARGIN`). The test comes before the average moves, so a jump counts whole. It
+  then decays toward 0 at 16 a second at Response 0 down to 1.5 at 100 (`ONSET_DECAY_FAST`,
+  `ONSET_DECAY_SLOW`). At 60 frames a second that's about an eighth of a second to fall to
+  a tenth at Response 0, and about a second and a half at 100. A hit reads as a jump and a
+  tail over many frames, never a single 1 between zeroes. It fires again only once the
+  reading has fallen under the average plus 0.06, half the jump.
+- `trigger` has the same pulse and the same decay, and also reads the band before any
+  smoothing. It fires when the reading reaches the Threshold, and can't fire again until
+  the reading falls under three quarters of it (`TRIGGER_REARM`). At Threshold 0 it never
+  fires and reads 0. Its Threshold gates nothing.
+- `aggregate`, Total in the Signals window, adds up another signal: each step it grows by
+  that signal's output times its Rate times `dt`, and wraps from 1 to 0. The Rate is held
+  between 0 and 8 (`AGGREGATE_RATE_MAX`), so a total laps at most 8 times a second. A total
+  of another total can read it a step late, depending on their order in the pool. A
+  renderer using it as a
+  phase has to unwrap it. When a value is more than half below the one before, it
+  wrapped, so add 1. A smaller fall is a drain to 0, from Reset on Track at a new song or
+  from Flush, at 8 a second until it's under 0.002 (`FLUSH_DRAIN`, `FLUSH_DONE`), so it
+  takes a moment and doesn't snap.
+
+The gate is a smoothstep. With the threshold `t`, `x = (value - t) / (1 - t)` held
+between 0 and 1, and the output is `x * x * (3 - 2 * x)`. A threshold of 0 passes the
+value as it is. The gate applies to every kind but the trigger, a total included.
 
 Once the audio has been silent for 0.15 s (`SILENT_AFTER`), a band and the level fall
-to 0 at their falling rate, and a pulse finishes its decay.
+to 0 at their falling rate, an onset's average falls at 2 a second and it re-arms, a
+trigger re-arms, and a pulse finishes its decay. Between two readings of the audio a band
+holds its value: the hub only takes a new FFT when the player has handed the visualizers
+new audio, every 16 ms (`PUMP_INTERVAL`, `rox-services/src/player.rs`).
+
+Plan for what music does to these. A loud master peaks above -12 dB in its bass much of
+the time, so a band there pins near 1 for minutes and moves little: give it a narrower
+band, a higher Threshold, or read it as a rough level rather than a beat. An onset needs
+the reading to drop back near its average between hits. A kick that rings through most
+of a beat keeps the band up, the average climbs to meet it, and the next kick jumps less
+than 0.12 over it, so a rolling or sustained kick rarely fires an onset. A trigger with a
+Threshold under the kick's peak and over its tail fires on that music where an onset
+won't.
 
 ### The renderer to rox
 
@@ -624,7 +676,13 @@ change can't widen them without the card. A renderer that asks for nothing gets 
 what it got before these grants existed.
 
 A renderer isn't told the track, a path, a key press, or anything about another item,
-and its wire has no way to call into rox. The cover is pixels with a counter. It runs
+and its wire has no way to call into rox. The cover is pixels with a counter. The
+palette says something about the track too: with song theming on, the theme's colours
+follow the playing track's cover. A renderer granted the palette gets a new `palette`
+line whenever a cover brings other colours, which tells it the album changed, and gets
+that cover's own two colours as `art_primary` and `art_secondary`. It isn't told which
+album. Its card line says only that it gets the colours of
+the current theme. It runs
 with the user's permissions, unsandboxed, as a plugin does, and the card says so.
 
 A manifest that gains a grant is a changed manifest. The renderer switches off, and its
@@ -764,8 +822,10 @@ and no others (`spawn_with`, `rox-plugins/src/process.rs`; `launch`,
 - `PATH` is the plugin search path: the package's `bin` folder, the Program Folders from
   the Plugins page, then rox's own `PATH` (`search_path`, `rox-plugins/src/search.rs`).
 - `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED` and `PYTHONUTF8`, each `1`.
-- `ROX_RENDER_API`, `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`, and on Unix
-  `ROX_FRAMES_FD`.
+- `ROX_RENDER_API`, `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`.
+- On Unix, `ROX_FRAMES_FD`, then `ROX_COVER_FD` for a renderer granted the cover and
+  `ROX_TEXTURE_FD` for one lent the GPU texture, each only when that handle is lent. The
+  [Lifecycle](#lifecycle) table has their values.
 
 rox adds nothing to `LD_LIBRARY_PATH` or `DYLD_LIBRARY_PATH` and sets no GPU variable. A
 renderer finds its own GPU libraries, the Vulkan loader among them: from the system's
@@ -832,10 +892,13 @@ is a different image, and importing memory into it is undefined
 
 In Vulkan terms, once, at start:
 
-1. Compare `device_uuid` and `driver_uuid` with `VkPhysicalDeviceIDProperties` of the
-   device you'd draw on (`vkGetPhysicalDeviceProperties2`). An opaque fd only means
-   something to the same driver on the same device, so on a mismatch draw into the slots.
-   On a machine with more than one GPU, choose the adapter whose UUIDs match.
+1. Choose the physical device before making a device: compare `device_uuid` and
+   `driver_uuid` with each physical device's `VkPhysicalDeviceIDProperties`, read with
+   `vkGetPhysicalDeviceProperties2`. That call is Vulkan 1.1, so the instance and the
+   physical device both have to be 1.1 or later. An opaque fd only means something to
+   the same driver on the same device: make your device on the one whose UUIDs match, and
+   when none does, draw into the slots. On a machine with more than one GPU the default
+   device can be the wrong one.
 2. The device needs `VK_KHR_external_memory_fd`, and Vulkan 1.2 or
    `VK_KHR_image_format_list` for the view format list.
 3. `vkCreateImage` with the create info above, chaining `VkExternalMemoryImageCreateInfo`
@@ -849,20 +912,71 @@ In Vulkan terms, once, at start:
    close. Then `vkBindImageMemory` at offset 0.
 6. The image is in `GENERAL` and released to `VK_QUEUE_FAMILY_EXTERNAL` when you get it.
 
+#### In wgpu 30
+
+These are notes on one version of one library: wgpu 30.0.2, with the wgpu-core and
+wgpu-hal 30.0.2 it's built on. The Vulkan steps in this section are the contract. Another
+version or another library gets there its own way.
+
 wgpu has no import of its own, so a wgpu renderer does steps 1 to 5 in `ash` through
-wgpu-hal, on the Vulkan backend only. In wgpu 30.0.2: `Device::as_hal::<Vulkan>()` gives
-the raw device, physical device and instance, and wgpu-hal enables
-`VK_KHR_external_memory_fd` on any device that has it (`adapter.rs`). Use the `ash`
-wgpu-hal depends on, 0.38. Wrap the image with `texture_from_raw(image, &desc, None,
-TextureMemory::Dedicated(memory))` and `Device::create_texture_from_hal::<Vulkan>`, with
-format `Rgba8Unorm`, view formats `[Rgba8UnormSrgb]` and the usages matching the flags
-above (`COPY_SRC`, `COPY_DST`, `TEXTURE_BINDING`, `STORAGE_BINDING`, `RENDER_ATTACHMENT`).
-An `Rgba8UnormSrgb` view has to set `usage: Some(RENDER_ATTACHMENT)`, since a storage
-usage can't carry over to an sRGB view (VUID-VkImageViewCreateInfo-usage-02275). The
-ownership barriers below go on the raw command buffer from
-`CommandEncoder::as_hal_mut::<Vulkan>` (`raw_handle`), with your queue family from the hal
-device's `queue_family_index()`. Spike GF-S imported rox's texture this way in about 120
-lines and showed it pixel-exact, without the barriers.
+wgpu-hal, on the Vulkan backend only. Use the `ash` wgpu-hal depends on, 0.38.
+
+- Step 1 comes before a device exists, so it takes the adapter's raw handle, not the
+  device's. `Instance::enumerate_adapters(Backends::VULKAN)` lists the adapters (it's
+  async), and `Adapter::as_hal::<Vulkan>()` gives each one's hal adapter: its
+  `raw_physical_device()`, its `physical_device_capabilities().properties().api_version`
+  for the device's Vulkan version, and `shared_instance()`, whose `raw_instance()` is the
+  `ash::Instance` that has `get_physical_device_properties2` and whose
+  `instance_api_version()` is the instance's (`wgpu/src/api/adapter.rs`,
+  `wgpu-hal/src/vulkan/adapter.rs` and `instance.rs`). Request the device from the adapter
+  whose UUIDs match. `Device::as_hal::<Vulkan>()` is for the steps after.
+- wgpu-hal turns on `VK_KHR_external_memory_fd` on any device that has it, and
+  `VK_KHR_image_format_list` on one below Vulkan 1.2 that has it (`adapter.rs`). The hal
+  device's `enabled_device_extensions()` says whether it did.
+- Make the image and import the memory with the hal device's `raw_device()`. Wrap it with
+  `texture_from_raw(image, &desc, None, TextureMemory::Dedicated(memory))`, which takes
+  both and frees them when the texture goes, then `Device::create_texture_from_hal::<Vulkan>`
+  with format `Rgba8Unorm`, view formats `[Rgba8UnormSrgb]` and the usages matching the
+  flags above (`COPY_SRC`, `COPY_DST`, `TEXTURE_BINDING`, `STORAGE_BINDING`,
+  `RENDER_ATTACHMENT`). An `Rgba8UnormSrgb` view has to set
+  `usage: Some(RENDER_ATTACHMENT)`, since a storage usage can't carry over to an sRGB view
+  (VUID-VkImageViewCreateInfo-usage-02275).
+- `create_texture_from_hal`'s last argument is the state wgpu takes the image to be in.
+  wgpu-core puts the texture in its tracker in that state (`create_texture_from_hal`,
+  `wgpu-core/src/device/resource.rs`), and the first barrier wgpu records on it starts
+  from the layout that state maps to (`derive_image_layout`, `wgpu-hal/src/vulkan/conv.rs`).
+  `TextureUses::UNINITIALIZED` maps to `VK_IMAGE_LAYOUT_UNDEFINED`, which takes the image
+  out of the layout rox left it in and lets the driver throw its contents away. Every
+  storage use maps to `GENERAL` on a colour format, so pass
+  `TextureUses::STORAGE_READ_WRITE`. wgpu-core counts a texture made this way as written
+  already and never clears it.
+- A wgpu `CommandEncoder` is used either raw or through wgpu, never both. The first raw
+  access through `CommandEncoder::as_hal_mut` or the first wgpu command settles which,
+  and the other then panics: "Mixing the wgpu encoding API with the raw encoding API is
+  not permitted" (`EncodingApi::set`, `wgpu-core/src/command/mod.rs`). wgpu also keeps
+  its commands and passes as a list and records them only at `finish`
+  (`encode_commands`), so nothing raw could go between them anyway. The barriers each go
+  in an encoder of their own, used raw and for nothing else: `as_hal_mut::<Vulkan, _, _>`
+  hands over the hal encoder, whose `raw_handle()` is the `VkCommandBuffer`, open. Record
+  the barrier with the `ash::Device` from the hal device and leave the buffer open, since
+  `finish` ends it. Your queue family is the hal device's `queue_family_index()`.
+- A frame is then three command buffers in one `Queue::submit`, in this order: the
+  acquire encoder's, the draw's own, and the release encoder's. A pipeline barrier orders
+  against the commands before and after it in submission order on the queue, across
+  command buffers. At the submit wgpu puts a command buffer of its own transitions in
+  front of any of yours that needs one ("(wgpu internal) Transit",
+  `wgpu-core/src/device/queue.rs`), so a layout change wgpu makes for the draw comes after
+  the acquire.
+- Storing into the image keeps it in `GENERAL` throughout. A render pass on it makes wgpu
+  move it to `COLOR_ATTACHMENT_OPTIMAL` and track it there. Ending the draw's encoder with
+  `CommandEncoder::transition_resources` to `TextureUses::STORAGE_READ_WRITE` has wgpu
+  move it back to `GENERAL` and know it, so the release barrier is `GENERAL` to `GENERAL`
+  and the next frame's pass starts from the right layout.
+
+The storage path with these three command buffers and `STORAGE_READ_WRITE` has been run
+against rox's texture by a renderer outside rox. The render pass path with
+`transition_resources` hasn't been run. Spike GF-S imported the texture with
+`UNINITIALIZED` and no barriers in about 120 lines and showed it pixel-exact.
 
 ### Each frame
 
@@ -872,10 +986,12 @@ lines and showed it pixel-exact, without the barriers.
    in the shader, since a storage image can't be sRGB, or render through an
    `R8G8B8A8_SRGB` view and let the hardware apply it. rox samples through an sRGB view
    either way, and both were pixel-exact in the spike. Alpha is straight, as in a slot.
-3. Release: the barrier back to `VK_QUEUE_FAMILY_EXTERNAL`, leaving the image in
-   `GENERAL`. A render pass leaves it in `COLOR_ATTACHMENT_OPTIMAL`, so that's the
-   barrier's old layout then; wgpu leaves a storage write in `GENERAL`.
-4. Submit, and wait on your own fence for that submission.
+3. Release: the barrier back to `VK_QUEUE_FAMILY_EXTERNAL`, after your last write,
+   leaving the image in `GENERAL`, the layout rox samples it in. A render pass leaves it
+   in `COLOR_ATTACHMENT_OPTIMAL`, so either move it back to `GENERAL` first or make that
+   the release barrier's old layout.
+4. Submit, with the acquire ahead of the draw and the release after it in submission
+   order, and wait on your own fence for that submission.
 5. Write `t <n>\n` and flush.
 
 rox never waits on your fence and never looks at your queue: whenever it paints, it
@@ -935,7 +1051,7 @@ renderer.
 |---|---|
 | A restart after an exit | The same texture, lent again |
 | A new resolution | The target is new: the old texture is released and a new one made |
-| Pop Out, Dock Back, or a move to another window | The texture stays with the window that made it. rox makes one in the new window and starts the renderer again with its fd, which doesn't count as an exit |
+| Pop Out, Dock Back, or a move to another window | The texture belongs to the window that made it, so rox lets it go, makes one in the new window and starts the renderer again with its fd. That doesn't count as an exit, and the log says `moved window, starting again` for each move |
 | Switching the renderer off, Enable Plugins off, a changed package, the fifth exit | The session ends and the target gives its texture back. The next session gets a new one |
 | Deleting the item, closing the canvas, applying a workspace, quitting | Released with the item |
 | Paused, hidden, or a window not drawn | Kept, and not painted. The renderer gets `pause` as with slots |
@@ -959,7 +1075,7 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | `renderer <id>: started at <w>x<h>, lent a texture` | The same, with the GPU texture lent |
 | `render target <id>: no texture from the canvas, this session uses shared memory` | The canvas didn't make the texture within 2 s |
 | `canvas: no GPU texture at <w>x<h>, shared memory it is: <why>` | The window couldn't make one, for the target's life |
-| `render target <id>: moved window, starting again` | The target moved to another window and gets a texture made there |
+| `render target <id>: moved window, starting again` | The target moved to another window and starts again there: on Pop Out or a move of its canvas to another window, whatever it draws through, and on Dock Back when it was lent a texture. A session on the slots carries on through a Dock Back |
 | `render target <id>: didn't start: <why>` | The spawn or `hello` failed, as an exit |
 | `render target <id>: not started: <why>` | The gate refused it |
 | `render target <id>: the renderer exited` | stdout closed |
@@ -1103,7 +1219,7 @@ cover's decode, the status), drawn through `crates/rox/src/canvas/texture.rs` (`
 `Lender`, and the external texture's registration and paint). The texture itself is
 `Window::register_external_texture` in the vendored gpui (`patches/gpui/e5-external-user-textures.patch`)
 over blade's `export_texture` (`patches/blade-graphics/a0-shared-textures.patch`). `crates/rox/src/panels/canvas.rs` places it, reads
-the signals and the palette for it each frame, follows the playing track for its cover,
+the signals, the palette and the stage for it each frame, follows the playing track for its cover,
 sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), adds it from the
 Add menu, and offers its wanted signals (`offer_signals`). The prompt and the inspector's
 Signals row are in `crates/rox/src/canvas/overlay.rs`. A pool entry's kind and band come from `Source` in

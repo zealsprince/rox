@@ -7,8 +7,10 @@ It's one Python file on nothing beyond the standard library.
 
 Its manifest asks for the palette (`"palette": true` under `capabilities.renderer`), so
 its enable card says it gets the colours of the current theme, and the bars take the
-theme's accent from the first `palette` line rox sends. Take that line out of
-`plugin.json` and the bars keep their own four colours.
+theme's accent from the first `palette` line rox sends. The background between them takes
+the line's `stage`, the colour around the canvas's items, when rox sends one. Take that
+line out of `plugin.json` and the bars keep their own four colours on their own
+background.
 
 The contract it follows is in [the renderers doc](../../../docs/03-implementation/11-renderers.md).
 

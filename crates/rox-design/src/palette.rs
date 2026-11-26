@@ -1364,6 +1364,21 @@ pub fn resolved() -> Palette {
     *BASE.read().unwrap().active()
 }
 
+/// What the widget theme eases toward: the focused window's tint target,
+/// else the base. Its `bg_root` is what a tab group paints under its panel
+/// while surfaces are opaque, whichever window the group is in.
+pub fn theme_target() -> Palette {
+    let tints = TINTS.read().unwrap();
+    if let Some(tint) = FOCUSED
+        .read()
+        .unwrap()
+        .and_then(|id| tints.get(&id).copied())
+    {
+        return tint.target;
+    }
+    *BASE.read().unwrap().active()
+}
+
 /// Snapshotted per frame; the easing reads live off `eased_at`.
 pub fn window_tint(player: EntityId) -> Tint {
     match TINTS.read().unwrap().get(&player) {

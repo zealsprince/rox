@@ -1654,7 +1654,7 @@ fn target_signals(
         return None;
     }
 
-    let words: Vec<String> = missing.iter().map(target::signal_words).collect();
+    let words = target::words_for(&missing, &panel.state().signals.pool());
     let owner = owner.to_string();
     let add = settings_ui::small_button(
         rox_i18n::t!("canvas-target-signals-add"),

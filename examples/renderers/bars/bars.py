@@ -1,6 +1,7 @@
 """A rox renderer in plain Python: one bar per signal, a stripe for the
 playing position, and a dot under the pointer. Its manifest asks for the
-palette, so the bars take the theme's accent once rox sends it.
+palette, so the bars take the theme's accent once rox sends it, and the
+background takes the stage's colour when rox names one.
 
 rox starts this program for a render target, hands it a block of shared
 memory as fd 3 and writes one JSON object per line to its stdin. The program
@@ -60,7 +61,7 @@ def hex_colour(text):
         return None
 
 
-def draw(levels, position, pointer, pressed, accent):
+def draw(levels, position, pointer, pressed, accent, background):
     """One frame as bytes, top row first: four bytes a pixel, R G B A."""
     count = max(len(levels), 1)
     edges = [width * i // count for i in range(count + 1)]
@@ -70,7 +71,7 @@ def draw(levels, position, pointer, pressed, accent):
     rows = []
     for y in range(height):
         if y >= height - 6:
-            rows.append(bytes((255, 255, 255, 255)) * stripe + BACKGROUND * (width - stripe))
+            rows.append(bytes((255, 255, 255, 255)) * stripe + background * (width - stripe))
             continue
 
         row = bytearray()
@@ -80,7 +81,7 @@ def draw(levels, position, pointer, pressed, accent):
             lit = i < len(levels) and (height - y) <= levels[i] * (height - 12)
             hue = accent or COLOURS[i % len(COLOURS)]
             colour = bytes(hue + (255,)) if lit else TRACK
-            row += BACKGROUND * gap + colour * (span - 2 * gap) + BACKGROUND * gap
+            row += background * gap + colour * (span - 2 * gap) + background * gap
 
         if pointer and abs(y - pointer[1] * height) < dot:
             x = int(pointer[0] * width)
@@ -112,6 +113,7 @@ def publish(n, pixels):
 levels, position = [], 0.0
 pointer, pressed, paused = None, False, False
 accent = None  # the theme's, once a palette line comes
+background = BACKGROUND  # the stage's, while a palette line names one
 pending = b""
 frame = 0
 due = time.monotonic()
@@ -138,6 +140,8 @@ while True:
                 levels, position = message["signals"], message["time"]
             elif "palette" in message:
                 accent = hex_colour(message["palette"].get("accent"))
+                stage = hex_colour(message["palette"].get("stage"))
+                background = bytes(stage + (255,)) if stage else BACKGROUND
             elif "pointer" in message:
                 event = message["pointer"]
                 if event["kind"] == "leave":  # off the surface, and any press ends
@@ -151,6 +155,6 @@ while True:
     if paused or now < due:
         continue
 
-    publish(frame, draw(levels, position, pointer, pressed, accent))
+    publish(frame, draw(levels, position, pointer, pressed, accent, background))
     frame += 1
     due = max(due + 1 / FPS, now)  # fall behind, and it doesn't race to catch up

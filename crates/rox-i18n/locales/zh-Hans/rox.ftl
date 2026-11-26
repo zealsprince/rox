@@ -54,6 +54,7 @@ signal-label-band = { signal-kind-band } { $range }
 signal-label-onset = { signal-kind-onset } { $range }
 signal-label-trigger = { signal-kind-trigger } { $range }
 signal-label-total = { signal-kind-total } { $rate }/s
+signal-label-total-of = { $signal } 的{ signal-kind-total }，{ $rate }/s
 
 signal-response = 响应
 signal-response-pulse = 每次脉冲衰减前会响多久
@@ -4295,6 +4296,8 @@ span-years = { $count ->
 }
 span-pair = { $first } { $second }
 unit-percent = { $value }%
+unit-hz = Hz
+unit-khz = kHz
 
 settings-audio-output-headline = { $mode }{ $note }，设备 { $device }，{ $rate } Hz，{ $channels } 声道，{ $format }
 settings-audio-output-experimental =  （实验性）

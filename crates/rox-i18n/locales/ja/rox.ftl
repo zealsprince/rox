@@ -55,6 +55,7 @@ signal-label-band = { signal-kind-band } { $range }
 signal-label-onset = { signal-kind-onset } { $range }
 signal-label-trigger = { signal-kind-trigger } { $range }
 signal-label-total = { signal-kind-total } { $rate }/s
+signal-label-total-of = { $signal } の{ signal-kind-total }、{ $rate }/s
 
 signal-response = 応答
 signal-response-pulse = 各パルスが消えるまで鳴り残る長さ
@@ -4296,6 +4297,8 @@ span-years = { $count ->
 }
 span-pair = { $first }{ $second }
 unit-percent = { $value }%
+unit-hz = Hz
+unit-khz = kHz
 
 settings-audio-output-headline = { $device } で { $mode }{ $note }、{ $rate } Hz、{ $channels } ch、{ $format }
 settings-audio-output-experimental =  (実験的)

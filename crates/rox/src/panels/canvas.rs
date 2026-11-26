@@ -910,7 +910,26 @@ impl CanvasPanel {
             let art = palette::art_theming()
                 .then(|| palette::seed(self.state.player.entity_id()))
                 .flatten();
-            let colours = target::palette_line(&palette::resolved(), art.as_ref());
+
+            // A tab group paints the theme's background under the panel it
+            // holds, solid only while surfaces are opaque. A popped-out
+            // canvas, or one inside a composite, sits on another surface.
+            let docked = self
+                .tab_panel
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+                .is_some_and(|tabs| {
+                    // By id alone: reading a panel's visibility would read
+                    // this canvas, mid render.
+                    let me = cx.entity_id();
+                    tabs.read(cx)
+                        .panels()
+                        .iter()
+                        .any(|held| held.view().entity_id() == me)
+                });
+            let stage = (docked && palette::app_surface_opacity() >= 1.0)
+                .then(|| palette::theme_target().bg_root);
+            let colours = target::palette_line(&palette::resolved(), art.as_ref(), stage);
 
             let player = self.state.player.read(cx);
             let running = routes::playback_running(player.is_playing(), player.queue_ended());
@@ -2435,7 +2454,7 @@ impl CanvasPanel {
             .and_then(|id| renderers.iter().find(|r| r.id == id))
             .map(|renderer| renderer.name.clone())
             .unwrap_or_default();
-        let words = missing.iter().map(target::signal_words).collect();
+        let words = target::words_for(&missing, &self.state.signals.pool());
 
         let focus = cx.focus_handle();
         focus.focus(window);
@@ -3350,6 +3369,7 @@ impl Render for CanvasPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.images.follow_store(window);
         self.window = Some(window.window_handle());
+        self.targets.arrive(window);
 
         // Off design mode a canvas is plain content: no drag carries over and
         // no menu stays open.

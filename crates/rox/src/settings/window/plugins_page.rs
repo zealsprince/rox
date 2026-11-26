@@ -33,6 +33,13 @@ use super::*;
 /// switch.
 const PLUGIN_ACTION_W: Pixels = px(120.);
 
+/// Where a long tooltip wraps. gpui sizes a tooltip to its text on one line,
+/// so a sentence runs off the window without a cap.
+const TIP_MAX_W: Pixels = px(360.);
+
+/// The tooltip's own margin, on each side.
+const TIP_MARGIN: Pixels = px(12.);
+
 /// The guide as of this build's release, so it describes the host that's
 /// running rather than whatever main has moved on to.
 const GUIDE_URL: &str = concat!(
@@ -491,11 +498,23 @@ fn wanted_list(manifest: &Manifest) -> String {
         .map(|cap| cap.signals.as_slice())
         .unwrap_or_default();
 
-    rox_services::renderers::signals_to_add(wanted, &[])
+    let adding = rox_services::renderers::signals_to_add(wanted, &[]);
+    adding
         .iter()
-        .map(crate::canvas::target::signal_words)
+        .map(|signal| crate::canvas::target::signal_words(signal, &adding))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A tooltip that wraps at [`TIP_MAX_W`], or narrower in a window too small
+/// for that, so it never runs past the window's edge.
+fn wrapped_tip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui::AnyView {
+    let room = window.viewport_size().width - TIP_MARGIN * 2.;
+    let width = if room < TIP_MAX_W { room } else { TIP_MAX_W };
+
+    // The cap goes on a block of its own: the tooltip lays its text out in
+    // a row, where a cap on the row clips the line instead of wrapping it.
+    Tooltip::element(move |_, _| div().max_w(width).child(text.clone())).build(window, cx)
 }
 
 /// Whether a scanned package is a renderer. One whose manifest doesn't
@@ -1269,7 +1288,7 @@ impl SettingsWindow {
                         true => rox_i18n::t!("settings-plugins-renderer-developer"),
                         false => rox_i18n::t!("settings-plugins-developer"),
                     };
-                    Tooltip::new(tip).build(window, cx)
+                    wrapped_tip(tip, window, cx)
                 })
         });
 

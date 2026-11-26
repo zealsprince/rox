@@ -54,6 +54,7 @@ signal-label-band = { signal-kind-band } { $range }
 signal-label-onset = { signal-kind-onset } { $range }
 signal-label-trigger = { signal-kind-trigger } { $range }
 signal-label-total = { signal-kind-total } { $rate }/s
+signal-label-total-of = { signal-kind-total } von { $signal }, { $rate }/s
 
 signal-response = Reaktion
 signal-response-pulse = Wie lange jeder Impuls nachklingt
@@ -4435,6 +4436,8 @@ span-years = { $count ->
 }
 span-pair = { $first }, { $second }
 unit-percent = { $value } %
+unit-hz = Hz
+unit-khz = kHz
 
 settings-audio-output-headline = { $mode }{ $note } auf { $device }, { $rate } Hz, { $channels } Kan., { $format }
 settings-audio-output-experimental =  (experimentell)

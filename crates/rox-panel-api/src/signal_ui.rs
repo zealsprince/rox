@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, Context, Div, Entity, Focusable as _, MouseButton,
+    AnyElement, BorderStyle, Bounds, Context, Div, Entity, Focusable as _, Global, MouseButton,
     MouseDownEvent, Pixels, Rgba, SharedString, Subscription, Window, canvas, div, point,
     prelude::*, px, size, svg,
 };
@@ -190,12 +190,19 @@ fn fmt_hz(hz: f32) -> String {
     format!("{number} {unit}")
 }
 
-/// The number and unit apart, so a range can say its unit once.
-fn hz_parts(hz: f32) -> (String, &'static str) {
+/// The number and unit apart, so a range can say its unit once. The unit
+/// is worded by the locale, which can write its own symbol.
+fn hz_parts(hz: f32) -> (String, SharedString) {
     if hz >= 1000.0 {
-        (rox_i18n::format::format_float(hz as f64 / 1000.0, 1), "kHz")
+        (
+            rox_i18n::format::format_float(hz as f64 / 1000.0, 1),
+            rox_i18n::t!("unit-khz"),
+        )
     } else {
-        (rox_i18n::format::format_float(hz as f64, 0), "Hz")
+        (
+            rox_i18n::format::format_float(hz as f64, 0),
+            rox_i18n::t!("unit-hz"),
+        )
     }
 }
 
@@ -272,6 +279,8 @@ const AGGREGATE_RATE: f32 = 1.0;
 /// reserializes every shard and doing it per scrub tick stutters the app.
 /// The generation is global because the pool is.
 pub fn persist_pool_soon(hub: &Arc<SignalHub>, cx: &mut gpui::App) {
+    pool_changed(cx);
+
     static GEN: AtomicU64 = AtomicU64::new(0);
     let mine = GEN.fetch_add(1, Ordering::Relaxed) + 1;
     let hub = hub.clone();
@@ -286,6 +295,25 @@ pub fn persist_pool_soon(hub: &Arc<SignalHub>, cx: &mut gpui::App) {
         rox_core::settings::Settings::update(move |s| s.look.bundle.signals = pool);
     })
     .detach();
+}
+
+/// Touched by every pool edit, wherever it's made, so a view listing the
+/// pool wakes on one. Holds nothing: observers read the hub back.
+#[derive(Default)]
+pub struct PoolChanged;
+
+impl Global for PoolChanged {}
+
+/// Taking the global mutably is the notification. For a pool replaced
+/// without [`persist_pool_soon`], as applying a workspace does.
+pub fn pool_changed(cx: &mut gpui::App) {
+    let _ = cx.default_global::<PoolChanged>();
+}
+
+/// Wake `view` whenever the pool changes. The hub is behind a lock with no
+/// gpui entity, so this watches the edits' global.
+pub fn observe_pool<V: 'static>(cx: &mut Context<V>) -> Subscription {
+    cx.observe_global::<PoolChanged>(|_, cx| cx.notify())
 }
 
 fn edit_signal(hub: &Arc<SignalHub>, id: u64, edit: impl FnOnce(&mut Signal), cx: &mut gpui::App) {

@@ -48,7 +48,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, BackgroundExecutor, Context, Entity, SharedString, Task, Window, div,
+    AnyElement, App, BackgroundExecutor, Context, Entity, Rgba, SharedString, Task, Window, div,
     prelude::*, px,
 };
 use rox_canvas::{CanvasItem, CanvasState, Content, Projected};
@@ -513,6 +513,9 @@ struct State {
     ended: Option<End>,
     /// The last session whose reader has returned.
     read_done: u64,
+    /// The last session the supervisor ended. A paused session's reader
+    /// waits on the pause, so this is what wakes it to go.
+    finished: u64,
     /// Try starting again: the renderers' switches moved, or Start Again.
     retry: bool,
     /// Start Again was pressed, so the exit count goes before the retry.
@@ -657,6 +660,7 @@ impl Source {
                 session: 0,
                 ended: None,
                 read_done: 0,
+                finished: 0,
                 retry: false,
                 forgive: false,
                 phase: Phase::Starting,
@@ -1498,6 +1502,9 @@ impl Supervisor {
 
         let until = Instant::now() + READER_GRACE;
         let mut state = self.shared.lock();
+        state.finished = session;
+        self.shared.wake.notify_all();
+
         while state.read_done < session && Instant::now() < until {
             let left = until.saturating_duration_since(Instant::now());
             state = self.shared.wait(state, Some(left));
@@ -1608,7 +1615,9 @@ impl CoverAsk {
 /// `{"palette": {...}}`: the theme's colours as a window shows them once
 /// any ease lands, with the cover's own two when song theming is on. A
 /// renderer can tell from them when the album changes, never which album.
-pub(crate) fn palette_line(colours: &Palette, art: Option<&Seed>) -> String {
+/// `stage` is the solid colour around the canvas's items, None when there
+/// isn't one rox can name.
+pub(crate) fn palette_line(colours: &Palette, art: Option<&Seed>, stage: Option<Rgba>) -> String {
     let hex = |color: gpui::Rgba| serde_json::Value::from(palette::to_hex(color));
 
     let mut named = serde_json::json!({
@@ -1621,6 +1630,9 @@ pub(crate) fn palette_line(colours: &Palette, art: Option<&Seed>) -> String {
         "dark": !palette::reads_light(colours.bg_root),
     });
 
+    if let Some(stage) = stage {
+        named["stage"] = hex(stage);
+    }
     if let Some(seed) = art {
         if let Some(primary) = seed.primary {
             named["art_primary"] = hex(primary);
@@ -1635,13 +1647,27 @@ pub(crate) fn palette_line(colours: &Palette, art: Option<&Seed>) -> String {
 
 /// A signal as the card and the canvas editor list it: its kind and band,
 /// after the renderer's name for it when it gives one, so a name can't pass
-/// for another kind of signal.
-pub(crate) fn signal_words(signal: &Signal) -> String {
+/// for another kind of signal. A total names what it adds up, found by id
+/// in `among`, the pool and the signals being added with it.
+pub(crate) fn signal_words(signal: &Signal, among: &[Signal]) -> String {
     let unnamed = Signal {
         name: String::new(),
         ..signal.clone()
     };
-    let kind = rox_panel_api::signal_ui::signal_label(&unnamed);
+
+    // The input is worded alone, so a total over a total can't recurse.
+    let input = signal
+        .aggregate()
+        .and_then(|(of, rate)| Some((among.iter().find(|s| s.id == of && of != signal.id)?, rate)));
+    let kind = match input {
+        Some((input, rate)) => rox_i18n::t!(
+            "signal-label-total-of",
+            signal = signal_words(input, &[]),
+            rate = rox_i18n::format::format_float(f64::from(rate), 2)
+        )
+        .to_string(),
+        None => rox_panel_api::signal_ui::signal_label(&unnamed),
+    };
 
     match signal.given_name() {
         Some(name) => {
@@ -1649,6 +1675,16 @@ pub(crate) fn signal_words(signal: &Signal) -> String {
         }
         None => kind,
     }
+}
+
+/// The signals a renderer follows that the pool lacks, worded for a prompt.
+/// A total among them can follow a pool signal or another one added.
+pub(crate) fn words_for(missing: &[Signal], pool: &[Signal]) -> Vec<String> {
+    let among: Vec<Signal> = pool.iter().chain(missing).cloned().collect();
+    missing
+        .iter()
+        .map(|signal| signal_words(signal, &among))
+        .collect()
 }
 
 /// `{"cover": n}` after a write, n the even counter in the mapping, and
@@ -1981,10 +2017,11 @@ fn read(shared: Arc<Shared>, session: u64, stdout: Box<dyn Read + Send>, limits:
     let end = loop {
         if reader.buffer().is_empty() {
             let mut state = shared.lock();
-            while state.paused() && state.session == session && !state.stop {
+            let over = |state: &State| state.session != session || state.finished >= session;
+            while state.paused() && !over(&state) && !state.stop {
                 state = shared.wait(state, None);
             }
-            if state.session != session || state.stop {
+            if over(&state) || state.stop {
                 break End::Closed;
             }
         }
@@ -2290,6 +2327,9 @@ pub(crate) struct Targets {
     tail: bool,
     /// The playing track's cover as last asked for.
     cover: CoverAsk,
+    /// The window the canvas left and the renderers its targets ran, until
+    /// it's drawn again.
+    left: Option<(gpui::WindowId, Vec<String>)>,
 }
 
 /// Whether any item in the canvas, a group's child included, is a render
@@ -2489,12 +2529,37 @@ impl Targets {
 
     /// Every target stops: the canvas left its window.
     pub(crate) fn clear(&mut self, window: &mut Window, cx: &mut App) {
+        let ran = self
+            .shown
+            .values()
+            .filter(|shown| shown.target.is_some())
+            .filter_map(|shown| renderer_id(&shown.key.owner).map(str::to_string))
+            .collect();
+        self.left = Some((window.window_handle().window_id(), ran));
+
         for shown in self.shown.values() {
             if let Some(view) = &shown.view {
                 view.update(cx, |view, cx| view.release(window, cx));
             }
         }
         self.shown.clear();
+    }
+
+    /// The canvas draws in `window`. One that left another window for it is
+    /// a Pop Out or a move, and its targets start again here: the log says
+    /// so in the words a Dock Back's supervisor uses. A tab moved within its
+    /// window restarts them too, and says nothing.
+    pub(crate) fn arrive(&mut self, window: &Window) {
+        let Some((from, ran)) = self.left.take() else {
+            return;
+        };
+        if from == window.window_handle().window_id() {
+            return;
+        }
+
+        for id in ran {
+            log::info!("render target {id}: moved window, starting again");
+        }
     }
 }
 
@@ -3059,6 +3124,23 @@ mod tests {
     }
 
     #[test]
+    fn a_paused_sessions_reader_goes_when_it_ends() {
+        let rig = Rig::new(slow());
+        *rig.host.due.lock().unwrap() = None;
+        let fake = rig.session();
+
+        rig.source.hold();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+
+        // The exit shows only on the paused check, and the reader is
+        // waiting on the pause, not on the pipe.
+        fake.exit();
+        until("the exit", || rig.exits() == 1);
+        until("the reader", || rig.source.shared.lock().read_done >= 1);
+        rig.finish();
+    }
+
+    #[test]
     fn an_untaken_frame_pauses_it() {
         let rig = Rig::new(Limits {
             idle: Duration::from_millis(50),
@@ -3554,7 +3636,7 @@ mod tests {
         let mut out = Outbox::default();
         out.restart(Wants::default());
         out.name_pool("{\"pool\":[]}\n");
-        out.name_palette(&palette_line(&Palette::default(), None));
+        out.name_palette(&palette_line(&Palette::default(), None, None));
         out.ask_cover(&CoverAsk::new(Some("a.flac".into()), None));
         assert_eq!(out.take_cover().map(|ask| ask.track), None);
         assert_eq!(
@@ -4008,7 +4090,7 @@ mod tests {
             (named.keys().cloned().collect::<Vec<_>>(), named)
         };
 
-        let dark = palette_line(&Palette::default(), None);
+        let dark = palette_line(&Palette::default(), None, None);
         assert_eq!(dark.matches('\n').count(), 1, "one line");
         let (names, named) = keys(&dark);
         assert_eq!(
@@ -4027,15 +4109,22 @@ mod tests {
         assert_eq!(named["accent"], "#ffb300");
         assert_eq!(named["dark"], true);
 
-        let (_, light) = keys(&palette_line(&Palette::light(), None));
+        let (_, light) = keys(&palette_line(&Palette::light(), None, None));
         assert_eq!(light["dark"], false);
+
+        // The stage goes after the theme's own colours, only when there's
+        // one solid colour around the canvas's items.
+        let stage = Some(gpui::rgb(0x202020));
+        let (names, named) = keys(&palette_line(&Palette::default(), None, stage));
+        assert_eq!(names.last().map(String::as_str), Some("stage"));
+        assert_eq!(named["stage"], "#202020");
 
         let seed = Seed {
             primary: Some(gpui::rgb(0xff0000)),
             secondary: Some(gpui::rgb(0x0000ff)),
             lightness: 0.5,
         };
-        let (names, named) = keys(&palette_line(&Palette::default(), Some(&seed)));
+        let (names, named) = keys(&palette_line(&Palette::default(), Some(&seed), None));
         assert!(names.contains(&"art_primary".to_string()));
         assert_eq!(named["art_primary"], "#ff0000");
         assert_eq!(named["art_secondary"], "#0000ff");
@@ -4045,7 +4134,7 @@ mod tests {
             secondary: None,
             lightness: 0.5,
         };
-        let (names, _) = keys(&palette_line(&Palette::default(), Some(&grey)));
+        let (names, _) = keys(&palette_line(&Palette::default(), Some(&grey), None));
         assert_eq!(names.len(), 7, "a cover with no colour adds none");
     }
 

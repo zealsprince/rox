@@ -5060,6 +5060,7 @@ impl Workspace {
         // The look's signal pool replaces the live one the same wholesale
         // way; apply_look already persisted it into settings.
         self.state.signals.set_pool(bundle.signals.clone());
+        rox_panel_api::signal_ui::pool_changed(cx);
         // The shader pool goes over the live one exactly the same way, and
         // apply_look persisted it in the same write. A saved bundle arrives
         // with its file bookmarks scrubbed, so anything still in the
@@ -5142,6 +5143,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.state.signals.set_pool(look.bundle.signals.clone());
+        rox_panel_api::signal_ui::pool_changed(cx);
         self.primary_layout = look.bundle.primary_layout.clone();
         self.mini_layout = look.bundle.mini_layout.clone();
 

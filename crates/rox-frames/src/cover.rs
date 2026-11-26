@@ -436,4 +436,23 @@ mod tests {
         // And a read-only one works.
         assert!(CoverReader::open(cover.child_handle()).is_ok());
     }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_cover_and_the_frames_have_their_own_names() {
+        use std::os::fd::AsRawFd;
+
+        let named = |fd: i32| {
+            std::fs::read_link(format!("/proc/self/fd/{fd}"))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let cover = Cover::create().unwrap();
+        let frames = crate::Mapping::create(crate::Spec::new(16, 16).unwrap()).unwrap();
+
+        assert!(named(cover.child_handle().as_raw_fd()).starts_with("/memfd:rox-cover"));
+        assert!(named(frames.child_handle().as_raw_fd()).starts_with("/memfd:rox-frames"));
+    }
 }

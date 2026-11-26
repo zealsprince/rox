@@ -4997,3 +4997,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } оновлення каталогу
 }
 catalog-updates-chip-tip = Новіші версії того, що встановлено з каталогу
+
+canvas-look-hover = При наведенні
+canvas-look-pressed = При натисканні
+canvas-look-preview = Показати цей вигляд на полотні
+canvas-weight-animates = Маршрути за часом: { $count }, тож полотно малює кожен кадр, поки його видно, і витрачає енергію навіть без музики
+route-time = Час
+route-time-note = Іде за власним годинником полотна, а не за музикою, і змушує полотно малювати, поки його видно
+route-time-period = Період
+    .description = Секунди на повний цикл
+route-time-shape = Форма
+route-time-shape-sine = Синус
+route-time-shape-triangle = Трикутник
+route-time-shape-saw = Пилка
+route-time-phase = Фаза
+    .description = Де в циклі він починається, щоб елементи з одним періодом не рухалися разом
+route-time-low = Низ
+    .description = Куди його ставить нижня точка хвилі
+route-time-high = Верх
+    .description = Куди його ставить верхня точка хвилі
+route-curve = Крива
+    .description = Як значення вигинається між двома кінцями
+route-curve-linear = Лінійна
+route-curve-ease-in = Плавний вхід
+route-curve-ease-out = Плавний вихід
+route-curve-ease-in-out = Плавні вхід і вихід
+route-curve-power = Степінь
+unit-seconds = { $value } с

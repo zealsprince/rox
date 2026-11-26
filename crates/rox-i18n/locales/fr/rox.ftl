@@ -4998,3 +4998,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } mises à jour du catalogue
 }
 catalog-updates-chip-tip = Des versions plus récentes de ce qui a été installé depuis le catalogue
+
+canvas-look-hover = Au survol
+canvas-look-pressed = À l'appui
+canvas-look-preview = Voir cet aspect sur le canevas
+canvas-weight-animates = Routes temporelles : { $count }, ce canevas dessine donc chaque image tant qu'il est visible, ce qui consomme de l'énergie même musique arrêtée
+route-time = Temps
+route-time-note = Suit l'horloge propre du canevas, pas la musique, et le fait dessiner tant qu'il est visible
+route-time-period = Période
+    .description = Secondes pour un cycle complet
+route-time-shape = Forme
+route-time-shape-sine = Sinus
+route-time-shape-triangle = Triangle
+route-time-shape-saw = Dents de scie
+route-time-phase = Phase
+    .description = Où elle commence dans le cycle, pour que les éléments d'une même période ne bougent pas ensemble
+route-time-low = Bas
+    .description = Où le creux de l'onde le place
+route-time-high = Haut
+    .description = Où le sommet de l'onde le place
+route-curve = Courbe
+    .description = Comment la valeur s'infléchit entre ses deux bouts
+route-curve-linear = Linéaire
+route-curve-ease-in = Entrée douce
+route-curve-ease-out = Sortie douce
+route-curve-ease-in-out = Entrée et sortie douces
+route-curve-power = Exposant
+unit-seconds = { $value } s

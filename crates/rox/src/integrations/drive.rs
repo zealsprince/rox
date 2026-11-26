@@ -5,8 +5,9 @@
 //! Coordinates are window-local logical pixels, from `debug.windows`.
 
 use gpui::{
-    App, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
+    App, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point,
+    px,
 };
 use serde_json::{Value, json};
 
@@ -219,21 +220,30 @@ fn click(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
 }
 
 /// `button` moves with that button held, the middle of a drag.
+/// With `leave`, the pointer leaves the window from there instead, as a
+/// compositor reports it: an exit and no move.
 fn hover(params: &Value, cx: &mut App) -> Result<Value, RpcError> {
     let position = position(params)?;
     let modifiers = modifiers(params);
     let pressed_button = button(params)?;
+    let leave = params.get("leave").and_then(Value::as_bool) == Some(true);
     let window = target(params, cx)?;
     window
         .update(cx, |_, window, cx| {
-            window.dispatch_event(
+            let event = if leave {
+                PlatformInput::MouseExited(MouseExitEvent {
+                    position,
+                    pressed_button,
+                    modifiers,
+                })
+            } else {
                 PlatformInput::MouseMove(MouseMoveEvent {
                     position,
                     pressed_button,
                     modifiers,
-                }),
-                cx,
-            );
+                })
+            };
+            window.dispatch_event(event, cx);
         })
         .map_err(RpcError::app)?;
     Ok(Value::Null)

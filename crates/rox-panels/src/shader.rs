@@ -1163,6 +1163,7 @@ mod tests {
                     target: surface::slot_target(0),
                     from: 0.0,
                     to: 1.0,
+                    ..Route::default()
                 },
                 Route {
                     enabled: false,
@@ -1170,6 +1171,7 @@ mod tests {
                     target: surface::slot_target(11),
                     from: 0.25,
                     to: 2.0,
+                    ..Route::default()
                 },
             ],
             manual: vec![(3, 0.5)],
@@ -1233,6 +1235,7 @@ mod tests {
             target: surface::slot_target(0),
             from: 0.0,
             to: 1.0,
+            ..Route::default()
         }];
         let mut targets = SlotTargets::default();
         surface::seed_manual(&mut targets, &manual);

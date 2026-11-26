@@ -93,7 +93,7 @@ did without a second round trip.
 | `debug.key`                                                | `{"keys": "ctrl-comma escape", "window": id?}` | `{"handled": [bool, ..]}`, one per keystroke                             |
 | `debug.type`                                               | `{"text": "..", "window": id?}`               | `{"typed": n}`, characters typed into the focused element                |
 | `debug.click`                                              | `{"x": .., "y": .., "button": ..?, "count": 1..3?, "modifiers": {..}?, "window": id?}` | null                                                                     |
-| `debug.hover`                                              | `{"x": .., "y": .., "window": id?}`           | null                                                                     |
+| `debug.hover`                                              | `{"x": .., "y": .., "leave": bool?, "window": id?}` | null; with `leave`, the pointer leaves the window from there         |
 | `debug.scroll`                                             | `{"x": .., "y": .., "dy": .., "dx": ..?, "window": id?}` | null                                                                     |
 
 Queue entry ids are stable handles: `queue.list` returns them, and remove, move,

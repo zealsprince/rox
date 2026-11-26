@@ -457,6 +457,68 @@ once its flip has landed. A canvas where nothing follows a state reads none of i
 redraws for none of it. A case's image is an asset in the store like the
 item's own: an object exports it with the item, and placing rewrites it to the store's id.
 
+An item with a click command can also carry a `hover` look, for while the pointer is over
+it, and a `pressed` look, for while a left press that landed on it is held and the pointer
+is still over it (`crates/rox/src/canvas/looks.rs`). A look holds what a case can change
+but whether the item shows, since a hover that hid its item would lose the pointer: an
+opacity that multiplies, and an image or a text color in place of the one its case gives.
+Each is optional, saved only when it changes something, and one that doesn't parse costs
+only itself:
+
+```json
+{ "id": "play", "action": "toggle_playback",
+  "hover": { "opacity": 0.9, "asset": "play-lit" },
+  "pressed": { "asset": "play-down" },
+  "content": { "kind": "image", "asset": "play" } }
+```
+
+The looks go on top of whichever case is active, the pressed look's over the hover
+look's, so a pressed look that leaves the image alone keeps the hover's. They show off
+design mode only, and only on the item the click walk would run (`hit`): the front item
+under the pointer, by its projected corners so a tilted item hovers only inside its quad,
+or the nearest group around it that has a command. A render target that takes the pointer
+has no command over it, so it never shows one. The pointer leaving the window clears
+them, through gpui's exit event, which the click layer also uses to tell a render target
+the pointer has gone. Only the pointer hovers: there's no keyboard focus on canvas items.
+Each look eases in and out over 140 ms with a smoothstep. Opacity blends, and an image or
+a color switches halfway through. A canvas asks for frames only while an ease runs: in
+a debug build in a headless sway, a hover drew 9 frames in 800 ms and none in the 1.5 s
+before or after it.
+
+In design mode the inspector shows a While Hovered and a While Pressed block on an item
+with a command, with the case block's opacity slider and image or color picker, and an eye
+that previews the look on the canvas as the case eye does. Each edit is one undo step,
+and a slider drag merges into one. A look edited back to changing nothing is dropped.
+Asset collection and rewriting walk the looks' images with the cases' (`assets`,
+`assets_mut`), so an object exports them and placing rewrites them.
+
+A canvas's routes drive `<item id>.<property>` targets: opacity and scale take a share of
+the item's own setting, a position or rotation axis a share of its sway. Music routes
+follow playback through the canvas's Rest or Hold setting (`crates/rox/src/canvas/routes.rs`).
+A time route follows the canvas's own clock instead, which starts at the canvas's first
+render and is never the wall clock or the playing position (`Motion::clock`). It applies
+at full weight whatever playback does, and on a target a music route also drives, the time
+route wins. The canvas is the one host that reads time routes, so only its route rows
+offer Time. A canvas with a time route switched on asks for a frame on every render while
+it's drawn, and stops when gpui stops rendering it, a hidden tab or a hidden window, the
+same thing that pauses a render target. rox has no reduced-motion setting, so nothing else
+gates it. The inspector's weight line says in words that the canvas draws every frame
+while it shows and that this costs power (`cost::animates`).
+
+Measured 2026-11-26 on a Ryzen 9 5950X with a Navi 21 Radeon, release build, a 1920x1080
+window in a headless sway, design mode off, nothing playing, a canvas of 50 image items
+with routes on the first N of them. `debug.frames` over 3 s, three runs each:
+
+| Time routes | Frames in 3 s | Mean ms | Worst ms | CPU, 5 s |
+|---|---|---|---|---|
+| 0, at rest | 0 | | | 1.0% of a core |
+| 1 | 186 | 0.73 to 0.79 | 1.49 | 5.4% |
+| 10 | 185 to 186 | 0.72 to 0.84 | 1.89 | |
+| 50 | 184 to 185 | 1.03 to 1.48 | 3.53 | 6.2% |
+
+Another tree was compiling during the 50-route runs and the CPU readings. Most of the cost
+is having any frame at all; each route adds little.
+
 A grid item is a dock tree of its own: one `DockArea` per item, built and gated the way
 the window's dock is (the layout version and a split at the root), with the middle-drag
 pop-out hook. Its tab groups are real tab groups, so they report into the workspace's
@@ -509,4 +571,7 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 `crates/rox/src/canvas/mod.rs` (the live bodies and the nesting cap),
 `crates/rox/src/canvas/grid.rs` (a grid's dock area), `crates/rox/src/canvas/image.rs`
 (the decode and the quad), `crates/rox/src/canvas/states.rs` (items that follow state),
+`crates/rox/src/canvas/looks.rs` (hover and pressed looks),
+`crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock),
+`crates/rox/src/canvas/cost.rs` (the weight line),
 and `Workspace::docks` in `crates/rox/src/workspace.rs`.

@@ -5345,6 +5345,7 @@ mod tests {
             target: "slot3".to_string(),
             from: 0.25,
             to: 1.5,
+            ..Route::default()
         }];
         let json = serde_json::to_string_pretty(&src).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();

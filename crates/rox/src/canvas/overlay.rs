@@ -36,7 +36,7 @@ use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{PickRow, Tip, search_picker};
 
 use crate::canvas::shader::{self as shader_item, RowState};
-use crate::canvas::{cost, edit, states, target, text};
+use crate::canvas::{cost, edit, looks, states, target, text};
 use crate::keymap;
 use crate::objects::{self, Dialog};
 use crate::panels::canvas::{self, CanvasPanel};
@@ -107,6 +107,26 @@ impl Inspector {
 
     pub(crate) fn reweigh(&mut self) {
         self.weighed = None;
+    }
+
+    /// Shows `case` on item `id` in place of the live one, or stops if it
+    /// already does.
+    pub(crate) fn toggle_preview(&mut self, id: String, case: &str) {
+        let pick = (id, case.to_string());
+        self.preview = if self.preview.as_ref() == Some(&pick) {
+            None
+        } else {
+            Some(pick)
+        };
+    }
+
+    /// The slider state kept under `key`, made on first ask.
+    pub(crate) fn scrub(&self, key: &str) -> ScrubState {
+        self.case_scrubs
+            .borrow_mut()
+            .entry(key.to_string())
+            .or_default()
+            .clone()
     }
 }
 
@@ -372,6 +392,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
     });
     let counts = cost::counts(&weighed.weight);
     let targets = cost::target_counts(&weighed.weight);
+    let animates = cost::animates(&weighed.weight);
     let lines = cost::warnings(&weighed.weight);
 
     // The tone is a fixed yellow that washes out on a light theme, so it
@@ -403,6 +424,7 @@ fn weight(panel: &mut CanvasPanel) -> AnyElement {
         .text_color(palette::text_muted())
         .child(counts)
         .children(targets)
+        .children(animates)
         .children(warnings)
         .into_any_element()
 }
@@ -882,6 +904,7 @@ fn item_rows(
     if !matches!(item.content, Content::Grid { .. }) {
         rows = rows.child(command_row(item, cx));
     }
+    rows = rows.children(looks::rows(panel, item, cx));
 
     rows.child(actions(item, cx))
         .child(content_rows(panel, item, window, cx))
@@ -1899,7 +1922,7 @@ fn target_status(
 
 /// The palette roles a text color picks from. A hex color typed into the
 /// file shows as its own head row.
-fn text_roles(color: &str) -> Vec<(String, SharedString)> {
+pub(crate) fn text_roles(color: &str) -> Vec<(String, SharedString)> {
     let mut roles: Vec<(String, SharedString)> = Vec::new();
     if !color.is_empty() && !palette::ROLES.iter().any(|role| role.name == color) {
         roles.push((color.to_string(), SharedString::from(color.to_string())));

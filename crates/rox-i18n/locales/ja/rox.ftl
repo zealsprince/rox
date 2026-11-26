@@ -4763,3 +4763,30 @@ catalog-updates-chip = { $count ->
    *[other] カタログの更新 { $count } 件
 }
 catalog-updates-chip-tip = カタログから入れたものの新しいバージョン
+
+canvas-look-hover = ポインターを重ねたとき
+canvas-look-pressed = 押したとき
+canvas-look-preview = この見た目をキャンバスでプレビュー
+canvas-weight-animates = 時間ルート: { $count }。表示中はこのキャンバスが毎フレーム描画するので、音楽が止まっていても電力を使います
+route-time = 時間
+route-time-note = 音楽ではなくキャンバス自身の時計に従い、表示中はキャンバスを描画し続けます
+route-time-period = 周期
+    .description = 1 周期の秒数
+route-time-shape = 形
+route-time-shape-sine = サイン
+route-time-shape-triangle = 三角
+route-time-shape-saw = のこぎり
+route-time-phase = 位相
+    .description = 周期のどこから始めるか。同じ周期のアイテムが揃って動かないようにします
+route-time-low = 下端
+    .description = 波の最も低い点で置かれる位置
+route-time-high = 上端
+    .description = 波の最も高い点で置かれる位置
+route-curve = カーブ
+    .description = 読み取った値が両端の間でどう曲がるか
+route-curve-linear = リニア
+route-curve-ease-in = イーズイン
+route-curve-ease-out = イーズアウト
+route-curve-ease-in-out = イーズインアウト
+route-curve-power = 指数
+unit-seconds = { $value } 秒

@@ -71,6 +71,34 @@ constructor for anything showing live values. The one hub without a feed comes f
 With no player to borrow from, it builds a hub over the saved pool that never moves
 and reads empty, so the pool stays editable and persistable without audio.
 
+A route carries one reading onto a host's knob (`apply_routes`,
+`crates/rox-panel-api/src/signal_ui.rs`). The reading goes through the route's curve, then
+onto its span: `max(0, from + (to - from) * curve(value))`. Linear passes the value
+exactly, overshoot included, as every route did before curves. The others hold it to 0 to
+1 first: Ease In is `x^2`, Ease Out `1 - (1 - x)^2`, Ease In and Out the smoothstep
+`x^2 (3 - 2x)`, and an exponent is `x^p` with `p` held to 0.1 to 10 (`Curve::bend`,
+`crates/rox-viz/src/signal.rs`). Every route row has the curve picker, the shader slots'
+route editor included.
+
+A route can read time instead of a signal. Its `time` holds a period in seconds, held to
+0.1 to 3,600, a shape, and a phase from 0 to 1, and the reading is the shape at
+`fract(t / period + phase)` with `t` in seconds on the host's own clock, taken in f64 so
+a clock that has run for days keeps its precision (`Wave::at`). A saw climbs from 0 to 1
+and drops back on the wrap, a triangle climbs to 1 halfway and back, and a sine is
+`0.5 - 0.5 cos(2 pi x)`, so each starts its cycle at 0. `apply_routes` skips time routes.
+A host with a clock reads them through `apply_time_routes`, and only the canvas has one,
+so a time route anywhere else stays silent and its row offers no Time. Both fields save
+only when set, a field that doesn't parse reads as its default, and a route saved before
+them reads and writes the same bytes:
+
+```json
+{ "enabled": true, "signal": 0, "target": "bubble.y", "from": 0.0, "to": 1.0,
+  "time": { "period": 6.0, "shape": "saw", "phase": 0.25 },
+  "curve": "ease_out" }
+```
+
+An exponent saves as `"curve": { "power": 2.5 }`.
+
 ## FFT
 
 `Analyzer` (`crates/rox-viz/src/analysis.rs`) is one window's worth of transform.
@@ -89,7 +117,15 @@ the crate free of a DSP dependency until one is justified.
   mirror above Nyquist is dropped.
 - **Band mapping**: `log_bands(bands, lo_hz, hi_hz, sample_rate, half)` maps
   log-spaced bands across `lo_hz..hi_hz` to half-spectrum bin ranges, each at least one
-  bin wide, so neighbours share bins where the FFT is too coarse to split them.
+  bin wide, so neighbours share bins where the FFT is too coarse to split them. It rounds
+  each edge down to a bin, and the spectrum bars, the EQ window's bars and the stored
+  acoustic vectors are built on that. A signal's band and the renderer spectrum's log row
+  use `band_bins(lo_hz, hi_hz, sample_rate, half)` instead: the bins whose centres fall
+  in `[lo_hz, hi_hz)`, at least one. The floor rule read a band about half a bin low. A
+  tone a quarter hertz under a band's top edge read 7 to 31 dB under its level, and 0.1
+  to 4.4 dB under with the centre rule; pink noise in 30 to 120 Hz read 2.6 dB louder
+  than the centre rule reads it, and within 0.5 dB from 120 Hz up, at both 44.1 and 48
+  kHz (`a_band_reads_the_bins_whose_centres_it_holds`, `rox-viz/src/signal.rs`).
 
 ## Spectrum panel
 

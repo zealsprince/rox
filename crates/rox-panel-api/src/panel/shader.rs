@@ -1566,6 +1566,7 @@ mod tests {
             target,
             from,
             to,
+            ..Route::default()
         };
         let routes = vec![
             route(loud, slot_target(2), 0.0, 1.0, true),

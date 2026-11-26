@@ -33,7 +33,8 @@ pub type RouteMutate<P> = Arc<dyn Fn(&mut P, &mut dyn FnMut(&mut Vec<Route>), &m
 /// [`sync`](Self::sync) at the top of a render.
 #[derive(Default)]
 pub struct RouteEditState {
-    scrubs: Vec<(ScrubState, ScrubState)>,
+    /// Quiet, Loud and the curve's exponent, per row.
+    scrubs: Vec<(ScrubState, ScrubState, ScrubState)>,
     open: HashSet<usize>,
 }
 
@@ -136,6 +137,7 @@ impl<P: 'static> RouteEditor<'_, P> {
                             target: slot_target(slot),
                             from: 0.0,
                             to: 1.0,
+                            ..Route::default()
                         });
                         landed = Some(routes.len() - 1);
                     },
@@ -419,13 +421,14 @@ fn spans<P: 'static>(
     route: &Route,
     cx: &mut Context<P>,
 ) -> Div {
-    let Some((from_scrub, to_scrub)) = editor.ui.scrubs.get(index) else {
+    let Some((from_scrub, to_scrub, power_scrub)) = editor.ui.scrubs.get(index) else {
         return div();
     };
     let from = route.from.clamp(0.0, OVER);
     let to = route.to.clamp(0.0, OVER);
     let quiet = editor.mutate.clone();
     let loud = editor.mutate.clone();
+    let bend = editor.mutate.clone();
     div()
         .flex()
         .flex_col()
@@ -481,6 +484,24 @@ fn spans<P: 'static>(
                 },
                 cx,
             ),
+        ))
+        .child(super::curve_row(
+            route.curve,
+            power_scrub,
+            editor.value_edit,
+            move |this: &mut P, curve, cx| {
+                bend(
+                    this,
+                    &mut |routes| {
+                        if let Some(route) = routes.get_mut(index) {
+                            route.curve = curve;
+                        }
+                    },
+                    cx,
+                );
+                cx.notify();
+            },
+            cx,
         ))
 }
 

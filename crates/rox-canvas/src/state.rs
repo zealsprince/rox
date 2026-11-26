@@ -133,6 +133,19 @@ pub struct CanvasItem {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub cases: Vec<Case>,
+    /// The look while the pointer is over the item, off design mode. Only
+    /// an item with a click command takes it. Lenient, like a case.
+    #[serde(
+        deserialize_with = "lenient_look",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hover: Option<Look>,
+    /// The look while it's pressed, over the hover look.
+    #[serde(
+        deserialize_with = "lenient_look",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pressed: Option<Look>,
     pub content: Content,
 }
 
@@ -149,23 +162,26 @@ impl Default for CanvasItem {
             action: String::new(),
             state: String::new(),
             cases: Vec::new(),
+            hover: None,
+            pressed: None,
             content: Content::default(),
         }
     }
 }
 
 impl CanvasItem {
-    /// Every asset this item names, its cases' included, and not its
+    /// Every asset this item names, its cases' and looks' included, and not its
     /// children's. Anything that collects or rewrites an item's assets goes
     /// through here and [`assets_mut`](Self::assets_mut), so a case's image
     /// is never left behind.
     pub fn assets(&self) -> impl Iterator<Item = &str> {
-        self.content.asset().into_iter().chain(
-            self.cases
-                .iter()
-                .map(|case| case.asset.as_str())
-                .filter(|asset| !asset.is_empty()),
-        )
+        let looks = [&self.hover, &self.pressed].into_iter().flatten();
+        self.content
+            .asset()
+            .into_iter()
+            .chain(self.cases.iter().map(|case| case.asset.as_str()))
+            .chain(looks.map(|look| look.asset.as_str()))
+            .filter(|asset| !asset.is_empty())
     }
 
     /// Each asset id [`assets`](Self::assets) yields, to rewrite in place.
@@ -179,6 +195,12 @@ impl CanvasItem {
         for case in &mut self.cases {
             if !case.asset.is_empty() {
                 f(&mut case.asset);
+            }
+        }
+
+        for look in [&mut self.hover, &mut self.pressed].into_iter().flatten() {
+            if !look.asset.is_empty() {
+                f(&mut look.asset);
             }
         }
     }
@@ -225,6 +247,56 @@ impl Case {
                 when: self.when.clone(),
                 ..Case::default()
             }
+    }
+}
+
+/// How a click item looks while hovered or pressed: what a case can change
+/// but whether it shows, since a hover that hid its item would lose the
+/// pointer it came from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Look {
+    /// Multiplies the item's opacity, its case's included.
+    pub opacity: f32,
+    /// Image items: the asset shown. Empty keeps the one the case shows.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub asset: String,
+    /// Text items: the color. Empty keeps the one the case gives.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub color: String,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Self {
+            opacity: 1.,
+            asset: String::new(),
+            color: String::new(),
+        }
+    }
+}
+
+impl Look {
+    /// A look that changes nothing.
+    pub fn is_plain(&self) -> bool {
+        *self == Look::default()
+    }
+}
+
+/// A look that doesn't parse reads as none, so it costs the look and not
+/// the item.
+fn lenient_look<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Look>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    match Look::deserialize(value) {
+        Ok(look) => Ok(Some(look)),
+        Err(e) => {
+            log::warn!("canvas: dropping a hover or pressed look that doesn't parse: {e}");
+            Ok(None)
+        }
     }
 }
 
@@ -1130,6 +1202,65 @@ mod tests {
             ..CanvasItem::default()
         };
         assert_eq!(text.assets().collect::<Vec<_>>(), ["stray"]);
+    }
+
+    #[test]
+    fn a_hover_and_pressed_look_round_trip_and_a_plain_item_writes_neither() {
+        let item: CanvasItem = serde_json::from_value(json!({
+            "id": "play",
+            "action": "play_pause",
+            "hover": { "opacity": 0.8, "asset": "play-lit" },
+            "pressed": { "asset": "play-down" },
+            "content": { "kind": "image", "asset": "play" },
+        }))
+        .unwrap();
+
+        let hover = item.hover.as_ref().expect("a hover look");
+        assert_eq!(hover.opacity, 0.8);
+        assert_eq!(item.pressed.as_ref().map(|look| look.opacity), Some(1.));
+        assert_eq!(
+            serde_json::from_value::<CanvasItem>(serde_json::to_value(&item).unwrap()).unwrap(),
+            item
+        );
+
+        let plain = serde_json::to_value(grid("g")).unwrap();
+        assert!(plain.get("hover").is_none() && plain.get("pressed").is_none());
+
+        // A look that doesn't parse costs the look, not the item.
+        let odd: CanvasItem = serde_json::from_value(json!({
+            "id": "x",
+            "hover": "glow",
+            "pressed": { "opacity": "half" },
+        }))
+        .unwrap();
+        assert_eq!(odd.id, "x");
+        assert!(odd.hover.is_none() && odd.pressed.is_none());
+    }
+
+    #[test]
+    fn every_asset_an_item_names_includes_its_looks() {
+        let mut item = CanvasItem {
+            content: Content::Image {
+                asset: "play".into(),
+                fit: ImageFit::Contain,
+            },
+            hover: Some(Look {
+                asset: "lit".into(),
+                ..Look::default()
+            }),
+            pressed: Some(Look {
+                opacity: 0.5,
+                ..Look::default()
+            }),
+            ..CanvasItem::default()
+        };
+        assert_eq!(item.assets().collect::<Vec<_>>(), ["play", "lit"]);
+
+        item.assets_mut(&mut |asset| asset.push_str("-2"));
+        assert_eq!(item.assets().collect::<Vec<_>>(), ["play-2", "lit-2"]);
+        assert!(item.pressed.as_ref().unwrap().asset.is_empty());
+        assert!(!item.pressed.as_ref().unwrap().is_plain());
+        assert!(Look::default().is_plain());
     }
 
     #[test]

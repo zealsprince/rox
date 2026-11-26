@@ -625,8 +625,104 @@
           "type": "number",
           "format": "float",
           "default": 1.0
+        },
+        "time": {
+          "description": "A wave of the host's own clock read in place of `signal`. A host\nwith no clock leaves the route silent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Wave"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "curve": {
+          "description": "How the reading bends before it meets the span. Linear is a straight line.",
+          "$ref": "#/$defs/Curve"
         }
       }
+    },
+    "Wave": {
+      "description": "A repeating shape over time, from 0 to 1.",
+      "type": "object",
+      "properties": {
+        "period": {
+          "description": "Seconds for one cycle.",
+          "type": "number",
+          "format": "float",
+          "default": 4.0
+        },
+        "shape": {
+          "$ref": "#/$defs/Shape",
+          "default": "sine"
+        },
+        "phase": {
+          "description": "Where in the cycle it starts, 0 to 1, so routes sharing a period\ndon't all move together.",
+          "type": "number",
+          "format": "float",
+          "default": 0.0
+        }
+      }
+    },
+    "Shape": {
+      "oneOf": [
+        {
+          "description": "Climbs from 0 to 1 and drops back at the end of each cycle.",
+          "type": "string",
+          "const": "saw"
+        },
+        {
+          "description": "Climbs to 1 halfway and back down.",
+          "type": "string",
+          "const": "triangle"
+        },
+        {
+          "description": "Rises and falls smoothly, at 0 where the cycle starts.",
+          "type": "string",
+          "const": "sine"
+        }
+      ]
+    },
+    "Curve": {
+      "description": "A bend on a route's reading, 0 to 1 in and out.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "linear"
+          ]
+        },
+        {
+          "description": "Slow out of 0, fast into 1.",
+          "type": "string",
+          "const": "ease_in"
+        },
+        {
+          "description": "Fast out of 0, slow into 1.",
+          "type": "string",
+          "const": "ease_out"
+        },
+        {
+          "description": "Slow at both ends.",
+          "type": "string",
+          "const": "ease_in_out"
+        },
+        {
+          "description": "The reading raised to this power: above 1 bends like an ease in,\nbelow 1 like an ease out.",
+          "type": "object",
+          "properties": {
+            "power": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "required": [
+            "power"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "AppearanceBundle": {
       "description": "The appearance knobs a workspace carries. The theme pick and font size\nstay out: they're the user's own choices.",

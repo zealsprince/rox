@@ -577,6 +577,8 @@ pub struct CanvasPanel {
     pointing: Rc<Cell<bool>>,
     /// The render target the pointer is over, off design mode.
     hovered: Option<String>,
+    /// The hover and pressed looks of the click item under the pointer.
+    looks: canvas::looks::Looks,
     /// The export card or the place confirm, over the whole window.
     pub(crate) object_dialog: Option<objects::Dialog>,
     /// The playing track's marks, resolved only while an item follows the
@@ -729,6 +731,7 @@ impl CanvasPanel {
             pressed: None,
             pointing: Rc::default(),
             hovered: None,
+            looks: canvas::looks::Looks::default(),
             object_dialog: None,
             marks: MarkCache::default(),
             cases: Cases::new(),
@@ -1153,6 +1156,8 @@ impl CanvasPanel {
             .preview()
             .filter(|(id, _)| active && self.selected.as_deref() == Some(*id));
 
+        let looks = canvas::looks::this_frame(&mut self.looks, self.design, preview, window);
+
         // Before the first bounds land there's nothing to place against, and
         // a grid laid out at no size would lay its panels out at none.
         let mut draw = Draw {
@@ -1160,6 +1165,7 @@ impl CanvasPanel {
             lives: &lives,
             values: &values,
             cases: &self.cases,
+            looks: &looks,
             preview,
             ghost: false,
             images: &mut self.images,
@@ -1381,6 +1387,8 @@ struct Draw<'a> {
     lives: &'a HashMap<String, Live>,
     values: &'a Values,
     cases: &'a Cases,
+    /// How far each item's hover and pressed looks show.
+    looks: &'a canvas::looks::Shown,
     /// The selected item's id and the case the inspector previews on it.
     preview: Option<(&'a str, &'a str)>,
     /// Inside a group its case hides, in design mode.
@@ -1424,6 +1432,10 @@ fn place(
             .filter(|(id, _)| *id == item.id)
             .map(|(_, case)| case);
         let applied = states::resolve(item, draw.cases, preview);
+        let applied = match draw.looks.get(&item.id) {
+            Some(weights) => canvas::looks::over(item, applied, *weights),
+            None => applied,
+        };
 
         // Off design mode a hidden case takes the item, and a group's
         // children, off the stage and out of the hit walk. In design mode it
@@ -1502,6 +1514,7 @@ fn place(
                     lives: draw.lives,
                     values: draw.values,
                     cases: draw.cases,
+                    looks: draw.looks,
                     preview: draw.preview,
                     ghost,
                     images: &mut *draw.images,
@@ -3127,7 +3140,7 @@ pub(crate) fn scroll_lines(delta: ScrollDelta) -> [f32; 2] {
 
 /// A grid's command is ignored: its panels own their input. An id this
 /// build can't run counts as none, so it claims no click.
-fn commands(item: &CanvasItem) -> bool {
+pub(crate) fn commands(item: &CanvasItem) -> bool {
     keymap::dispatches(&item.action) && !matches!(item.content, Content::Grid { .. })
 }
 
@@ -3163,14 +3176,14 @@ impl CanvasPanel {
                     // Only a crossing re-renders, for the cursor.
                     let local = local_point(event.position, bounds.origin);
                     let hovered = hover.is_hovered(window);
-                    let over = moving
+                    let (over, looked) = moving
                         .update(cx, |this, _| {
                             let hit = this.hit_over(hovered, local);
                             this.point_at(&hit, Pointer::Move);
-                            matches!(hit, Hit::Command { .. })
+                            (matches!(hit, Hit::Command { .. }), this.look_at(&hit))
                         })
-                        .unwrap_or(false);
-                    if over != pointing.get() {
+                        .unwrap_or((false, false));
+                    if over != pointing.get() || looked {
                         pointing.set(over);
                         cx.notify(me_id);
                     }
@@ -3191,13 +3204,16 @@ impl CanvasPanel {
                             return;
                         }
 
-                        this.pressed = match hit {
+                        this.pressed = match &hit {
                             Hit::Command { id, .. } => {
                                 cx.stop_propagation();
-                                Some(id)
+                                Some(id.clone())
                             }
                             _ => None,
                         };
+                        if this.look_at(&hit) {
+                            cx.notify();
+                        }
                     })
                     .ok();
                 });
@@ -3218,6 +3234,23 @@ impl CanvasPanel {
                         .ok();
                 });
 
+                // Leaving the window sends no move, so nothing else would
+                // tell a look or a renderer the pointer has gone.
+                let gone = me.clone();
+                window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, _, cx| {
+                    if !phase.bubble() {
+                        return;
+                    }
+
+                    gone.update(cx, |this, cx| {
+                        this.point_at(&Hit::Nothing, Pointer::Move);
+                        if this.looks.clear(Instant::now()) {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                });
+
                 let up = me.clone();
                 window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() {
@@ -3235,6 +3268,9 @@ impl CanvasPanel {
                         }
 
                         let pressed = this.pressed.take();
+                        if this.look_at(&hit) {
+                            cx.notify();
+                        }
                         if !over {
                             return;
                         }
@@ -3299,6 +3335,25 @@ impl CanvasPanel {
         if let Some((id, at)) = over {
             self.targets.point(id, pointer(at));
         }
+    }
+
+    /// Points the hover and pressed looks at the item `hit` would run, if it
+    /// wears one. True when a look moved, which is when the canvas needs a
+    /// render.
+    fn look_at(&mut self, hit: &Hit) -> bool {
+        let over = match hit {
+            Hit::Command { id, .. } => Some(id.as_str()),
+            _ => None,
+        };
+        let over = over.filter(|id| {
+            self.config
+                .canvas
+                .find(id)
+                .is_some_and(canvas::looks::wears)
+        });
+
+        self.looks
+            .point(over, self.pressed.as_deref(), Instant::now())
     }
 
     /// Why a text item's pattern doesn't parse, if it doesn't.
@@ -3574,6 +3629,10 @@ impl RouteHost for CanvasPanel {
             )
         })
     }
+
+    fn has_clock(&self) -> bool {
+        true
+    }
 }
 
 impl EventEmitter<PanelEvent> for CanvasPanel {}
@@ -3729,6 +3788,7 @@ impl Render for CanvasPanel {
             self.design = design;
             self.pointing.set(false);
             self.pressed = None;
+            self.looks.clear(Instant::now());
             if let Some(id) = self.hovered.take() {
                 self.targets.point(&id, Pointer::Leave);
             }

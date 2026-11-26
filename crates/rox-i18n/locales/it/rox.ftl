@@ -4968,3 +4968,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } aggiornamenti del catalogo
 }
 catalog-updates-chip-tip = Versioni più recenti di ciò che è stato installato dal catalogo
+
+canvas-look-hover = Al passaggio
+canvas-look-pressed = Alla pressione
+canvas-look-preview = Mostra questo aspetto sulla tela
+canvas-weight-animates = Percorsi a tempo: { $count }, quindi questa tela disegna ogni fotogramma finché è visibile, e consuma energia anche a musica ferma
+route-time = Tempo
+route-time-note = Segue l'orologio della tela, non la musica, e la tiene a disegnare finché è visibile
+route-time-period = Periodo
+    .description = Secondi per un ciclo intero
+route-time-shape = Forma
+route-time-shape-sine = Seno
+route-time-shape-triangle = Triangolo
+route-time-shape-saw = Dente di sega
+route-time-phase = Fase
+    .description = Dove parte nel ciclo, così gli elementi con lo stesso periodo non si muovono insieme
+route-time-low = Basso
+    .description = Dove lo porta il punto più basso dell'onda
+route-time-high = Alto
+    .description = Dove lo porta il punto più alto dell'onda
+route-curve = Curva
+    .description = Come si piega la lettura tra i suoi due estremi
+route-curve-linear = Lineare
+route-curve-ease-in = Entrata morbida
+route-curve-ease-out = Uscita morbida
+route-curve-ease-in-out = Entrata e uscita morbide
+route-curve-power = Esponente
+unit-seconds = { $value } s

@@ -79,6 +79,9 @@ pub(crate) struct Weight {
     pub shader_surfaces: usize,
     /// Grid items a route moves, a routed group's grids included.
     pub moving_grids: usize,
+    /// Switched-on time routes. One is enough to keep a canvas drawing every
+    /// frame while it shows.
+    pub time_routes: usize,
 }
 
 impl Weight {
@@ -95,6 +98,7 @@ impl Weight {
             },
             shader_surfaces: self.shader_surfaces.max(other.shader_surfaces),
             moving_grids: self.moving_grids.max(other.moving_grids),
+            time_routes: self.time_routes.max(other.time_routes),
         }
     }
 }
@@ -199,6 +203,11 @@ fn canvas(config: &Value, level: usize, tally: &mut Tally) {
     sum.targets += cost.targets;
     sum.target_pixels = sum.target_pixels.saturating_add(cost.target_pixels);
 
+    tally.weight.time_routes += routes
+        .iter()
+        .filter(|route| route.enabled && route.time.is_some())
+        .count();
+
     let routed: HashSet<&str> = routes
         .iter()
         .filter(|route| route.enabled)
@@ -264,6 +273,13 @@ pub(crate) fn target_counts(weight: &Weight) -> Option<SharedString> {
         count = weight.cost.targets as u64,
         megapixels = megapixels(weight.cost.target_pixels)
     ))
+}
+
+/// The line saying a canvas animates for as long as it shows, for one with
+/// a time route. Not a warning: nothing is over, it only never rests.
+pub(crate) fn animates(weight: &Weight) -> Option<SharedString> {
+    (weight.time_routes > 0)
+        .then(|| rox_i18n::t!("canvas-weight-animates", count = weight.time_routes as u64))
 }
 
 /// The lines to show, empty when nothing is over.
@@ -404,6 +420,36 @@ mod tests {
 
         assert_eq!(weight.cost.grids, 1);
         assert_eq!(weight.moving_grids, 0);
+    }
+
+    #[test]
+    fn a_time_route_says_the_canvas_animates() {
+        let items = json!([{ "id": "logo", "content": { "kind": "image", "asset": "a" } }]);
+        let mut timed = route("logo.y", true);
+        timed["time"] = json!({ "period": 4.0, "shape": "sine" });
+        let mut off = route("logo.x", false);
+        off["time"] = json!({});
+
+        let weight = weigh(
+            &dock_with_canvas(
+                items.clone(),
+                json!([timed, off, route("logo.opacity", true)]),
+            ),
+            &bare(),
+        );
+        assert_eq!(weight.time_routes, 1, "only the switched-on time route");
+        assert!(animates(&weight).is_some());
+        assert!(
+            warnings(&weight).is_empty(),
+            "animating isn't over anything"
+        );
+
+        let still = weigh(
+            &dock_with_canvas(items, json!([route("logo.y", true)])),
+            &bare(),
+        );
+        assert_eq!(still.time_routes, 0);
+        assert!(animates(&still).is_none());
     }
 
     #[test]

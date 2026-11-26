@@ -958,10 +958,13 @@ Every kind but a total reads one FFT, the hub's (`Hub::advance` and
 - The magnitudes are scaled by `2 / sum(window)`, the window's coherent gain, so a
   full-scale sine centred on a bin reads 1.0, 0 dB. One between two bins reads up to
   1.4 dB lower, the Hann window's scalloping.
-- A band reads FFT bins `floor(low / width)` up to but not including
-  `floor(high / width)`, with `width` the bin width above (`log_bands`,
-  `rox-viz/src/analysis.rs`). Its lowest bin can lie up to one bin below `low`, and the
-  bin just under `high` is left out.
+- A band reads the FFT bins whose centres fall in `[low, high)`: bin `k`, centred on
+  `k * width` with `width` the bin width above, from `ceil(low / width)` up to but not
+  including `ceil(high / width)`, and never fewer than one bin (`band_bins`,
+  `rox-viz/src/analysis.rs`). That's the rule the log row's peaks use too. At 48 kHz a
+  30 to 120 Hz band reads bins 2 to 5, 46.9 to 117.2 Hz. A tone just under `high` whose
+  nearest bin centre sits just over it reads off the bin below, up to about 6 dB under
+  its level, the Hann window's fall one bin out.
 
 - `band` is the loudest bin of a 2048-point FFT of the mono mix between `low` and `high`,
   a peak and not a mean (`HUB_FFT`). It's in decibels against a full-scale sine, mapped

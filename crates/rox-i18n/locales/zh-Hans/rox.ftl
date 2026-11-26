@@ -4762,3 +4762,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } 个目录更新
 }
 catalog-updates-chip-tip = 从目录安装的内容有了新版本
+
+canvas-look-hover = 指针悬停时
+canvas-look-pressed = 按下时
+canvas-look-preview = 在画布上预览这种外观
+canvas-weight-animates = 时间路由：{ $count }，所以画布在显示时每一帧都要绘制，即使音乐停止也会耗电
+route-time = 时间
+route-time-note = 跟随画布自己的时钟而不是音乐，并让画布在显示时一直绘制
+route-time-period = 周期
+    .description = 一个完整循环的秒数
+route-time-shape = 形状
+route-time-shape-sine = 正弦
+route-time-shape-triangle = 三角
+route-time-shape-saw = 锯齿
+route-time-phase = 相位
+    .description = 在循环中的起点，让同一周期的项目不会一起移动
+route-time-low = 低点
+    .description = 波形最低点把它放到的位置
+route-time-high = 高点
+    .description = 波形最高点把它放到的位置
+route-curve = 曲线
+    .description = 读数在两端之间如何弯曲
+route-curve-linear = 线性
+route-curve-ease-in = 缓入
+route-curve-ease-out = 缓出
+route-curve-ease-in-out = 缓入缓出
+route-curve-power = 指数
+unit-seconds = { $value } 秒

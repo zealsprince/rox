@@ -2057,6 +2057,7 @@ mod chrome_tests {
                 target: shader::slot_target(1),
                 from: 0.0,
                 to: 1.0,
+                ..rox_viz::signal::Route::default()
             }],
             manual: vec![(4, 0.25)],
             run_when_idle: true,

@@ -24,7 +24,10 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenuItem};
 use gpui_component::{Disableable as _, Icon, Sizable as _};
 
-use rox_viz::signal::{AGGREGATE_RATE_MAX, Route, Signal, SignalHub, Source};
+use rox_viz::signal::{
+    AGGREGATE_RATE_MAX, Curve, PERIOD_MAX, PERIOD_MIN, POWER_MAX, POWER_MIN, Route, Shape, Signal,
+    SignalHub, Source, Wave,
+};
 
 use crate::panel::{self, ScrubState, ValueEdit, toggle};
 use rox_design::assets::icons;
@@ -55,20 +58,44 @@ pub trait RouteTargets {
 
 /// Resolve routes against the hub's live signals into the host's targets.
 /// Later routes to the same target win; routes whose signal is gone
-/// contribute nothing.
+/// contribute nothing. Time routes are left out: only a host with a clock
+/// reads them, through [`apply_time_routes`].
 pub fn apply_routes(routes: &[Route], hub: &SignalHub, targets: &mut impl RouteTargets) {
     for route in routes {
-        if !route.enabled {
+        if !route.enabled || route.time.is_some() {
             continue;
         }
         let Some(signal) = hub.value(route.signal) else {
             continue;
         };
-        // A share of the knob's own setting. Overshoot past 100% is allowed;
-        // the knob's accessor clamps it.
-        let factor = (route.from + (route.to - route.from) * signal).max(0.0);
-        targets.apply(&route.target, factor);
+        targets.apply(&route.target, span(route, signal));
     }
+}
+
+/// The time routes at `seconds` on the host's own clock, into its targets.
+/// Never the wall clock or the playing position: a look that drifts keeps
+/// drifting through a pause and a seek.
+pub fn apply_time_routes(routes: &[Route], seconds: f64, targets: &mut impl RouteTargets) {
+    for route in routes {
+        let Some(wave) = route.time.filter(|_| route.enabled) else {
+            continue;
+        };
+        targets.apply(&route.target, span(route, wave.at(seconds)));
+    }
+}
+
+/// A share of the knob's own setting. Overshoot past 100% is allowed; the
+/// knob's accessor clamps it.
+fn span(route: &Route, reading: f32) -> f32 {
+    let x = route.curve.bend(reading);
+    (route.from + (route.to - route.from) * x).max(0.0)
+}
+
+/// Whether any switched-on route follows time.
+pub fn timed(routes: &[Route]) -> bool {
+    routes
+        .iter()
+        .any(|route| route.enabled && route.time.is_some())
 }
 
 /// What the shared widgets need from a host. The value edit is the host's
@@ -93,6 +120,12 @@ pub trait RouteHost: SignalHost {
     fn span_lines(&self, _target: &str) -> Option<(SharedString, SharedString)> {
         None
     }
+
+    /// Whether the host reads time routes through [`apply_time_routes`].
+    /// Only then does a route row offer Time.
+    fn has_clock(&self) -> bool {
+        false
+    }
 }
 
 /// Index-aligned with the host's route list.
@@ -100,6 +133,9 @@ pub trait RouteHost: SignalHost {
 struct RouteScrubs {
     from: ScrubState,
     to: ScrubState,
+    period: ScrubState,
+    phase: ScrubState,
+    power: ScrubState,
 }
 
 #[derive(Default)]
@@ -432,10 +468,31 @@ fn attach_signal<P: RouteHost>(host: &mut P, target: String, signal: u64, cx: &m
         .find(|r| r.target == target)
     {
         route.signal = signal;
+        route.time = None;
     } else {
         host.routes_mut().push(Route {
             signal,
             target: target.clone(),
+            ..Route::default()
+        });
+    }
+    host.signal_ui_mut().open_bind = Some(target);
+    cx.notify();
+}
+
+/// A time route on `target`, made or repointed as [`attach_signal`] does.
+fn attach_time<P: RouteHost>(host: &mut P, target: String, cx: &mut Context<P>) {
+    if let Some(route) = host
+        .routes_mut()
+        .iter_mut()
+        .rev()
+        .find(|r| r.target == target)
+    {
+        route.time.get_or_insert_with(Wave::default);
+    } else {
+        host.routes_mut().push(Route {
+            target: target.clone(),
+            time: Some(Wave::default()),
             ..Route::default()
         });
     }
@@ -1051,15 +1108,31 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     let route = &host.routes()[index];
     let scrubs = &host.signal_ui().route_scrubs[index];
     let pool = host.hub().pool();
-    let known = pool.iter().any(|s| s.id == route.signal);
+    let timed = route.time.is_some();
+    let known = !timed && pool.iter().any(|s| s.id == route.signal);
     let from = route.from.clamp(0.0, SPAN_OVER);
     let to = route.to.clamp(0.0, SPAN_OVER);
-    let (quiet_line, loud_line) = host.span_lines(&route.target).unwrap_or_else(|| {
+    let (quiet_line, loud_line) = if timed {
         (
-            rox_i18n::t!("route-quiet.description"),
-            rox_i18n::t!("route-loud.description"),
+            rox_i18n::t!("route-time-low.description"),
+            rox_i18n::t!("route-time-high.description"),
         )
-    });
+    } else {
+        host.span_lines(&route.target).unwrap_or_else(|| {
+            (
+                rox_i18n::t!("route-quiet.description"),
+                rox_i18n::t!("route-loud.description"),
+            )
+        })
+    };
+    let (quiet_label, loud_label) = if timed {
+        (
+            rox_i18n::t!("route-time-low"),
+            rox_i18n::t!("route-time-high"),
+        )
+    } else {
+        (rox_i18n::t!("route-quiet"), rox_i18n::t!("route-loud"))
+    };
 
     let mut chips = div().flex().flex_row().flex_wrap().gap(px(1.));
     for signal in &pool {
@@ -1070,6 +1143,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             move |this: &mut P, cx| {
                 if let Some(route) = this.routes_mut().get_mut(index) {
                     route.signal = id;
+                    route.time = None;
                 }
                 cx.notify();
             },
@@ -1090,11 +1164,25 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             persist_pool_soon(this.hub(), cx);
             if let Some(route) = this.routes_mut().get_mut(index) {
                 route.signal = id;
+                route.time = None;
             }
             cx.notify();
         },
         cx,
     ));
+    if host.has_clock() {
+        chips = chips.child(scope_chip(
+            rox_i18n::t!("route-time").to_string(),
+            timed,
+            move |this: &mut P, cx| {
+                if let Some(route) = this.routes_mut().get_mut(index) {
+                    route.time.get_or_insert_with(Wave::default);
+                }
+                cx.notify();
+            },
+            cx,
+        ));
+    }
 
     let mut col = div()
         .flex()
@@ -1106,7 +1194,9 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             None,
             chips,
         ));
-    if known {
+    if let Some(wave) = route.time {
+        col = col.child(time_rows(host, index, wave, cx));
+    } else if known {
         col = col
             .child(meter(
                 host.hub().clone(),
@@ -1140,7 +1230,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             .child(rox_i18n::t!("route-range-note")),
     )
     .child(panel::setting_row_wrap(
-        rox_i18n::t!("route-quiet"),
+        quiet_label,
         Some(quiet_line),
         panel::value_slider_edit_over(
             &scrubs.from,
@@ -1160,7 +1250,7 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
         ),
     ))
     .child(panel::setting_row_wrap(
-        rox_i18n::t!("route-loud"),
+        loud_label,
         Some(loud_line),
         panel::value_slider_edit_over(
             &scrubs.to,
@@ -1179,6 +1269,234 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
             cx,
         ),
     ))
+    .child(curve_row(
+        route.curve,
+        &scrubs.power,
+        host.value_edit(),
+        move |this: &mut P, curve, cx| {
+            if let Some(route) = this.routes_mut().get_mut(index) {
+                route.curve = curve;
+            }
+            cx.notify();
+        },
+        cx,
+    ))
+}
+
+/// The period slider's range in seconds, read on a log scale. A typed
+/// value can go out to [`PERIOD_MAX`].
+const PERIOD_LOW: f32 = 0.25;
+const PERIOD_HIGH: f32 = 120.0;
+
+fn period_to_frac(seconds: f32) -> f32 {
+    (seconds / PERIOD_LOW).ln() / (PERIOD_HIGH / PERIOD_LOW).ln()
+}
+
+fn frac_to_period(fraction: f32) -> f32 {
+    (PERIOD_LOW * (PERIOD_HIGH / PERIOD_LOW).powf(fraction)).clamp(PERIOD_MIN, PERIOD_MAX)
+}
+
+/// A time route's own rows: its period, shape and phase, in place of the
+/// shared signal's tuning.
+fn time_rows<P: RouteHost>(host: &P, index: usize, wave: Wave, cx: &mut Context<P>) -> Div {
+    let scrubs = &host.signal_ui().route_scrubs[index];
+    let edit = move |cx: &mut Context<P>, this: &mut P, f: &dyn Fn(&mut Wave)| {
+        if let Some(wave) = this
+            .routes_mut()
+            .get_mut(index)
+            .and_then(|route| route.time.as_mut())
+        {
+            f(wave);
+        }
+        cx.notify();
+    };
+
+    let period = wave.period();
+    let period_slider = panel::value_slider_edit_over(
+        &scrubs.period,
+        host.value_edit(),
+        period_to_frac(period),
+        rox_i18n::t!(
+            "unit-seconds",
+            value = rox_i18n::format::format_float(f64::from(period), 2)
+        )
+        .to_string(),
+        format!("{period:.2}"),
+        period_to_frac(PERIOD_MAX),
+        period_to_frac,
+        move |this: &mut P, fraction, cx| {
+            let seconds = frac_to_period(fraction);
+            edit(cx, this, &|wave| wave.period = seconds)
+        },
+        cx,
+    );
+
+    let shapes = vec![
+        (Shape::Sine, rox_i18n::t!("route-time-shape-sine")),
+        (Shape::Triangle, rox_i18n::t!("route-time-shape-triangle")),
+        (Shape::Saw, rox_i18n::t!("route-time-shape-saw")),
+    ];
+    let shape_picker = panel::picker(
+        "route-time-shape",
+        wave.shape,
+        shapes,
+        false,
+        move |this: &mut P, shape, cx| edit(cx, this, &|wave| wave.shape = shape),
+        cx,
+    );
+
+    let phase = wave.phase();
+    let phase_slider = panel::value_slider_edit(
+        &scrubs.phase,
+        host.value_edit(),
+        phase,
+        rox_i18n::format::format_percent((phase * 100.0).round() as f64),
+        format!("{}", (phase * 100.0).round() as i32),
+        |v| v / 100.0,
+        move |this: &mut P, fraction, cx| {
+            let phase = fraction.clamp(0.0, 1.0);
+            edit(cx, this, &|wave| wave.phase = phase)
+        },
+        cx,
+    );
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .child(
+            div()
+                .text_xs()
+                .text_color(palette::text_faint())
+                .child(rox_i18n::t!("route-time-note")),
+        )
+        .child(panel::setting_row_wrap(
+            rox_i18n::t!("route-time-period"),
+            Some(rox_i18n::t!("route-time-period.description")),
+            period_slider,
+        ))
+        .child(panel::setting_row_wrap(
+            rox_i18n::t!("route-time-shape"),
+            None,
+            div().child(shape_picker),
+        ))
+        .child(panel::setting_row_wrap(
+            rox_i18n::t!("route-time-phase"),
+            Some(rox_i18n::t!("route-time-phase.description")),
+            phase_slider,
+        ))
+}
+
+/// The curve picker's face for [`Curve`], minus the exponent.
+#[derive(Clone, Copy, PartialEq)]
+enum CurveKind {
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    Power,
+}
+
+/// What a freshly picked exponent starts at: an ease in's bend.
+const POWER_SEED: f32 = 2.0;
+
+/// The exponent slider's range, read on a log scale. A typed value can go
+/// out to [`POWER_MIN`] and [`POWER_MAX`].
+const POWER_LOW: f32 = 0.25;
+const POWER_HIGH: f32 = 4.0;
+
+fn power_to_frac(power: f32) -> f32 {
+    (power / POWER_LOW).ln() / (POWER_HIGH / POWER_LOW).ln()
+}
+
+/// A route's curve: a picker, and the exponent's slider under it when the
+/// curve is one. Open to any host, so the shader route editor shows the
+/// same row.
+pub fn curve_row<P: 'static>(
+    curve: Curve,
+    scrub: &ScrubState,
+    value_edit: &ValueEdit,
+    set: impl Fn(&mut P, Curve, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let kind = match curve {
+        Curve::Linear => CurveKind::Linear,
+        Curve::EaseIn => CurveKind::EaseIn,
+        Curve::EaseOut => CurveKind::EaseOut,
+        Curve::EaseInOut => CurveKind::EaseInOut,
+        Curve::Power(_) => CurveKind::Power,
+    };
+    let kinds = vec![
+        (CurveKind::Linear, rox_i18n::t!("route-curve-linear")),
+        (CurveKind::EaseIn, rox_i18n::t!("route-curve-ease-in")),
+        (CurveKind::EaseOut, rox_i18n::t!("route-curve-ease-out")),
+        (
+            CurveKind::EaseInOut,
+            rox_i18n::t!("route-curve-ease-in-out"),
+        ),
+        (CurveKind::Power, rox_i18n::t!("route-curve-power")),
+    ];
+    let pick = set.clone();
+    let picker = panel::picker(
+        "route-curve",
+        kind,
+        kinds,
+        false,
+        move |this: &mut P, kind, cx| {
+            let curve = match kind {
+                CurveKind::Linear => Curve::Linear,
+                CurveKind::EaseIn => Curve::EaseIn,
+                CurveKind::EaseOut => Curve::EaseOut,
+                CurveKind::EaseInOut => Curve::EaseInOut,
+                // Picking it again keeps the exponent already set.
+                CurveKind::Power => match curve {
+                    Curve::Power(power) => Curve::Power(power),
+                    _ => Curve::Power(POWER_SEED),
+                },
+            };
+            pick(this, curve, cx)
+        },
+        cx,
+    );
+
+    let mut rows = div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .child(panel::setting_row_wrap(
+            rox_i18n::t!("route-curve"),
+            Some(rox_i18n::t!("route-curve.description")),
+            div().child(picker),
+        ));
+
+    if let Curve::Power(power) = curve {
+        let power = if power.is_finite() {
+            power.clamp(POWER_MIN, POWER_MAX)
+        } else {
+            1.0
+        };
+        rows = rows.child(panel::setting_row_wrap(
+            rox_i18n::t!("route-curve-power"),
+            None,
+            panel::value_slider_edit_over(
+                scrub,
+                value_edit,
+                power_to_frac(power),
+                rox_i18n::format::format_float(f64::from(power), 2),
+                format!("{power:.2}"),
+                power_to_frac(POWER_MAX),
+                power_to_frac,
+                move |this: &mut P, fraction, cx| {
+                    let power = (POWER_LOW * (POWER_HIGH / POWER_LOW).powf(fraction))
+                        .clamp(POWER_MIN, POWER_MAX);
+                    set(this, Curve::Power(power), cx)
+                },
+                cx,
+            ),
+        ));
+    }
+
+    rows
 }
 
 /// A settings row whose knob a route can drive. Right-click binds; the
@@ -1207,6 +1525,7 @@ pub fn bindable_row<P: RouteHost>(
                 return menu;
             };
             let pool = this.read(cx).hub().pool();
+            let clock = this.read(cx).has_clock();
             for signal in &pool {
                 let id = signal.id;
                 let panel = weak.clone();
@@ -1219,7 +1538,18 @@ pub fn bindable_row<P: RouteHost>(
                     },
                 ));
             }
-            if !pool.is_empty() {
+            if clock {
+                let panel = weak.clone();
+                let target = menu_target.clone();
+                menu = menu.item(PopupMenuItem::new(rox_i18n::t!("route-time")).on_click(
+                    move |_, _, cx| {
+                        if let Some(this) = panel.upgrade() {
+                            this.update(cx, |this, cx| attach_time(this, target.clone(), cx));
+                        }
+                    },
+                ));
+            }
+            if !pool.is_empty() || clock {
                 menu = menu.separator();
             }
             let panel = weak.clone();

@@ -267,7 +267,11 @@ pub(crate) fn lift(
 
     // The canvas's routes and the item's own, then the signals any of those
     // total, so an aggregate keeps the signal it follows.
-    let mut wanted: BTreeSet<u64> = routes.iter().map(|route| route.signal).collect();
+    let mut wanted: BTreeSet<u64> = routes
+        .iter()
+        .filter(|route| route.time.is_none())
+        .map(|route| route.signal)
+        .collect();
     wanted.extend(roxo::route_signals(&json));
     loop {
         let followed: Vec<u64> = signals
@@ -456,7 +460,12 @@ pub(crate) fn rebase(
         .filter_map(|route| {
             let (id, property) = route.target.rsplit_once('.')?;
             let id = ids.get(id)?;
-            let signal = *signals.get(&route.signal)?;
+            // A time route reads no signal, so none has to come along, and
+            // the id it kept from an earlier pick means nothing in this pool.
+            let signal = match route.time {
+                Some(_) => 0,
+                None => *signals.get(&route.signal)?,
+            };
 
             Some(Route {
                 target: format!("{id}.{property}"),
@@ -1284,6 +1293,31 @@ mod tests {
             got,
             [("pair-2.y".to_string(), 21), ("left-2.rz".to_string(), 22)]
         );
+    }
+
+    #[test]
+    fn a_time_route_travels_with_its_item_and_brings_no_signal() {
+        let mut drift = route("left.y", 2);
+        drift.time = Some(rox_viz::signal::Wave::default());
+
+        // The id it kept from an earlier pick isn't exported.
+        let out = lifted(&stage(), &[drift.clone()], &[signal(2, "Kick")], "pair");
+        assert!(out.bundle.signals.is_empty());
+        assert_eq!(out.bundle.routes.len(), 1);
+
+        let object: CanvasItem = serde_json::from_value(group(
+            "pair",
+            json!([image("left", "a"), image("right", "b")]),
+        ))
+        .unwrap();
+        let (_, routes) = rebase(object, &[drift], &stage(), &HashMap::new(), &HashMap::new());
+        assert_eq!(
+            routes.len(),
+            1,
+            "no signal came along, and it isn't dropped"
+        );
+        assert_eq!(routes[0].target, "left-2.y");
+        assert!(routes[0].time.is_some());
     }
 
     #[test]

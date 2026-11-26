@@ -9,6 +9,7 @@
 //! with no phase can't give the recording back. Values sit in the hub's dB window ([`FLOOR_DB`] to [`MAX_DB`]), so
 //! they line up with what the pool's bands read before their Response.
 
+use crate::analysis::band_bins;
 use crate::signal::{FLOOR_DB, MAX_DB};
 
 /// Bins in the log row.
@@ -154,8 +155,7 @@ impl Rows {
             *plan = if f0 >= nyquist {
                 LogPlan::Silent
             } else if f1 - f0 >= bin_hz {
-                let lo = ((f0 / bin_hz).ceil() as usize).clamp(1, half - 1);
-                let hi = ((f1 / bin_hz).ceil() as usize).clamp(lo + 1, half);
+                let (lo, hi) = band_bins(f0, f1, sample_rate, half);
                 LogPlan::Peak { lo, hi }
             } else {
                 let at = log_centre(i) / bin_hz;

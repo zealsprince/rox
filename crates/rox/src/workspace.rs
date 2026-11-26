@@ -8406,6 +8406,7 @@ mod shader_feed_tests {
             target: panel::shader::slot_target(3),
             from: 0.5,
             to: 1.0,
+            ..Route::default()
         }]);
         let signals = post_shader_signals(&hub);
         // The route's Quiet end, which the pool-order feed has no way to
@@ -8426,6 +8427,7 @@ mod shader_feed_tests {
             target: panel::shader::slot_target(1),
             from: 0.5,
             to: 1.0,
+            ..Route::default()
         }]);
         assert_eq!(post_shader_signals(&hub), [0.0; panel::shader::SLOTS]);
 
@@ -8438,6 +8440,7 @@ mod shader_feed_tests {
             target: panel::shader::slot_target(3),
             from: 0.5,
             to: 1.0,
+            ..Route::default()
         }]);
         let signals = post_shader_signals(&hub);
         assert!(

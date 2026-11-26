@@ -14,7 +14,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::AudioFeed;
-use crate::analysis::log_bands;
+use crate::analysis::band_bins;
 
 /// dB window signals normalize into (full-scale sine = 0 dB), the same one the
 /// spectrum bars use.
@@ -79,7 +79,7 @@ impl Source {
     fn bins(&self, sample_rate: u32, half: usize) -> (usize, usize) {
         // Aggregates never ask for bins.
         let (lo, hi) = self.band().unwrap_or((BAND_MIN_HZ, BAND_MAX_HZ));
-        log_bands(1, lo, hi, sample_rate, half)[0]
+        band_bins(lo, hi, sample_rate, half)
     }
 }
 
@@ -162,7 +162,7 @@ impl Signal {
 }
 
 /// One signal driving one parameter. Unknown targets and missing signals are skipped.
-#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Route {
     /// Off keeps it in place, tuned, silent.
@@ -175,6 +175,13 @@ pub struct Route {
     /// full signal. Inverted modulates downward.
     pub from: f32,
     pub to: f32,
+    /// A wave of the host's own clock read in place of `signal`. A host
+    /// with no clock leaves the route silent.
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub time: Option<Wave>,
+    /// How the reading bends before it meets the span. Linear is a straight line.
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Curve::is_linear")]
+    pub curve: Curve,
 }
 
 impl Default for Route {
@@ -185,6 +192,155 @@ impl Default for Route {
             target: String::new(),
             from: 0.0,
             to: 1.0,
+            time: None,
+            curve: Curve::Linear,
+        }
+    }
+}
+
+/// A field that doesn't parse reads as its default, so a hand-edited wave or
+/// curve costs only itself and not the route.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read<T> {
+        Good(T),
+        Junk(serde::de::IgnoredAny),
+    }
+
+    Ok(match Read::<T>::deserialize(deserializer)? {
+        Read::Good(value) => value,
+        Read::Junk(_) => T::default(),
+    })
+}
+
+/// The shortest and longest a wave's period can be, in seconds. Shorter
+/// strobes; a hand-edited zero would divide by nothing.
+pub const PERIOD_MIN: f32 = 0.1;
+pub const PERIOD_MAX: f32 = 3600.0;
+
+/// A repeating shape over time, from 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct Wave {
+    /// Seconds for one cycle.
+    pub period: f32,
+    pub shape: Shape,
+    /// Where in the cycle it starts, 0 to 1, so routes sharing a period
+    /// don't all move together.
+    pub phase: f32,
+}
+
+impl Default for Wave {
+    fn default() -> Self {
+        Wave {
+            period: 4.0,
+            shape: Shape::Sine,
+            phase: 0.0,
+        }
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    /// Climbs from 0 to 1 and drops back at the end of each cycle.
+    Saw,
+    /// Climbs to 1 halfway and back down.
+    Triangle,
+    /// Rises and falls smoothly, at 0 where the cycle starts.
+    #[default]
+    Sine,
+}
+
+impl Wave {
+    pub fn period(&self) -> f32 {
+        if self.period.is_finite() {
+            self.period.clamp(PERIOD_MIN, PERIOD_MAX)
+        } else {
+            Wave::default().period
+        }
+    }
+
+    pub fn phase(&self) -> f32 {
+        if self.phase.is_finite() {
+            self.phase.rem_euclid(1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// The wave `seconds` into the host's clock, 0 to 1. The cycle is taken
+    /// in f64 so a clock that has run for days keeps its precision.
+    pub fn at(&self, seconds: f64) -> f32 {
+        let cycle = (seconds / f64::from(self.period()) + f64::from(self.phase())).rem_euclid(1.0);
+        let x = cycle as f32;
+
+        match self.shape {
+            Shape::Saw => x,
+            Shape::Triangle => 1.0 - (2.0 * x - 1.0).abs(),
+            Shape::Sine => 0.5 - 0.5 * (std::f32::consts::TAU * x).cos(),
+        }
+    }
+}
+
+/// The shortest and steepest an exponent curve can be.
+pub const POWER_MIN: f32 = 0.1;
+pub const POWER_MAX: f32 = 10.0;
+
+/// A bend on a route's reading, 0 to 1 in and out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Curve {
+    #[default]
+    Linear,
+    /// Slow out of 0, fast into 1.
+    EaseIn,
+    /// Fast out of 0, slow into 1.
+    EaseOut,
+    /// Slow at both ends.
+    EaseInOut,
+    /// The reading raised to this power: above 1 bends like an ease in,
+    /// below 1 like an ease out.
+    Power(f32),
+}
+
+impl Curve {
+    pub fn is_linear(&self) -> bool {
+        *self == Curve::Linear
+    }
+
+    /// The reading through the curve. Linear passes it exactly, overshoot
+    /// included; the others hold it between 0 and 1 first.
+    pub fn bend(&self, x: f32) -> f32 {
+        if self.is_linear() {
+            return x;
+        }
+
+        let x = if x.is_finite() {
+            x.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        match *self {
+            Curve::Linear => x,
+            Curve::EaseIn => x * x,
+            Curve::EaseOut => 1.0 - (1.0 - x) * (1.0 - x),
+            Curve::EaseInOut => x * x * (3.0 - 2.0 * x),
+            Curve::Power(power) => {
+                let power = if power.is_finite() {
+                    power.clamp(POWER_MIN, POWER_MAX)
+                } else {
+                    1.0
+                };
+                x.powf(power)
+            }
         }
     }
 }
@@ -1386,6 +1542,126 @@ mod tests {
     }
 
     #[test]
+    fn a_time_route_and_a_curve_round_trip_and_a_bad_one_costs_only_itself() {
+        let route = Route {
+            target: "logo.y".to_string(),
+            time: Some(Wave {
+                period: 6.0,
+                shape: Shape::Triangle,
+                phase: 0.25,
+            }),
+            curve: Curve::Power(2.5),
+            ..Route::default()
+        };
+        let text = serde_json::to_string(&route).unwrap();
+        assert!(
+            text.contains(r#""time":{"period":6.0,"shape":"triangle","phase":0.25}"#),
+            "{text}"
+        );
+        assert!(text.contains(r#""curve":{"power":2.5}"#), "{text}");
+        assert!(serde_json::from_str::<Route>(&text).unwrap() == route);
+
+        let eased: Route = serde_json::from_str(r#"{"curve":"ease_in_out"}"#).unwrap();
+        assert_eq!(eased.curve, Curve::EaseInOut);
+
+        // A wave or curve that doesn't parse reads as none, and the rest stays.
+        let odd: Route =
+            serde_json::from_str(r#"{"signal":3,"time":"soon","curve":{"wobble":1}}"#).unwrap();
+        assert_eq!(odd.signal, 3);
+        assert_eq!(odd.time, None);
+        assert_eq!(odd.curve, Curve::Linear);
+
+        let sparse: Route = serde_json::from_str(r#"{"time":{}}"#).unwrap();
+        assert_eq!(sparse.time, Some(Wave::default()));
+    }
+
+    #[test]
+    fn each_wave_shape_runs_from_0_to_1_over_its_period() {
+        let wave = |shape| Wave {
+            period: 2.0,
+            shape,
+            phase: 0.0,
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+
+        let saw = wave(Shape::Saw);
+        assert!(close(saw.at(0.0), 0.0));
+        assert!(close(saw.at(1.0), 0.5));
+        assert!(close(saw.at(1.999), 0.9995));
+        assert!(close(saw.at(2.0), 0.0), "a saw drops back on the wrap");
+
+        let triangle = wave(Shape::Triangle);
+        assert!(close(triangle.at(0.0), 0.0));
+        assert!(close(triangle.at(0.5), 0.5));
+        assert!(close(triangle.at(1.0), 1.0));
+        assert!(close(triangle.at(2.0), 0.0));
+
+        let sine = wave(Shape::Sine);
+        assert!(close(sine.at(0.0), 0.0));
+        assert!(close(sine.at(1.0), 1.0));
+        assert!(close(sine.at(0.5), 0.5));
+
+        // A phase shifts the cycle, and a week-old clock keeps its precision.
+        let late = Wave { phase: 0.5, ..saw };
+        assert!(close(late.at(0.0), 0.5));
+        let week = 7.0 * 24.0 * 3600.0;
+        assert!(close(saw.at(week + 0.5), 0.25));
+    }
+
+    #[test]
+    fn a_hand_edited_wave_stays_in_range() {
+        for (period, phase) in [
+            (0.0, 7.5),
+            (-3.0, -0.25),
+            (f32::NAN, f32::INFINITY),
+            (1e9, 0.0),
+        ] {
+            let wave = Wave {
+                period,
+                shape: Shape::Saw,
+                phase,
+            };
+            assert!((PERIOD_MIN..=PERIOD_MAX).contains(&wave.period()));
+            assert!((0.0..1.0).contains(&wave.phase()));
+            for t in [0.0, 0.05, 1.0, 1e6] {
+                let x = wave.at(t);
+                assert!((0.0..=1.0).contains(&x), "{period} {phase} at {t}: {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn curves_bend_between_their_ends() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+
+        // Linear passes everything, overshoot included, as routes always have.
+        assert_eq!(Curve::Linear.bend(1.4), 1.4);
+
+        for curve in [
+            Curve::EaseIn,
+            Curve::EaseOut,
+            Curve::EaseInOut,
+            Curve::Power(3.0),
+            Curve::Power(0.3),
+        ] {
+            assert!(close(curve.bend(0.0), 0.0), "{curve:?}");
+            assert!(close(curve.bend(1.0), 1.0), "{curve:?}");
+            assert!(
+                close(curve.bend(2.0), 1.0),
+                "{curve:?} holds overshoot to 1"
+            );
+            assert!(close(curve.bend(f32::NAN), 0.0));
+        }
+
+        assert!(Curve::EaseIn.bend(0.5) < 0.5);
+        assert!(Curve::EaseOut.bend(0.5) > 0.5);
+        assert!(close(Curve::EaseInOut.bend(0.5), 0.5));
+        assert!(Curve::EaseInOut.bend(0.25) < 0.25);
+        assert!(close(Curve::Power(2.0).bend(0.5), 0.25));
+        assert!(close(Curve::Power(f32::NAN).bend(0.5), 0.5));
+    }
+
+    #[test]
     fn hub_add_allocates_fresh_ids_and_leaves_names_unset() {
         let hub = SignalHub::new(Vec::new());
         let (a, _) = hub.add(Source::Level, 0.3);
@@ -1402,6 +1678,117 @@ mod tests {
         assert_eq!(pool[1].given_name(), None);
         let named = hub.edit(|pool| pool[0].name = " Mix swell ".to_string());
         assert_eq!(named[0].given_name(), Some("Mix swell"));
+    }
+
+    /// The loudest FFT bin in `bins`, in dB against a full-scale sine.
+    fn peak_db(mags: &[f32], (lo, hi): (usize, usize)) -> f32 {
+        let peak = mags[lo..hi].iter().copied().fold(0.0f32, f32::max);
+        20.0 * (peak + 1e-9).log10()
+    }
+
+    /// The band's bins as the pool read them before it took the centre
+    /// rule: `floor(low / width)` up to `floor(high / width)`.
+    fn floor_bins(lo: f32, hi: f32, rate: u32, half: usize) -> (usize, usize) {
+        crate::analysis::log_bands(1, lo, hi, rate, half)[0]
+    }
+
+    /// Paul Kellet's pink filter over a fixed LCG, so every run hears the
+    /// same noise.
+    fn pink(samples: usize) -> Vec<f32> {
+        let mut seed = 0x2545_f491_u32;
+        let mut b = [0.0f32; 7];
+        (0..samples)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let white = (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+                b[0] = 0.99886 * b[0] + white * 0.0555179;
+                b[1] = 0.99332 * b[1] + white * 0.0750759;
+                b[2] = 0.96900 * b[2] + white * 0.153_852;
+                b[3] = 0.86650 * b[3] + white * 0.3104856;
+                b[4] = 0.55000 * b[4] + white * 0.5329522;
+                b[5] = -0.7616 * b[5] - white * 0.0168980;
+                let out = b.iter().sum::<f32>() + white * 0.5362;
+                b[6] = white * 0.115926;
+                out * 0.05
+            })
+            .collect()
+    }
+
+    /// The four cases measured against the floor rule. Run with
+    /// `--nocapture` for the table.
+    #[test]
+    fn a_band_reads_the_bins_whose_centres_it_holds() {
+        use crate::analysis::{Analyzer, band_bins};
+
+        let bands = [
+            (30.0, 120.0),
+            (120.0, 500.0),
+            (500.0, 2000.0),
+            (2000.0, 8000.0),
+        ];
+        let level = 10f32.powf(-30.0 / 20.0);
+
+        for rate in [48_000u32, 44_100] {
+            let half = HUB_FFT / 2;
+            let mut analyzer = Analyzer::new(HUB_FFT);
+            let mut sine = |hz: f32| {
+                let samples: Vec<f32> = (0..HUB_FFT)
+                    .map(|i| level * (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin())
+                    .collect();
+                analyzer.magnitudes(&samples).to_vec()
+            };
+
+            for (lo, hi) in bands {
+                let old = floor_bins(lo, hi, rate, half);
+                let new = band_bins(lo, hi, rate, half);
+
+                // A tone a quarter hertz under the top edge belongs to the band.
+                // When the nearest bin's centre is over the edge, it reads off
+                // the next one down, up to the Hann window's 6 dB a bin.
+                let edge = sine(hi - 0.25);
+                let (was, now) = (peak_db(&edge, old), peak_db(&edge, new));
+                eprintln!(
+                    "{rate} Hz, {lo}-{hi} Hz, tone at the top edge: {was:.1} dB, now {now:.1} dB"
+                );
+                assert!(now > -36.0, "{lo}-{hi} at {rate}: {now:.1} dB");
+                assert!(
+                    was < now - 3.0,
+                    "{lo}-{hi} at {rate}: {was:.1} to {now:.1} dB"
+                );
+
+                let middle = sine((lo * hi).sqrt());
+                let (was, now) = (peak_db(&middle, old), peak_db(&middle, new));
+                eprintln!("{rate} Hz, {lo}-{hi} Hz, tone mid-band: {was:.1} dB, now {now:.1} dB");
+                assert!((was - now).abs() < 0.5, "{lo}-{hi} at {rate}");
+            }
+
+            // Pink noise, each band's peak averaged in dB over 200 windows.
+            let noise = pink(HUB_FFT * 200);
+            let mut sums = vec![(0.0f32, 0.0f32); bands.len()];
+            for window in noise.as_chunks::<HUB_FFT>().0 {
+                let mags = analyzer.magnitudes(window).to_vec();
+                for (sum, &(lo, hi)) in sums.iter_mut().zip(&bands) {
+                    sum.0 += peak_db(&mags, floor_bins(lo, hi, rate, half));
+                    sum.1 += peak_db(&mags, band_bins(lo, hi, rate, half));
+                }
+            }
+
+            for ((was, now), (lo, hi)) in sums.iter().zip(bands) {
+                let (was, now) = (was / 200.0, now / 200.0);
+                eprintln!("{rate} Hz, {lo}-{hi} Hz, pink noise: {was:.1} dB, now {now:.1} dB");
+                if lo < 100.0 {
+                    assert!(
+                        was - now > 1.5,
+                        "{lo}-{hi} at {rate}: {was:.1} to {now:.1} dB"
+                    );
+                } else {
+                    assert!(
+                        (was - now).abs() < 1.0,
+                        "{lo}-{hi} at {rate}: {was:.1} to {now:.1} dB"
+                    );
+                }
+            }
+        }
     }
 
     fn tone(frames: usize) -> Vec<f32> {

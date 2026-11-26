@@ -18,5 +18,5 @@ pub use project::{
 };
 pub use state::{
     Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Idle,
-    ImageFit, Length, MAX_DEPTH, Place, Stage, Sway,
+    ImageFit, Length, Look, MAX_DEPTH, Place, Stage, Sway,
 };

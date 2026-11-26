@@ -5023,3 +5023,32 @@ catalog-updates-chip = { $count ->
    *[other] { $count } Catalog Updates
 }
 catalog-updates-chip-tip = Newer versions of what you installed from the catalog
+
+## Hover and pressed looks on canvas click items, time routes and route curves.
+
+canvas-look-hover = While Hovered
+canvas-look-pressed = While Pressed
+canvas-look-preview = Preview this look on the canvas
+canvas-weight-animates = Time routes: { $count }, so this canvas draws every frame while it shows, which costs power even with the music stopped
+route-time = Time
+route-time-note = Follows the canvas's own clock, not the music, and keeps the canvas drawing while it shows
+route-time-period = Period
+    .description = Seconds for one full cycle
+route-time-shape = Shape
+route-time-shape-sine = Sine
+route-time-shape-triangle = Triangle
+route-time-shape-saw = Saw
+route-time-phase = Phase
+    .description = Where in the cycle it starts, so items on one period don't move together
+route-time-low = Low
+    .description = Where the bottom of the wave puts it
+route-time-high = High
+    .description = Where the top of the wave puts it
+route-curve = Curve
+    .description = How the reading bends between its two ends
+route-curve-linear = Linear
+route-curve-ease-in = Ease In
+route-curve-ease-out = Ease Out
+route-curve-ease-in-out = Ease In and Out
+route-curve-power = Exponent
+unit-seconds = { $value } s

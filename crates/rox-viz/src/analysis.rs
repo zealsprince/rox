@@ -87,6 +87,18 @@ pub fn log_bands(
         .collect()
 }
 
+/// The half-spectrum bins whose centres fall in `[lo_hz, hi_hz)`, as a bin
+/// range, at least one bin wide. Bin `k`'s centre is `k * sample_rate / (2 *
+/// half)` Hz. The pool's bands and the spectrum rows' peaks both read
+/// through this. [`log_bands`] keeps its own rounding, which the display
+/// bars and the stored acoustic vectors were built on.
+pub fn band_bins(lo_hz: f32, hi_hz: f32, sample_rate: u32, half: usize) -> (usize, usize) {
+    let bin_hz = sample_rate as f32 / (2 * half) as f32;
+    let lo = ((lo_hz / bin_hz).ceil() as usize).clamp(1, half - 1);
+    let hi = ((hi_hz / bin_hz).ceil() as usize).clamp(lo + 1, half);
+    (lo, hi)
+}
+
 /// The 1-2-5 ladder a log frequency axis is ruled on: (hz, position 0..1,
 /// labelled). The other steps of each decade come back as minor marks.
 pub fn hz_ladder(lo_hz: f32, hi_hz: f32) -> Vec<(f32, f32, bool)> {

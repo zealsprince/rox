@@ -4975,3 +4975,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } обновления каталога
 }
 catalog-updates-chip-tip = Новые версии того, что установлено из каталога
+
+canvas-look-hover = При наведении
+canvas-look-pressed = При нажатии
+canvas-look-preview = Показать этот вид на холсте
+canvas-weight-animates = Маршруты по времени: { $count }, поэтому холст рисует каждый кадр, пока виден, и тратит энергию даже без музыки
+route-time = Время
+route-time-note = Идёт по собственным часам холста, а не по музыке, и заставляет холст рисовать, пока он виден
+route-time-period = Период
+    .description = Секунды на полный цикл
+route-time-shape = Форма
+route-time-shape-sine = Синус
+route-time-shape-triangle = Треугольник
+route-time-shape-saw = Пила
+route-time-phase = Фаза
+    .description = Где в цикле он начинается, чтобы элементы с одним периодом не двигались вместе
+route-time-low = Низ
+    .description = Куда его ставит нижняя точка волны
+route-time-high = Верх
+    .description = Куда его ставит верхняя точка волны
+route-curve = Кривая
+    .description = Как значение изгибается между двумя концами
+route-curve-linear = Линейная
+route-curve-ease-in = Плавный вход
+route-curve-ease-out = Плавный выход
+route-curve-ease-in-out = Плавные вход и выход
+route-curve-power = Степень
+unit-seconds = { $value } с

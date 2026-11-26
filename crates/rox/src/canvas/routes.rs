@@ -7,7 +7,9 @@
 //! Nothing here touches the saved items. The offsets live in one [`Live`]
 //! per routed item, built fresh each frame and handed to the projection.
 //! While playback isn't running a canvas's [`Idle`] setting decides what
-//! they are: none at all (Rest), or the last ones drawn (Hold).
+//! they are: none at all (Rest), or the last ones drawn (Hold). A time
+//! route follows the canvas's own clock instead and ignores playback, so a
+//! canvas with one draws every frame while it shows.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -247,6 +249,8 @@ pub(crate) struct Motion {
     /// The offsets last drawn while playing. Empty until something plays,
     /// so a held canvas starts at rest.
     held: HashMap<String, Live>,
+    /// When the canvas first posed: the zero of the clock time routes read.
+    born: Option<Instant>,
 }
 
 /// One frame's offsets, and whether the canvas needs another frame.
@@ -338,7 +342,7 @@ impl Motion {
     }
 }
 
-/// [`Motion::pose`] against the hub.
+/// [`Motion::pose`] against the hub, with the time routes laid over it.
 pub(crate) fn pose(
     motion: &mut Motion,
     canvas: &CanvasState,
@@ -346,10 +350,52 @@ pub(crate) fn pose(
     running: bool,
     hub: &SignalHub,
 ) -> Pose {
-    motion.pose(canvas, running, Instant::now(), || {
-        let factors = factors(routes, hub);
-        (factors, hub.live() || hub.settling())
-    })
+    let now = Instant::now();
+
+    // A canvas with only time routes never reads the hub.
+    let music = routes
+        .iter()
+        .any(|route| route.enabled && route.time.is_none());
+    let pose = if music {
+        motion.pose(canvas, running, now, || {
+            let factors = factors(routes, hub);
+            (factors, hub.live() || hub.settling())
+        })
+    } else {
+        Pose {
+            lives: HashMap::new(),
+            more: false,
+        }
+    };
+
+    let seconds = motion.clock(now);
+    over_time(canvas, routes, seconds, pose)
+}
+
+impl Motion {
+    /// Seconds on this canvas's own clock, which starts at its first pose.
+    fn clock(&mut self, now: Instant) -> f64 {
+        let born = *self.born.get_or_insert(now);
+        now.saturating_duration_since(born).as_secs_f64()
+    }
+}
+
+/// `pose` with every time route applied at `seconds`, at full weight
+/// whatever playback does. On a target a music route also drives, the time
+/// route wins. One switched on keeps the frames coming.
+fn over_time(canvas: &CanvasState, routes: &[Route], seconds: f64, pose: Pose) -> Pose {
+    if !signal_ui::timed(routes) {
+        return pose;
+    }
+
+    let mut lives = Lives::new(canvas);
+    lives.live = pose.lives;
+    signal_ui::apply_time_routes(routes, seconds, &mut lives);
+
+    Pose {
+        lives: lives.live,
+        more: true,
+    }
 }
 
 /// The offsets for one item, none when no route reaches it.
@@ -392,16 +438,9 @@ pub(crate) fn sway_new(before: &[Route], after: &[Route], canvas: &mut CanvasSta
     }
 }
 
-/// Whether two route lists say the same thing. `Route` has no `PartialEq`.
+/// Whether two route lists say the same thing.
 pub(crate) fn same(a: &[Route], b: &[Route]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|(a, b)| {
-            a.enabled == b.enabled
-                && a.signal == b.signal
-                && a.target == b.target
-                && a.from == b.from
-                && a.to == b.to
-        })
+    a == b
 }
 
 /// One undo step's worth of a canvas: the items and the routes aimed at them.
@@ -422,6 +461,7 @@ mod tests {
     use std::time::Instant;
 
     use rox_canvas::{Content, Sway};
+    use rox_viz::signal::{Curve, Shape, Wave};
 
     use super::*;
     use crate::canvas::edit::{self, History};
@@ -753,6 +793,88 @@ mod tests {
 
         motion.pose(&canvas, false, Instant::now(), || (factors.clone(), false));
         assert!(!motion.wants(false));
+    }
+
+    fn drifting(enabled: bool) -> (CanvasState, Vec<Route>) {
+        let canvas = canvas(vec![CanvasItem {
+            sway: Sway {
+                position: [0., 40., 0.],
+                ..Sway::default()
+            },
+            ..item("logo")
+        }]);
+        let routes = vec![Route {
+            enabled,
+            time: Some(Wave {
+                period: 2.,
+                shape: Shape::Saw,
+                phase: 0.,
+            }),
+            ..route("logo.y")
+        }];
+        (canvas, routes)
+    }
+
+    fn still() -> Pose {
+        Pose {
+            lives: HashMap::new(),
+            more: false,
+        }
+    }
+
+    #[test]
+    fn a_time_route_moves_its_item_on_the_canvas_clock() {
+        let (canvas, mut routes) = drifting(true);
+
+        let quarter = over_time(&canvas, &routes, 0.5, still());
+        assert_eq!(quarter.lives["logo"].position[1], 10.);
+        assert!(quarter.more, "a time route keeps the canvas drawing");
+        let half = over_time(&canvas, &routes, 1., still());
+        assert_eq!(half.lives["logo"].position[1], 20.);
+
+        // A curve bends a time route as it does a music one.
+        routes[0].curve = Curve::EaseIn;
+        let bent = over_time(&canvas, &routes, 1., still());
+        assert_eq!(bent.lives["logo"].position[1], 10.);
+    }
+
+    #[test]
+    fn a_time_route_runs_whatever_playback_does_and_reads_no_hub() {
+        let (canvas, routes) = drifting(true);
+        let hub = SignalHub::unfed(Vec::new());
+
+        for idle in [Idle::Rest, Idle::Hold] {
+            let canvas = CanvasState {
+                idle,
+                ..canvas.clone()
+            };
+            let mut motion = Motion::default();
+            for running in [false, true] {
+                let posed = pose(&mut motion, &canvas, &routes, running, &hub);
+                assert!(posed.more);
+                assert!(posed.lives.contains_key("logo"));
+            }
+        }
+
+        // Switched off, it asks for nothing, so the canvas rests again.
+        let (canvas, routes) = drifting(false);
+        let posed = pose(&mut Motion::default(), &canvas, &routes, false, &hub);
+        assert!(!posed.more);
+        assert!(posed.lives.is_empty());
+    }
+
+    #[test]
+    fn a_change_to_a_wave_or_a_curve_is_an_edit() {
+        let (_, routes) = drifting(true);
+        let mut changed = routes.clone();
+        assert!(same(&routes, &changed));
+
+        changed[0].time = Some(Wave::default());
+        assert!(!same(&routes, &changed));
+
+        let mut bent = routes.clone();
+        bent[0].curve = Curve::Power(3.);
+        assert!(!same(&routes, &bent));
     }
 
     #[test]

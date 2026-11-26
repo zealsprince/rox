@@ -4906,3 +4906,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } Katalog-Updates
 }
 catalog-updates-chip-tip = Neuere Versionen von dem, was aus dem Katalog installiert wurde
+
+canvas-look-hover = Beim Überfahren
+canvas-look-pressed = Beim Drücken
+canvas-look-preview = Diesen Zustand auf der Leinwand ansehen
+canvas-weight-animates = Zeit-Routen: { $count }, die Leinwand zeichnet also jedes Bild, solange sie zu sehen ist, und das kostet Strom, auch wenn keine Musik läuft
+route-time = Zeit
+route-time-note = Folgt der eigenen Uhr der Leinwand, nicht der Musik, und lässt die Leinwand zeichnen, solange sie zu sehen ist
+route-time-period = Periode
+    .description = Sekunden für einen ganzen Durchlauf
+route-time-shape = Form
+route-time-shape-sine = Sinus
+route-time-shape-triangle = Dreieck
+route-time-shape-saw = Sägezahn
+route-time-phase = Phase
+    .description = Wo im Durchlauf sie beginnt, damit sich Elemente mit derselben Periode nicht gleichzeitig bewegen
+route-time-low = Tief
+    .description = Wohin der Tiefpunkt der Welle es bringt
+route-time-high = Hoch
+    .description = Wohin der Hochpunkt der Welle es bringt
+route-curve = Kurve
+    .description = Wie sich der Wert zwischen seinen beiden Enden biegt
+route-curve-linear = Linear
+route-curve-ease-in = Sanft hinein
+route-curve-ease-out = Sanft hinaus
+route-curve-ease-in-out = Sanft hinein und hinaus
+route-curve-power = Exponent
+unit-seconds = { $value } s

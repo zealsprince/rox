@@ -4928,3 +4928,30 @@ catalog-updates-chip = { $count ->
    *[other] { $count } atualizações do catálogo
 }
 catalog-updates-chip-tip = Versões mais novas do que foi instalado pelo catálogo
+
+canvas-look-hover = Ao passar o ponteiro
+canvas-look-pressed = Ao pressionar
+canvas-look-preview = Ver este visual no canvas
+canvas-weight-animates = Rotas de tempo: { $count }, então este canvas desenha cada quadro enquanto aparece, o que gasta energia mesmo com a música parada
+route-time = Tempo
+route-time-note = Segue o relógio do próprio canvas, não a música, e mantém o canvas desenhando enquanto aparece
+route-time-period = Período
+    .description = Segundos de um ciclo completo
+route-time-shape = Forma
+route-time-shape-sine = Seno
+route-time-shape-triangle = Triângulo
+route-time-shape-saw = Dente de serra
+route-time-phase = Fase
+    .description = Onde começa no ciclo, para que itens com o mesmo período não se movam juntos
+route-time-low = Baixo
+    .description = Aonde o ponto mais baixo da onda o leva
+route-time-high = Alto
+    .description = Aonde o ponto mais alto da onda o leva
+route-curve = Curva
+    .description = Como a leitura se curva entre as duas pontas
+route-curve-linear = Linear
+route-curve-ease-in = Entrada suave
+route-curve-ease-out = Saída suave
+route-curve-ease-in-out = Entrada e saída suaves
+route-curve-power = Expoente
+unit-seconds = { $value } s

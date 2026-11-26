@@ -3888,6 +3888,8 @@
                                               "width": 560,
                                               "height": 400,
                                               "rests": false,
+                                              "sizing": "follow",
+                                              "fit": "cover",
                                               "config": null
                                             }
                                           },

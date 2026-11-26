@@ -43,3 +43,7 @@ target
 
 # Machine-local cargo config (mold linker) and the gc-rooted mold symlink
 /.cargo/
+
+# Python bytecode
+__pycache__/
+*.pyc

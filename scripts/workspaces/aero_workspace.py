@@ -444,10 +444,10 @@ def sheet():
     screen = item("screen", group([
         item("screen-frame", sliced("glass_screen"), size=(S(1.07), S(1.1)), opacity=0.8,
              **themed("glass_screen_night")),
-        # 1.4 to 1, the pane's shape at 1920x1080, so a renderer's picture isn't squeezed. It
-        # doesn't rest with the music: a renderer says so itself if it wants to.
+        # It follows the pane, whose shape changes with the window. It doesn't rest with the
+        # music: a renderer says so itself if it wants to.
         item("renderer", {"kind": "target", "owner": "", "width": 560, "height": 400, "rests": False,
-                          "config": None}, size=(S(0.93), S(0.88)), pos=(0, 0, 1), name="Render target"),
+                          "sizing": "follow", "fit": "cover", "config": None}, size=(S(0.93), S(0.88)), pos=(0, 0, 1), name="Render target"),
         item("screen-gloss", image("cover_gloss"), size=(S(0.95), S(0.92)), pos=(0, 0, 2), opacity=0.55,
              state="app.theme", cases=[case("dark", opacity=0.4)]),
     ]), anchor="right", pos=(-16, 0, 24), size=(S(0.35), S(0.96)), rot=(-1.5, -12, 0),

@@ -598,9 +598,11 @@ impl Engine {
                         // From the ended state, the first new entry opens through the nav path.
                         // Play now jumps the same way; Play Next and Add to Queue don't. A
                         // restore leaves a played-out queue ended, but a tail still draining
-                        // hasn't played out, so it runs on into what came back.
-                        let played_out = source.is_none() && self.ring_drained();
-                        if and_play || (source.is_none() && !(restore && played_out)) {
+                        // hasn't played out, so it runs on into what came back. A hung-up
+                        // station has no source either, but it's a paused track, not an end.
+                        let ended = source.is_none() && self.hung_up.is_none();
+                        let played_out = ended && self.ring_drained();
+                        if and_play || (ended && !(restore && played_out)) {
                             nav = at.and_then(|p| self.id_at(p));
                             nav_at = start_secs.filter(|_| and_play);
                         }
@@ -5674,8 +5676,22 @@ mod tests {
 
     impl Running {
         fn start(locators: Vec<Locator>) -> Running {
+            Running::boot(locators, None)
+        }
+
+        /// Started paused, as a launch restore is, with any station dialing
+        /// `fake`. A station at the head parks hung up and dials nothing.
+        fn restored(locators: Vec<Locator>, fake: Arc<crate::http::testing::Fake>) -> Running {
+            Running::boot(locators, Some(fake))
+        }
+
+        fn boot(
+            locators: Vec<Locator>,
+            paused: Option<Arc<crate::http::testing::Fake>>,
+        ) -> Running {
             let shared = Arc::new(Shared::new(locators.len()));
             shared.flush_ack.store(u64::MAX, Ordering::Release);
+            shared.playing.store(paused.is_none(), Ordering::Relaxed);
             let (producer, consumer) = rtrb::RingBuffer::<f32>::new(8192);
             let (tx, rx) = mpsc::channel::<Cmd>();
             let engine = Engine::new(
@@ -5688,7 +5704,12 @@ mod tests {
                 48_000,
                 rx,
             );
-            let decode = std::thread::spawn(move || engine.run());
+
+            // The transport is per thread, so it's set on the decode thread itself.
+            let decode = std::thread::spawn(move || match paused {
+                Some(fake) => crate::http::testing::with_transport(fake, || engine.run()),
+                None => engine.run(),
+            });
 
             Running {
                 shared,
@@ -5763,6 +5784,100 @@ mod tests {
             start_secs: None,
             restore,
         }
+    }
+
+    /// A paused station that hung up, as a launch restore leaves one: entry 0
+    /// a station on `fake`, entry 1 a local track. Waits until it's parked.
+    fn hung_up_station(fx: &Fixtures) -> (Running, Arc<crate::http::testing::Fake>) {
+        let wav = std::fs::read(fx.wav("stream.wav", 1.0)).expect("the fixture is readable");
+        let fake = live_fake(&wav, 4096, &["Boards of Canada - Roygbiv"]);
+        let run = Running::restored(
+            vec![
+                station("http://example.invalid/live"),
+                local(fx.wav("a.wav", 0.05)),
+            ],
+            fake.clone(),
+        );
+        wait_for("the station to park", || run.audible() == Some(0));
+
+        (run, fake)
+    }
+
+    /// Play Next and Add to Queue over a hung-up station queue the tracks and
+    /// leave it current and paused, as over a paused file: nothing opens,
+    /// nothing is cut, nothing dials.
+    #[test]
+    fn an_insert_over_a_hung_up_station_queues_and_stays_paused() {
+        let fx = Fixtures::new("hung-up-insert");
+        let (mut run, fake) = hung_up_station(&fx);
+        let cuts = run.cuts();
+
+        // Play Next lands after the station, Add to Queue at the end.
+        run.tx
+            .send(insert(Some(0), vec![local(fx.wav("b.wav", 0.05))], false))
+            .expect("the engine is listening");
+        run.tx
+            .send(insert(None, vec![local(fx.wav("c.wav", 0.05))], false))
+            .expect("the engine is listening");
+        wait_for("the inserts", || run.ids() == [0, 2, 1, 3]);
+
+        // Longer than the idle nap, so a wake would have shown.
+        let until = Instant::now() + IDLE_NAP * 2;
+        wait_for("the idle passes", || {
+            run.pump();
+            Instant::now() >= until
+        });
+
+        assert_eq!(run.cuts(), cuts, "no skip");
+        assert_eq!(run.samples, 0, "not a sample reached the ring");
+        assert_eq!(run.audible(), Some(0), "the station is still current");
+        assert!(!run.shared.playing.load(Ordering::Relaxed), "still paused");
+        assert_eq!(fake.ask_count(), 0, "and nothing dialled it");
+
+        // Play rejoins the station, not what was queued after it.
+        run.tx
+            .send(Cmd::TogglePause)
+            .expect("the engine is listening");
+        wait_for("the rejoin", || fake.ask_count() == 1);
+        wait_for("the station to play", || {
+            run.pump();
+            run.samples > 0
+        });
+        assert_eq!(run.audible(), Some(0));
+
+        run.quit();
+    }
+
+    /// Play Now is a request to play: it opens the new track over a hung-up
+    /// station and plays it, as over any paused track.
+    #[test]
+    fn play_now_over_a_hung_up_station_plays_the_new_track() {
+        let fx = Fixtures::new("hung-up-play-now");
+        let (mut run, fake) = hung_up_station(&fx);
+
+        run.tx
+            .send(Cmd::Insert {
+                after: Some(0),
+                // Long enough that the ring never holds its end and the next track's start.
+                locators: vec![local(fx.wav("b.wav", 1.0))],
+                groups: Vec::new(),
+                gains: Vec::new(),
+                spans: Vec::new(),
+                explicit: true,
+                and_play: true,
+                start_secs: None,
+                restore: false,
+            })
+            .expect("the engine is listening");
+        wait_for("the new track to play", || {
+            run.pump();
+            run.audible() == Some(2) && run.samples > 0
+        });
+
+        assert!(run.shared.playing.load(Ordering::Relaxed), "playing");
+        assert_eq!(fake.ask_count(), 0, "the station wasn't dialled");
+
+        run.quit();
     }
 
     /// An undo onto a played-out queue puts the entries back and nothing

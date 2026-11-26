@@ -40,7 +40,7 @@ query-source-selection = Selezione
 
 ## Signals and routes
 signal-source = Sorgente
-    .description = Cosa ascolta il segnale: Banda segue un intervallo di frequenze, Livello tutto il mix, Attacco pulsa a ogni colpo nell'intervallo, Trigger lancia un impulso quando l'intervallo raggiunge la soglia, Totale somma un altro segnale nel tempo
+    .description = Cosa ascolta il segnale: Banda segue un intervallo di frequenze, Livello tutto il mix, Attacco pulsa a ogni colpo nell'intervallo, Battito pulsa a ogni battito nell'intervallo anche quando la musica è densa e forte, Trigger lancia un impulso quando l'intervallo raggiunge la soglia, Totale somma un altro segnale nel tempo
 signal-kind-band = Banda
 signal-kind-level = Livello
 signal-kind-onset = Attacco
@@ -63,6 +63,9 @@ signal-response-drift = 0 scatta con la musica, 100 le va dietro
 signal-threshold = Soglia
 signal-threshold-trigger = Il livello che l'intervallo deve raggiungere per lanciare l'impulso; non riparte finché il livello non ricade sotto il segno sul misuratore sopra
 signal-threshold-gate = Sotto questa soglia il segnale conta come zero; sopra, l'uscita risale da zero, così le parti silenziose non muovono la manopola. Il segno sul misuratore qui sopra indica dov'è
+signal-kind-beat = Battito
+signal-label-beat = { signal-kind-beat } { $range }
+signal-threshold-beat = Il livello che l'intervallo deve raggiungere perché un battito conti, così le parti silenziose restano ferme. Il segno sul misuratore qui sopra indica dov'è
 signal-low-bound = Limite inferiore
 signal-high-bound = Limite superiore
 signal-adds-up = Somma
@@ -2250,7 +2253,7 @@ console-window-title = rox - Console
 signals-about-toggle = Informazioni sui segnali
 signals-blurb-marked = I pannelli contrassegnati così nei menu possono avere quasi tutti i parametri collegati: fai clic destro su un parametro nelle impostazioni del pannello e scegli un segnale, o aggiungine uno da lì.
 signals-blurb-shared = Quello che si regola qui è condiviso: una modifica vale per ogni parametro instradato su quel segnale, in ogni pannello e finestra.
-signals-blurb-total = Un Totale è il quarto tipo: somma un altro segnale nel tempo e arrivato a 1 riparte da 0, quindi sale finché la musica è forte e si ferma quando non lo è. Usalo quando uno shader ha bisogno di una fase che si muove col brano invece che con l'orologio.
+signals-blurb-total = Un Totale funziona in un altro modo: somma un altro segnale nel tempo e arrivato a 1 riparte da 0, quindi sale finché la musica è forte e si ferma quando non lo è. Usalo quando uno shader ha bisogno di una fase che si muove col brano invece che con l'orologio.
 signals-blurb-what = Un segnale trasforma ciò che sta suonando in un numero tra 0 e 1: l'energia in una banda di frequenza, il livello dell'intero mix, o un impulso a ogni colpo dentro una banda. Risposta imposta quanto in fretta segue, Soglia lo zittisce sotto un livello che scegli tu.
 signals-no-library = Non c'è nessuna finestra della libreria aperta, quindi questi non mostrano audio. Le modifiche si salvano lo stesso.
 signals-window-title = rox - Segnali

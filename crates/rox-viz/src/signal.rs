@@ -1,11 +1,11 @@
 //! The shared modulation layer: named signals over the playback spectrum that
 //! any parameter can bind to. A [`Signal`] is one source (band energy, mix
-//! level, onset, threshold trigger, or a running total of another signal) with
-//! its smoothing and gate; a [`Route`] attaches a signal to a host-defined
-//! parameter with an output span. A [`SignalHub`] evaluates the pool off the
-//! shared [`crate::AudioFeed`], once per frame, and reading it is what moves
-//! it. Target ids and units belong to the host. Missing signals and unrouted
-//! signals degrade quietly.
+//! level, onset, beat, threshold trigger, or a running total of another
+//! signal) with its smoothing and gate; a [`Route`] attaches a signal to a
+//! host-defined parameter with an output span. A [`SignalHub`] evaluates the
+//! pool off the shared [`crate::AudioFeed`], once per frame, and reading it is
+//! what moves it. Target ids and units belong to the host. Missing signals and
+//! unrouted signals degrade quietly.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -45,6 +45,9 @@ pub enum Source {
     Level,
     /// A pulse when the band jumps past its own recent average: a hit, where Band is a swell.
     Onset { lo: f32, hi: f32 },
+    /// A pulse when the band climbs well past how far it usually climbs. Fires
+    /// on a kick that rings through the beat, where Onset's average catches up.
+    Beat { lo: f32, hi: f32 },
     /// A pulse when the band crosses the threshold, re-armed once it falls back
     /// under. Fires on a kick over sustained sub, where Onset arms once and goes quiet.
     Trigger { lo: f32, hi: f32 },
@@ -61,7 +64,10 @@ impl Source {
     /// edge anywhere.
     pub fn band(&self) -> Option<(f32, f32)> {
         match *self {
-            Source::Band { lo, hi } | Source::Onset { lo, hi } | Source::Trigger { lo, hi } => {
+            Source::Band { lo, hi }
+            | Source::Onset { lo, hi }
+            | Source::Beat { lo, hi }
+            | Source::Trigger { lo, hi } => {
                 let lo = lo.clamp(BAND_MIN_HZ, BAND_MAX_HZ / 1.01);
                 Some((lo, hi.max(lo * 1.01).min(BAND_MAX_HZ)))
             }
@@ -88,10 +94,11 @@ pub struct Signal {
     /// The user's name for it. Empty uses the label derived from the source.
     pub name: String,
     pub source: Source,
-    /// Smoothing, 0 snaps to the music and 1 drifts. On onset and trigger, the pulse decay.
+    /// Smoothing, 0 snaps to the music and 1 drifts. On onset, beat and trigger, the pulse decay.
     pub smooth: f32,
     /// The gate, 0 to 1 (0 is off): output under it is nothing, and above it
-    /// eases in through a smoothstep. On a trigger, the fire level instead.
+    /// eases in through a smoothstep. On a trigger, the fire level instead; on
+    /// a beat, the level the band must reach for a beat to count.
     pub threshold: f32,
     /// Aggregates only: drain to zero on a track change.
     pub reset_on_track: bool,
@@ -131,7 +138,8 @@ impl Signal {
 
     /// The gate's transfer. Ungated passes exactly; gated remaps the span above
     /// the threshold through a smoothstep, so crossing it never jumps. Stateless.
-    /// Triggers don't use it: their threshold is the fire level.
+    /// Triggers and beats don't use it: their threshold is a level the band
+    /// must reach to fire.
     pub fn gated(&self, value: f32) -> f32 {
         let threshold = self.threshold();
         if threshold <= 0.0 {
@@ -199,6 +207,43 @@ const ONSET_FLOOR: f32 = 0.15;
 /// before it can fire again, or a level rippling across the line machine-guns.
 const TRIGGER_REARM: f32 = 0.75;
 
+/// Beat detector. It reads the band without the top of the window, so a kick
+/// on a master past -12 dB still climbs. A climb is how far the reading sits
+/// above its running average, which follows at this rate (a tenth of a
+/// second). Slower and a kick is measured against the last one's tail, so a
+/// busy pattern loses beats.
+const BEAT_AVERAGE: f32 = 10.0;
+/// The usual climb follows at this rate, about 2.5 s. Faster and a fill raises
+/// the bar for the beats after it; slower and it wakes late after a break.
+const BEAT_USUAL: f32 = 0.4;
+/// A climb this many times the usual one fires. Higher and the kicks of a busy
+/// pattern go missing: at 4, a sixth of a dense track's.
+const BEAT_JUMP: f32 = 2.0;
+/// The climb has to fall under this share of the fire level to re-arm, so a
+/// climb hovering at the bar fires once.
+const BEAT_REARM: f32 = 0.9;
+/// A beat also has to top the highest the band has read lately by this much,
+/// about 2.7 dB, so two bass notes beating against each other, whose crests
+/// repeat at one height, don't fire on every crest. Higher and the softer kicks
+/// of a busy pattern go missing; lower and a pad starts to tick.
+const BEAT_OVER: f32 = 0.05;
+/// How fast that held peak falls, about 13.5 dB a second. Faster and a pad's
+/// wobble fires again; slower and kicks closer together than a beat stop
+/// clearing the last one's peak.
+const BEAT_PEAK_RELEASE: f32 = 0.25;
+/// The usual climb never counts as less than this, or a held note's ripple
+/// after a quiet stretch reads as many times the usual.
+const BEAT_USUAL_FLOOR: f32 = 0.006;
+/// The shortest time between beats: eight a second, a sixteenth at 120 bpm.
+/// Shorter lets a flam fire twice; longer drops notes from fast patterns.
+const BEAT_REFRACTORY: f32 = 0.125;
+/// No beat while the band reads under this, about -47 dB. Higher and quiet
+/// music goes still; lower and the noise floor of a fade starts to tick.
+const BEAT_FLOOR: f32 = 0.35;
+/// The longest gap between two readings taken whole, so a stall doesn't
+/// count as one huge step on the averages.
+const BEAT_GAP_MAX: f32 = 0.1;
+
 /// Where a release stops counting as motion; an exponential never reaches zero.
 const SETTLED: f32 = 0.004;
 
@@ -213,8 +258,19 @@ struct Slot {
     armed: bool,
     /// A flushed aggregate on its way to zero; accumulation pauses meanwhile.
     draining: bool,
-    /// What leaves the slot: the gated value, or a trigger's ringing pulse.
+    /// What leaves the slot: the gated value, or a trigger's or beat's ringing pulse.
     output: f32,
+    /// A beat's usual climb.
+    usual: f32,
+    /// A beat's held peak, and the reading before this one, which the peak
+    /// takes one reading late so a kick rising across two readings counts whole.
+    peak: f32,
+    last: f32,
+    /// Seconds since a beat fired.
+    since: f32,
+    /// Seconds since a beat's last reading. The hub steps on every read, which
+    /// on a fast display is several times between two of the pump's readings.
+    gap: f32,
 }
 
 impl Default for Slot {
@@ -225,7 +281,40 @@ impl Default for Slot {
             armed: true,
             draining: false,
             output: 0.0,
+            usual: 0.0,
+            peak: 0.0,
+            last: 0.0,
+            since: BEAT_REFRACTORY,
+            gap: 0.0,
         }
+    }
+}
+
+impl Slot {
+    /// One raw reading into a beat, `dt` seconds after the last. True when it
+    /// fires. Tested against the average, the usual climb and the held peak
+    /// before they move, so a rise counts whole.
+    fn beat(&mut self, raw: f32, dt: f32, threshold: f32) -> bool {
+        let climb = (raw - self.reference).max(0.0);
+        let bar = BEAT_JUMP * self.usual.max(BEAT_USUAL_FLOOR);
+
+        let fires = self.armed
+            && self.since >= BEAT_REFRACTORY
+            && climb >= bar
+            && raw >= self.peak + BEAT_OVER
+            && raw >= BEAT_FLOOR.max(threshold);
+        if fires {
+            self.armed = false;
+            self.since = 0.0;
+        } else if !self.armed && climb < bar * BEAT_REARM {
+            self.armed = true;
+        }
+
+        self.reference += (raw - self.reference) * (BEAT_AVERAGE * dt).min(1.0);
+        self.usual += (climb - self.usual) * (BEAT_USUAL * dt).min(1.0);
+        self.peak = (self.peak - BEAT_PEAK_RELEASE * dt).max(self.last);
+        self.last = raw;
+        fires
     }
 }
 
@@ -283,15 +372,17 @@ impl Signals {
             }
             let slot = self.slots.entry(signal.id).or_default();
             let smooth = signal.smooth();
-            let raw = mags.map(|mags| {
+            // Unclamped at the top: only a beat reads past it.
+            let heard = mags.map(|mags| {
                 let (lo, hi) = signal.source.bins(sample_rate, mags.len());
                 let mut peak = 0.0f32;
                 for &m in &mags[lo..hi] {
                     peak = peak.max(m);
                 }
                 let db = 20.0 * (peak + 1e-9).log10();
-                ((db - FLOOR_DB) / (MAX_DB - FLOOR_DB)).clamp(0.0, 1.0)
+                ((db - FLOOR_DB) / (MAX_DB - FLOOR_DB)).max(0.0)
             });
+            let raw = heard.map(|heard| heard.min(1.0));
             match signal.source {
                 Source::Band { .. } | Source::Level => {
                     let attack = ATTACK_FAST * (ATTACK_SLOW / ATTACK_FAST).powf(smooth);
@@ -349,6 +440,30 @@ impl Signals {
                         slot.armed = true;
                     }
                 }
+                Source::Beat { .. } => {
+                    // A trigger's shape: the pulse in the output, the band in the
+                    // value, so the meter shows where the threshold sits on it.
+                    let decay =
+                        ONSET_DECAY_FAST * (ONSET_DECAY_SLOW / ONSET_DECAY_FAST).powf(smooth);
+                    slot.output -= slot.output * (decay * dt).min(1.0);
+                    slot.since += dt;
+                    slot.gap += dt;
+                    if let Some(heard) = heard {
+                        slot.value = heard.min(1.0);
+                        let gap = slot.gap.min(BEAT_GAP_MAX);
+                        slot.gap = 0.0;
+                        if slot.beat(heard, gap, signal.threshold()) {
+                            slot.output = 1.0;
+                        }
+                    } else if stopped {
+                        slot.value -= slot.value * (RELEASE_FAST * dt).min(1.0);
+                        slot.reference -= slot.reference * (BEAT_AVERAGE * dt).min(1.0);
+                        slot.peak = (slot.peak - BEAT_PEAK_RELEASE * dt).max(0.0);
+                        slot.last = 0.0;
+                        slot.armed = true;
+                        slot.gap = 0.0;
+                    }
+                }
                 // Second pass, below.
                 Source::Aggregate { .. } => {}
             }
@@ -358,8 +473,8 @@ impl Signals {
             let Some(slot) = self.slots.get_mut(&signal.id) else {
                 continue;
             };
-            // A trigger's threshold is its fire level, not a gate.
-            if matches!(signal.source, Source::Trigger { .. }) {
+            // A trigger's or beat's threshold is a fire level, not a gate.
+            if matches!(signal.source, Source::Trigger { .. } | Source::Beat { .. }) {
                 continue;
             }
             slot.output = signal.gated(slot.value);
@@ -993,6 +1108,265 @@ mod tests {
             Source::Trigger { lo, hi } if lo == 35.0 && hi == 130.0
         ));
         assert_eq!(serde_json::to_string(&source).unwrap(), old);
+    }
+
+    #[test]
+    fn beat_json_round_trips_unchanged() {
+        let saved = r#"{"kind":"beat","lo":30.0,"hi":120.0}"#;
+        let source: Source = serde_json::from_str(saved).unwrap();
+        assert!(matches!(
+            source,
+            Source::Beat { lo, hi } if lo == 30.0 && hi == 120.0
+        ));
+        assert_eq!(serde_json::to_string(&source).unwrap(), saved);
+    }
+
+    /// The pump's clock: the hub gets a fresh reading about this often.
+    const PUMP: f32 = 0.016;
+
+    /// Magnitudes whose 800 Hz-2 kHz band reads `reading` on the signal scale.
+    fn reading(reading: f32) -> Vec<f32> {
+        let mut mags = vec![0.0f32; 2048];
+        if reading > 0.0 {
+            let db = FLOOR_DB + reading * (MAX_DB - FLOOR_DB);
+            mags[100] = 10f32.powf(db / 20.0);
+        }
+        mags
+    }
+
+    fn pulse(id: u64, source: fn(f32, f32) -> Source) -> Signal {
+        Signal {
+            id,
+            source: source(800.0, 2000.0),
+            smooth: 0.0,
+            ..Signal::default()
+        }
+    }
+
+    fn beat(id: u64) -> Signal {
+        pulse(id, |lo, hi| Source::Beat { lo, hi })
+    }
+
+    fn onset(id: u64) -> Signal {
+        pulse(id, |lo, hi| Source::Onset { lo, hi })
+    }
+
+    /// Steps each reading through `pool` and returns, per signal, the steps it
+    /// fired on. A pulse is 1 only on the step it fires.
+    fn fires(readings: &[f32], pool: &[Signal]) -> Vec<Vec<usize>> {
+        let mut engine = Signals::new();
+        let mut fired = vec![Vec::new(); pool.len()];
+        for (step, &r) in readings.iter().enumerate() {
+            engine.step(Some(&reading(r)), 48_000, false, PUMP, pool);
+            for (at, signal) in pool.iter().enumerate() {
+                if engine.output(signal.id) == Some(1.0) {
+                    fired[at].push(step);
+                }
+            }
+        }
+        fired
+    }
+
+    /// A kick at `bpm` that jumps near full scale and rings down only to
+    /// `floor` before the next, as on a loud master. Each reading averages the
+    /// last three, the smear of the hub's FFT window over the kick's rise.
+    fn ringing_kicks(bpm: f32, floor: f32, secs: f32) -> Vec<f32> {
+        let period = 60.0 / bpm;
+        let envelope: Vec<f32> = (0..(secs / PUMP) as usize)
+            .map(|i| {
+                let since = (i as f32 * PUMP) % period;
+                floor + (0.98 - floor) * (-since / (period * 0.6)).exp()
+            })
+            .collect();
+        (0..envelope.len())
+            .map(|i| {
+                let window = &envelope[i.saturating_sub(2)..=i];
+                window.iter().sum::<f32>() / window.len() as f32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_beat_fires_on_each_ringing_kick_where_an_onset_goes_quiet() {
+        // 120 bpm, the band never under 0.85: the onset's average sits near
+        // 0.9 and no kick clears it by 0.12.
+        let kicks = ringing_kicks(120.0, 0.85, 10.0);
+        let fired = fires(&kicks, &[onset(1), beat(2)]);
+
+        assert!(
+            fired[0].len() <= 2,
+            "an onset fires rarely here, got {:?}",
+            fired[0]
+        );
+
+        // Past the first two seconds, while the usual climb settles.
+        let settled: Vec<usize> = fired[1]
+            .iter()
+            .copied()
+            .filter(|&step| step as f32 * PUMP >= 2.0)
+            .collect();
+        assert!(
+            (15..=17).contains(&settled.len()),
+            "a beat on each of the 16 kicks, got {settled:?}"
+        );
+        for &step in &settled {
+            let into = (step as f32 * PUMP) % 0.5;
+            assert!(into <= 3.0 * PUMP, "a beat {into} s into its kick");
+        }
+    }
+
+    /// A loud master's bass peaks past -12 dB, where the meter and an onset
+    /// see a band pinned at 1. A beat reads past the top, so each kick still
+    /// climbs.
+    #[test]
+    fn a_beat_hears_kicks_past_the_top_of_the_window() {
+        let period = 0.47;
+        let readings: Vec<f32> = (0..(8.0 / PUMP) as usize)
+            .map(|i| {
+                let since = (i as f32 * PUMP) % period;
+                1.1 + 0.15 * (-since / 0.1).exp()
+            })
+            .collect();
+        let fired = fires(&readings, &[onset(1), beat(2)]);
+
+        assert!(fired[0].len() <= 1, "an onset sees 1 throughout");
+        let settled = fired[1]
+            .iter()
+            .filter(|&&step| step as f32 * PUMP >= 2.0)
+            .count();
+        assert!(
+            (12..=14).contains(&settled),
+            "a beat on each of the 13 kicks, got {settled}"
+        );
+    }
+
+    #[test]
+    fn a_beat_never_fires_faster_than_its_refractory_time() {
+        // Twelve hits a second.
+        let fast = ringing_kicks(720.0, 0.6, 5.0);
+        let fired = &fires(&fast, &[beat(1)])[0];
+
+        assert!(!fired.is_empty(), "fast hits still fire");
+        for pair in fired.windows(2) {
+            let apart = (pair[1] - pair[0]) as f32 * PUMP;
+            assert!(apart >= BEAT_REFRACTORY - 1e-4, "{pair:?}, {apart} s apart");
+        }
+    }
+
+    #[test]
+    fn a_sustained_tone_fires_a_beat_at_most_once_at_its_start() {
+        let start = 60;
+        let tone: Vec<f32> = (0..700)
+            .map(|i| match i < start {
+                true => 0.0,
+                false => 0.8 + 0.01 * (i as f32 * 0.7).sin(),
+            })
+            .collect();
+        let fired = &fires(&tone, &[beat(1)])[0];
+
+        assert!(fired.len() <= 1, "{fired:?}");
+        assert!(fired.iter().all(|&step| step < start + 4), "{fired:?}");
+    }
+
+    #[test]
+    fn silence_never_fires_a_beat() {
+        let mut engine = Signals::new();
+        let pool = vec![beat(1)];
+        for step in 0..600 {
+            // Silence as audio, then as a stopped feed.
+            let mags = (step < 300).then(|| reading(0.0));
+            engine.step(mags.as_deref(), 48_000, step >= 300, PUMP, &pool);
+            assert_eq!(engine.output(1), Some(0.0), "step {step}");
+        }
+    }
+
+    #[test]
+    fn quiet_music_under_the_gate_stays_calm() {
+        // The same kick train, played quietly: under the floor, no beats.
+        let quiet: Vec<f32> = ringing_kicks(120.0, 0.6, 10.0)
+            .iter()
+            .map(|r| r * 0.33)
+            .collect();
+        assert!(fires(&quiet, &[beat(1)])[0].is_empty());
+
+        // Louder, peaking near 0.6: the user's threshold over it keeps it calm,
+        // and with no threshold it beats.
+        let middling: Vec<f32> = ringing_kicks(120.0, 0.3, 10.0)
+            .iter()
+            .map(|r| r * 0.62)
+            .collect();
+        let gated = Signal {
+            threshold: 0.7,
+            ..beat(1)
+        };
+        assert!(fires(&middling, &[gated])[0].is_empty());
+        assert!(fires(&middling, &[beat(1)])[0].len() >= 15);
+    }
+
+    #[test]
+    fn a_single_hit_fires_one_beat() {
+        let hit = 120;
+        let readings: Vec<f32> = (0..400)
+            .map(|i| {
+                let since = (i as f32 - hit as f32) * PUMP;
+                match since < 0.0 {
+                    true => 0.1,
+                    false => 0.1 + 0.85 * (-since / 0.3).exp(),
+                }
+            })
+            .collect();
+        let fired = &fires(&readings, &[beat(1)])[0];
+
+        assert_eq!(fired, &[hit], "one beat, on the hit");
+    }
+
+    #[test]
+    fn response_changes_a_beats_decay_and_nothing_else() {
+        let kicks = ringing_kicks(120.0, 0.85, 4.0);
+        let snappy = beat(1);
+        let ringing = Signal {
+            id: 2,
+            smooth: 1.0,
+            ..beat(2)
+        };
+        let fired = fires(&kicks, &[snappy.clone(), ringing.clone()]);
+        assert_eq!(fired[0], fired[1], "the same beats either way");
+
+        // Five readings after the first beat, the snappy one has fallen further.
+        let mut engine = Signals::new();
+        let pool = vec![snappy, ringing];
+        for &r in &kicks[..=fired[0][0] + 5] {
+            engine.step(Some(&reading(r)), 48_000, false, PUMP, &pool);
+        }
+        assert!(engine.output(1).unwrap() < engine.output(2).unwrap());
+        assert_eq!(
+            engine.value(1),
+            engine.value(2),
+            "the meter shows the same band"
+        );
+    }
+
+    /// A fast display steps the hub between the pump's readings. The averages
+    /// move by the time between readings, so the beats land the same.
+    #[test]
+    fn steps_between_readings_leave_the_beats_alone() {
+        let kicks = ringing_kicks(120.0, 0.85, 6.0);
+        let once = fires(&kicks, &[beat(1)]).remove(0);
+
+        let mut engine = Signals::new();
+        let pool = vec![beat(1)];
+        let mut fired = Vec::new();
+        for (step, &r) in kicks.iter().enumerate() {
+            engine.step(Some(&reading(r)), 48_000, false, PUMP / 4.0, &pool);
+            if engine.output(1) == Some(1.0) {
+                fired.push(step);
+            }
+            for _ in 0..3 {
+                engine.step(None, 48_000, false, PUMP / 4.0, &pool);
+            }
+        }
+
+        assert_eq!(fired, once);
     }
 
     /// Routes must round-trip byte for byte or saved layouts drift on load.

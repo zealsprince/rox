@@ -45,7 +45,7 @@ query-source-selection = Selection
 ## Signals and routes
 
 signal-source = Source
-    .description = What the signal follows: Band tracks one frequency range, Level the whole mix, Onset pulses on each hit in the range, Trigger fires a pulse when the range reaches its threshold, Total adds up another signal over time
+    .description = What the signal follows: Band tracks one frequency range, Level the whole mix, Onset pulses on each hit in the range, Beat pulses on each beat in the range even when the music is dense and loud, Trigger fires a pulse when the range reaches its threshold, Total adds up another signal over time
 signal-kind-band = Band
 signal-kind-level = Level
 signal-kind-onset = Onset
@@ -68,6 +68,9 @@ signal-response-drift = 0 snaps to the music, 100 drifts after it
 signal-threshold = Threshold
 signal-threshold-trigger = The level the range has to reach to fire the pulse; it can't fire again until the level falls back under the mark on the meter above
 signal-threshold-gate = Under this the signal reads as nothing, and above it the output climbs from zero again, so quiet parts don't move the knob. The mark on the meter above shows where it is
+signal-kind-beat = Beat
+signal-label-beat = { signal-kind-beat } { $range }
+signal-threshold-beat = The level the range has to reach for a beat to count, so quiet parts stay calm. The mark on the meter above shows where it is
 signal-low-bound = Low Bound
 signal-high-bound = High Bound
 signal-adds-up = Adds Up
@@ -2315,7 +2318,7 @@ console-window-title = rox - Console
 signals-about-toggle = About Signals
 signals-blurb-marked = Panels marked with this in the menus can have most of their parameters bound: right-click a parameter in the panel's settings and pick a signal, or add one from there.
 signals-blurb-shared = What's tuned here is shared: a change applies to every parameter routed to that signal, in every panel and window.
-signals-blurb-total = A Total is the fourth kind: it adds another signal up over time and wraps at 1, so it climbs while the music is loud and stalls while it isn't. Use it when a shader needs a phase that moves with the song rather than with the clock.
+signals-blurb-total = A Total works differently: it adds another signal up over time and wraps at 1, so it climbs while the music is loud and stalls while it isn't. Use it when a shader needs a phase that moves with the song rather than with the clock.
 signals-blurb-what = A signal turns what's playing into one number between 0 and 1: the energy in a frequency band, the level of the whole mix, or a pulse on every hit inside a band. Response sets how fast it follows, Threshold silences it under a level you pick.
 signals-no-library = No library window is open, so these show no audio. Edits still save.
 signals-window-title = rox - Signals

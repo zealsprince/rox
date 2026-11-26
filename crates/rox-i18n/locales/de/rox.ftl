@@ -39,7 +39,7 @@ query-source-selection = Auswahl
 
 ## Signals and routes
 signal-source = Quelle
-    .description = Worauf das Signal reagiert: Band folgt einem Frequenzbereich, Pegel der ganzen Mischung, Onset pulst bei jedem Schlag im Bereich, Trigger löst einen Impuls aus, wenn der Bereich seinen Schwellwert erreicht, Summe zählt ein anderes Signal über die Zeit zusammen
+    .description = Worauf das Signal reagiert: Band folgt einem Frequenzbereich, Pegel der ganzen Mischung, Onset pulst bei jedem Schlag im Bereich, Beat pulst auf jedem Beat im Bereich, auch wenn die Musik dicht und laut ist, Trigger löst einen Impuls aus, wenn der Bereich seinen Schwellwert erreicht, Summe zählt ein anderes Signal über die Zeit zusammen
 signal-kind-band = Band
 signal-kind-level = Pegel
 signal-kind-onset = Onset
@@ -62,6 +62,9 @@ signal-response-drift = 0 folgt der Musik sofort, 100 zieht träge hinterher
 signal-threshold = Schwellwert
 signal-threshold-trigger = Der Pegel, den der Bereich erreichen muss, um den Impuls auszulösen; er feuert erst wieder, wenn der Pegel unter die Marke auf der Anzeige darüber fällt
 signal-threshold-gate = Darunter steht das Signal auf null, darüber klettert die Ausgabe wieder von null hoch, damit leise Stellen den Regler nicht bewegen. Die Marke auf der Anzeige darüber zeigt, wo der Schwellwert liegt
+signal-kind-beat = Beat
+signal-label-beat = { signal-kind-beat } { $range }
+signal-threshold-beat = Der Pegel, den der Bereich erreichen muss, damit ein Beat zählt, sodass leise Stellen ruhig bleiben. Die Marke auf der Anzeige darüber zeigt, wo er liegt
 signal-low-bound = Untergrenze
 signal-high-bound = Obergrenze
 signal-adds-up = Zählt zusammen
@@ -2230,7 +2233,7 @@ console-window-title = rox - Konsole
 signals-about-toggle = Über Signale
 signals-blurb-marked = Panels, die in den Menüs damit markiert sind, lassen die meisten ihrer Parameter binden: Rechtsklick auf einen Parameter in den Panel-Einstellungen und ein Signal wählen, oder dort eines hinzufügen.
 signals-blurb-shared = Was hier eingestellt wird, ist geteilt: eine Änderung gilt für jeden Parameter, der auf dieses Signal geroutet ist, in jedem Panel und jedem Fenster.
-signals-blurb-total = Eine Summe ist die vierte Art: sie zählt ein anderes Signal über die Zeit zusammen und läuft bei 1 um, also klettert sie, solange die Musik laut ist, und steht still, solange sie es nicht ist. Nimm sie, wenn ein Shader eine Phase braucht, die sich mit dem Song bewegt statt mit der Uhr.
+signals-blurb-total = Eine Summe funktioniert anders: sie zählt ein anderes Signal über die Zeit zusammen und läuft bei 1 um, also klettert sie, solange die Musik laut ist, und steht still, solange sie es nicht ist. Nimm sie, wenn ein Shader eine Phase braucht, die sich mit dem Song bewegt statt mit der Uhr.
 signals-blurb-what = Ein Signal macht aus dem, was läuft, eine Zahl zwischen 0 und 1: die Energie in einem Frequenzband, den Pegel der ganzen Mischung, oder einen Impuls bei jedem Schlag in einem Band. Reaktion setzt, wie schnell es folgt, Schwellwert stellt es unter einem Pegel still, den du wählst.
 signals-no-library = Es ist kein Bibliotheksfenster offen, also zeigen diese kein Audio. Änderungen werden trotzdem gespeichert.
 signals-window-title = rox - Signale

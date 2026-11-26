@@ -133,8 +133,8 @@ Each entry under `signals` is one signal the renderer follows:
 
 | Field | Meaning |
 |---|---|
-| `kind` | `band`, `level`, `onset`, `trigger` or `aggregate`, the kinds on the [pool line](#the-pool). A kind this rox doesn't know is skipped, so a renderer written for a later rox still loads. Required. |
-| `low`, `high` | The band in Hz, for `band`, `onset` and `trigger`, required for those and refused on the others. From 20 to 20,000, `low` below `high`. |
+| `kind` | `band`, `level`, `onset`, `beat`, `trigger` or `aggregate`, the kinds on the [pool line](#the-pool). A kind this rox doesn't know is skipped, so a renderer written for a later rox still loads. Required. |
+| `low`, `high` | The band in Hz, for `band`, `onset`, `beat` and `trigger`, required for those and refused on the others. From 20 to 20,000, `low` below `high`. |
 | `name` | What the signal is called if it's added. At most 32 characters, with no control character and no bidi mark, embedding, override or isolate. Optional. |
 | `response` | The Signals window's Response, a whole number from 0 to 100, for the added signal. Optional: 30, the pool's own default. |
 | `threshold` | The Signals window's Threshold, a whole number from 0 to 100. Optional: 0, or 50 for a trigger, which never fires at 0. |
@@ -434,19 +434,19 @@ gets no `texture` key.
 
 `pool` describes the signal pool by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
-30-120 Hz`, `onset 30-120 Hz`, `trigger 30-120 Hz`, `level`, or `total of <id>`
-(`wire_name`, `target.rs:1506`). Read what a signal is from `kind`, since a renamed one
-says nothing about it in its name: `band`, `level`, `onset`, `trigger` or `aggregate`, a
-running total of another signal that wraps at 1 (`wire_signal`, `target.rs:1475`). A
-`band`, `onset` or `trigger` also has `low` and `high`, the frequency range it listens
-to in whole hertz, kept between 20 and 20,000 (`Source::band`,
-`rox-viz/src/signal.rs:62`). Past the name an entry holds only those fixed words and
-numbers, and nothing about how rox shapes the value. The line comes once the session runs
-and the canvas draws, and again whenever the pool changes. An empty pool is
-`{"pool":[]}`.
+30-120 Hz`, `onset 30-120 Hz`, `beat 30-120 Hz`, `trigger 30-120 Hz`, `level`, or
+`total of <id>` (`wire_name`, `target.rs:1784`). Read what a signal is from `kind`, since
+a renamed one says nothing about it in its name: `band`, `level`, `onset`, `beat`,
+`trigger` or `aggregate`, a running total of another signal that wraps at 1
+(`wire_signal`, `target.rs:1752`). A `band`, `onset`, `beat` or `trigger` also has `low`
+and `high`, the frequency range it listens to in whole hertz, kept between 20 and 20,000
+(`Source::band`, `rox-viz/src/signal.rs:65`). Past the name an entry holds only those
+fixed words and numbers, and nothing about how rox shapes the value. The line comes once
+the session runs and the canvas draws, and again whenever the pool changes. An empty pool
+is `{"pool":[]}`.
 
 `signals` holds each pool signal's value in pool order, from 0 to 1, to 4 decimals, the
-value routes read (`signals_line`, `target.rs:1521`). `time` is the playing position in
+value routes read (`signals_line`, `target.rs:1799`). `time` is the playing position in
 seconds, to 3 decimals, and 0 with nothing playing. A line goes with each frame the
 canvas paints while music plays. When playback pauses or stops, lines keep coming for
 about a second while the signals settle, then none come until music plays again
@@ -569,8 +569,8 @@ Each value is the signal's output once rox has shaped it, the number a route rea
 (`SignalHub::value` and `Signals::step`, `rox-viz/src/signal.rs`). The signal's Response
 has already smoothed it, so a renderer that smooths again lags behind everything else
 following that signal. Its Threshold has already gated it too: under the threshold it
-reads 0, and above it the output climbs from 0 again. On a trigger the threshold is the
-fire level instead.
+reads 0, and above it the output climbs from 0 again. On a trigger and a beat the
+threshold is a level the band has to reach to fire instead.
 
 The numbers below are the ones a renderer needs to tell what it's looking at, or to
 imitate a kind on audio of its own. Response and Threshold are the Signals window's 0 to
@@ -598,6 +598,28 @@ is about 12 a second, not 26.5.
   a tenth at Response 0, and about a second and a half at 100. A hit reads as a jump and a
   tail over many frames, never a single 1 between zeroes. It fires again only once the
   reading has fallen under the average plus 0.06, half the jump.
+- `beat` is a pulse with the onset's decay, for music an onset goes quiet on. It reads
+  the band before any smoothing, and without the top of the window: past -12 dB the
+  reading goes on above 1, so a kick on a loud master whose bass pins the `band` value at
+  1 still climbs. Each reading's climb is how far it sits above a running average of the
+  readings, which moves toward each one at 10 a second (`BEAT_AVERAGE`), and 0 when the
+  reading is below it. The usual climb is an average of the climbs that moves at 0.4 a
+  second (`BEAT_USUAL`), counted as no less than 0.006 (`BEAT_USUAL_FLOOR`). The beat
+  also holds the band's peak, which falls at 0.25 a second (`BEAT_PEAK_RELEASE`) and takes
+  each reading one reading late, so a kick rising across two readings counts whole. A
+  reading fires when its climb is at least twice the usual climb (`BEAT_JUMP`), it tops
+  the held peak by at least 0.05 (`BEAT_OVER`), and it's at least 0.35, or at least the
+  Threshold when that's higher (`BEAT_FLOOR`). The average, the usual climb and the peak
+  are tested before they move, as an onset's average is, and move by the time since the
+  previous reading rather than the previous step, at most 0.1 s (`BEAT_GAP_MAX`). After a
+  beat it can't fire again for 0.125 s, so never more than 8 times a second
+  (`BEAT_REFRACTORY`), and not until a climb falls under 0.9 of the fire level
+  (`BEAT_REARM`). The value then decays exactly as an onset's does, at the rate Response
+  sets. A kick that rings through the beat still climbs well over where the band sat a
+  tenth of a second before, and on dense music that's several times the usual climb, so
+  a beat fires on each one. A held tone climbs once, at its start, and two bass notes
+  beating against each other crest at one height, which rarely tops the held peak. The
+  Threshold gates nothing: the output is the pulse, at 1 on the reading it fires.
 - `trigger` has the same pulse and the same decay, and also reads the band before any
   smoothing. It fires when the reading reaches the Threshold, and can't fire again until
   the reading falls under three quarters of it (`TRIGGER_REARM`). At Threshold 0 it never
@@ -614,11 +636,13 @@ is about 12 a second, not 26.5.
 
 The gate is a smoothstep. With the threshold `t`, `x = (value - t) / (1 - t)` held
 between 0 and 1, and the output is `x * x * (3 - 2 * x)`. A threshold of 0 passes the
-value as it is. The gate applies to every kind but the trigger, a total included.
+value as it is. The gate applies to every kind but the trigger and the beat, a total
+included.
 
 Once the audio has been silent for 0.15 s (`SILENT_AFTER`), a band and the level fall
 to 0 at their falling rate, an onset's average falls at 2 a second and it re-arms, a
-trigger re-arms, and a pulse finishes its decay. Between two readings of the audio a band
+beat's average falls at 10 a second and it re-arms, a trigger re-arms, and a pulse
+finishes its decay. Between two readings of the audio a band
 holds its value: the hub only takes a new FFT when the player has handed the visualizers
 new audio, every 16 ms (`PUMP_INTERVAL`, `rox-services/src/player.rs`).
 
@@ -627,9 +651,9 @@ the time, so a band there pins near 1 for minutes and moves little: give it a na
 band, a higher Threshold, or read it as a rough level rather than a beat. An onset needs
 the reading to drop back near its average between hits. A kick that rings through most
 of a beat keeps the band up, the average climbs to meet it, and the next kick jumps less
-than 0.12 over it, so a rolling or sustained kick rarely fires an onset. A trigger with a
-Threshold under the kick's peak and over its tail fires on that music where an onset
-won't.
+than 0.12 over it, so a rolling or sustained kick rarely fires an onset. A beat on the
+same band fires on that music, once a kick, and a trigger with a Threshold under the
+kick's peak and over its tail does too.
 
 ### The renderer to rox
 
@@ -810,8 +834,8 @@ that paint, from audio the player hands the visualizers every 16 ms (`PUMP_INTER
 that steps faster than lines arrive steps more than once on the same values. One that
 steps slower gets several lines between steps.
 
-An onset or a trigger is a pulse: it jumps on a hit and falls back at the rate its
-Response sets. Keep the highest value of each since the last step, and start again from
+An onset, a beat or a trigger is a pulse: it jumps on a hit and falls back at the rate
+its Response sets. Keep the highest value of each since the last step, and start again from
 0 after the step, or a pulse that came and went between two steps is lost. A band, the
 level and a total can take the newest value. The `kind` on the pool line says which is
 which.

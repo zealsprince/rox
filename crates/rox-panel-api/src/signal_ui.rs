@@ -160,9 +160,10 @@ pub fn open_bands<P: SignalHost>(host: &P) -> Vec<BandMark> {
         .filter(|signal| ui.open.contains(&signal.id))
         .filter_map(|signal| {
             let (lo, hi) = match signal.source {
-                Source::Band { lo, hi } | Source::Onset { lo, hi } | Source::Trigger { lo, hi } => {
-                    (lo, hi)
-                }
+                Source::Band { lo, hi }
+                | Source::Onset { lo, hi }
+                | Source::Beat { lo, hi }
+                | Source::Trigger { lo, hi } => (lo, hi),
                 Source::Level | Source::Aggregate { .. } => return None,
             };
             let scrubs = ui.signal_scrubs.get(&signal.id);
@@ -236,6 +237,7 @@ pub fn signal_label(signal: &Signal) -> String {
     let label = match signal.source {
         Source::Band { lo, hi } => rox_i18n::t!("signal-label-band", range = hz_range(lo, hi)),
         Source::Onset { lo, hi } => rox_i18n::t!("signal-label-onset", range = hz_range(lo, hi)),
+        Source::Beat { lo, hi } => rox_i18n::t!("signal-label-beat", range = hz_range(lo, hi)),
         Source::Trigger { lo, hi } => {
             rox_i18n::t!("signal-label-trigger", range = hz_range(lo, hi))
         }
@@ -254,6 +256,7 @@ enum SourceKind {
     Band,
     Level,
     Onset,
+    Beat,
     Trigger,
     Aggregate,
 }
@@ -264,6 +267,7 @@ fn source_choices() -> Vec<(SharedString, SourceKind)> {
         (rox_i18n::t!("signal-kind-band"), SourceKind::Band),
         (rox_i18n::t!("signal-kind-level"), SourceKind::Level),
         (rox_i18n::t!("signal-kind-onset"), SourceKind::Onset),
+        (rox_i18n::t!("signal-kind-beat"), SourceKind::Beat),
         (rox_i18n::t!("signal-kind-trigger"), SourceKind::Trigger),
         (rox_i18n::t!("signal-kind-total"), SourceKind::Aggregate),
     ]
@@ -687,6 +691,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
     let (kind, freq_lo, freq_hi) = match signal.source {
         Source::Band { lo, hi } => (SourceKind::Band, lo, hi),
         Source::Onset { lo, hi } => (SourceKind::Onset, lo, hi),
+        Source::Beat { lo, hi } => (SourceKind::Beat, lo, hi),
         Source::Trigger { lo, hi } => (SourceKind::Trigger, lo, hi),
         Source::Level => (SourceKind::Level, 30.0, 120.0),
         Source::Aggregate { .. } => (SourceKind::Aggregate, 30.0, 120.0),
@@ -695,6 +700,10 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
     let threshold = signal.threshold();
     // A total's band, response and gate belong to the signal it follows.
     let spectral = kind != SourceKind::Aggregate;
+    let pulse = matches!(
+        kind,
+        SourceKind::Onset | SourceKind::Beat | SourceKind::Trigger
+    );
     div()
         .flex()
         .flex_col()
@@ -722,6 +731,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             let (lo, hi) = match signal.source {
                                 Source::Band { lo, hi }
                                 | Source::Onset { lo, hi }
+                                | Source::Beat { lo, hi }
                                 | Source::Trigger { lo, hi } => (lo, hi),
                                 Source::Level | Source::Aggregate { .. } => (30.0, 120.0),
                             };
@@ -732,6 +742,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             signal.source = match kind {
                                 SourceKind::Band => Source::Band { lo, hi },
                                 SourceKind::Onset => Source::Onset { lo, hi },
+                                SourceKind::Beat => Source::Beat { lo, hi },
                                 SourceKind::Trigger => Source::Trigger { lo, hi },
                                 SourceKind::Level => Source::Level,
                                 SourceKind::Aggregate => Source::Aggregate { of, rate },
@@ -746,7 +757,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                 },
                 cx,
             )
-            // Five kinds outrun a narrow host in the longer languages, so the
+            // The kinds outrun a narrow host in the longer languages, so the
             // chips wrap rather than run off the edge.
             .flex_shrink()
             .flex_wrap()
@@ -772,6 +783,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             |signal| {
                                 if let Source::Band { lo, hi }
                                 | Source::Onset { lo, hi }
+                                | Source::Beat { lo, hi }
                                 | Source::Trigger { lo, hi } = &mut signal.source
                                 {
                                     let ceil = (*hi / MIN_RATIO).max(SLIDER_MIN_HZ);
@@ -802,6 +814,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
                             |signal| {
                                 if let Source::Band { lo, hi }
                                 | Source::Onset { lo, hi }
+                                | Source::Beat { lo, hi }
                                 | Source::Trigger { lo, hi } = &mut signal.source
                                 {
                                     let floor = (*lo * MIN_RATIO).min(SLIDER_MAX_HZ);
@@ -819,7 +832,7 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
         .when(spectral, |d| {
             d.child(panel::setting_row_wrap(
                 rox_i18n::t!("signal-response"),
-                Some(if matches!(kind, SourceKind::Onset | SourceKind::Trigger) {
+                Some(if pulse {
                     rox_i18n::t!("signal-response-pulse")
                 } else {
                     rox_i18n::t!("signal-response-drift")
@@ -847,10 +860,10 @@ fn signal_tuning<P: SignalHost>(host: &P, id: u64, cx: &mut Context<P>) -> Div {
             ))
             .child(panel::setting_row_wrap(
                 rox_i18n::t!("signal-threshold"),
-                Some(if kind == SourceKind::Trigger {
-                    rox_i18n::t!("signal-threshold-trigger")
-                } else {
-                    rox_i18n::t!("signal-threshold-gate")
+                Some(match kind {
+                    SourceKind::Trigger => rox_i18n::t!("signal-threshold-trigger"),
+                    SourceKind::Beat => rox_i18n::t!("signal-threshold-beat"),
+                    _ => rox_i18n::t!("signal-threshold-gate"),
                 }),
                 panel::value_slider_edit(
                     &scrubs.threshold,
@@ -1342,6 +1355,20 @@ mod label_tests {
 
         rox_i18n::pin_thread_locale("de");
         assert_eq!(signal_label(&wide), "Onset 30 Hz–1,5 kHz");
+    }
+
+    #[test]
+    fn a_beat_is_worded_apart_from_an_onset() {
+        let beat = unnamed(Source::Beat {
+            lo: 30.0,
+            hi: 120.0,
+        });
+
+        rox_i18n::pin_thread_locale("en-CA");
+        assert_eq!(signal_label(&beat), "Beat 30-120 Hz");
+
+        rox_i18n::pin_thread_locale("ru");
+        assert_eq!(signal_label(&beat), "Бит 30–120 Гц");
     }
 
     #[test]

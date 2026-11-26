@@ -5848,6 +5848,31 @@ mod tests {
         assert_eq!(look.active_layout.as_deref(), Some("good"));
     }
 
+    /// A rox that doesn't know a signal kind drops that signal alone: the
+    /// workspace loads, and so does every signal it does know.
+    #[test]
+    fn a_signal_of_an_unknown_kind_costs_only_that_signal() {
+        let json = serde_json::json!({
+            "bundle": {
+                "signals": [
+                    { "id": 1, "name": "Kick", "source": { "kind": "band", "lo": 30.0, "hi": 120.0 } },
+                    { "id": 2, "source": { "kind": "sparkle", "lo": 30.0, "hi": 120.0 } },
+                    { "id": 3, "source": { "kind": "beat", "lo": 30.0, "hi": 120.0 }, "threshold": 0.4 },
+                ],
+            },
+            "active_layout": "good",
+        });
+        let look: LookState = serde_json::from_value(json).unwrap();
+
+        let ids: Vec<u64> = look.bundle.signals.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [1, 3]);
+        assert!(matches!(
+            look.bundle.signals[1].source,
+            rox_viz::signal::Source::Beat { lo, hi } if lo == 30.0 && hi == 120.0
+        ));
+        assert_eq!(look.active_layout.as_deref(), Some("good"));
+    }
+
     #[test]
     fn approved_shaders_ride_the_session_shard() {
         let mut session = SessionState::default();

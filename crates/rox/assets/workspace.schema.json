@@ -242,13 +242,13 @@
           }
         },
         "smooth": {
-          "description": "Smoothing, 0 snaps to the music and 1 drifts. On onset and trigger, the pulse decay.",
+          "description": "Smoothing, 0 snaps to the music and 1 drifts. On onset, beat and trigger, the pulse decay.",
           "type": "number",
           "format": "float",
           "default": 0.30000001192092896
         },
         "threshold": {
-          "description": "The gate, 0 to 1 (0 is off): output under it is nothing, and above it\neases in through a smoothstep. On a trigger, the fire level instead.",
+          "description": "The gate, 0 to 1 (0 is off): output under it is nothing, and above it\neases in through a smoothstep. On a trigger, the fire level instead; on\na beat, the level the band must reach for a beat to count.",
           "type": "number",
           "format": "float",
           "default": 0.0
@@ -314,6 +314,29 @@
             "kind": {
               "type": "string",
               "const": "onset"
+            }
+          },
+          "required": [
+            "kind",
+            "lo",
+            "hi"
+          ]
+        },
+        {
+          "description": "A pulse when the band climbs well past how far it usually climbs. Fires\non a kick that rings through the beat, where Onset's average catches up.",
+          "type": "object",
+          "properties": {
+            "lo": {
+              "type": "number",
+              "format": "float"
+            },
+            "hi": {
+              "type": "number",
+              "format": "float"
+            },
+            "kind": {
+              "type": "string",
+              "const": "beat"
             }
           },
           "required": [

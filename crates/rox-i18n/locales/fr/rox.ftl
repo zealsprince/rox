@@ -40,7 +40,7 @@ query-source-selection = Sélection
 
 ## Signals and routes
 signal-source = Source
-    .description = Ce que le signal écoute : Bande suit une plage de fréquences, Niveau tout le mixage, Attaque pulse à chaque frappe dans la plage, Déclencheur lance une impulsion quand la plage atteint son seuil, Total cumule un autre signal dans le temps
+    .description = Ce que le signal écoute : Bande suit une plage de fréquences, Niveau tout le mixage, Attaque pulse à chaque frappe dans la plage, Pulsation pulse sur chaque temps de la plage même quand la musique est dense et forte, Déclencheur lance une impulsion quand la plage atteint son seuil, Total cumule un autre signal dans le temps
 signal-kind-band = Bande
 signal-kind-level = Niveau
 signal-kind-onset = Attaque
@@ -63,6 +63,9 @@ signal-response-drift = 0 colle à la musique, 100 dérive derrière elle
 signal-threshold = Seuil
 signal-threshold-trigger = Le niveau que la plage doit atteindre pour lancer l'impulsion ; elle ne repart pas tant que le niveau n'est pas redescendu sous la marque du vumètre au-dessus
 signal-threshold-gate = En dessous, le signal est coupé ; au-dessus, la sortie remonte depuis zéro, donc les passages calmes ne font pas bouger le bouton. La marque sur le vumètre au-dessus montre où il se trouve
+signal-kind-beat = Pulsation
+signal-label-beat = { signal-kind-beat } { $range }
+signal-threshold-beat = Le niveau que la plage doit atteindre pour qu'une pulsation compte, pour que les passages doux restent tranquilles. La marque sur le vumètre au-dessus montre où il se trouve
 signal-low-bound = Limite basse
 signal-high-bound = Limite haute
 signal-adds-up = Cumule
@@ -2293,7 +2296,7 @@ console-window-title = rox - Console
 signals-about-toggle = À propos des signaux
 signals-blurb-marked = Les panneaux marqués de ceci dans les menus peuvent lier la plupart de leurs paramètres : fais un clic droit sur un paramètre dans les réglages du panneau et choisis un signal, ou ajoutes-en un depuis là.
 signals-blurb-shared = Ce qui se règle ici est partagé : un changement s'applique à chaque paramètre routé vers ce signal, dans chaque panneau et chaque fenêtre.
-signals-blurb-total = Un Total est le quatrième genre : il cumule un autre signal dans le temps et boucle à 1, donc il monte tant que la musique est forte et cale quand elle ne l'est pas. À utiliser quand un shader a besoin d'une phase qui suit le morceau plutôt que l'horloge.
+signals-blurb-total = Un Total fonctionne autrement : il cumule un autre signal dans le temps et boucle à 1, donc il monte tant que la musique est forte et cale quand elle ne l'est pas. À utiliser quand un shader a besoin d'une phase qui suit le morceau plutôt que l'horloge.
 signals-blurb-what = Un signal transforme ce qui joue en un seul nombre entre 0 et 1 : l'énergie dans une bande de fréquences, le niveau du mixage entier, ou une impulsion à chaque frappe dans une bande. Réponse règle la vitesse à laquelle il suit, Seuil le fait taire sous un niveau que tu choisis.
 signals-no-library = Aucune fenêtre de bibliothèque n'est ouverte, donc ceux-ci n'affichent aucun audio. Les modifications s'enregistrent quand même.
 signals-window-title = rox - Signaux

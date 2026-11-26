@@ -39,7 +39,7 @@ query-source-selection = 选中
 
 ## Signals and routes
 signal-source = 来源
-    .description = 信号跟随什么：频段跟一段频率范围，电平跟整个混音，起音在这段范围内每次击打时脉冲一下，触发在范围达到阈值时发出脉冲，累加把另一个信号随时间加起来
+    .description = 信号跟随什么：频段跟一段频率范围，电平跟整个混音，起音在这段范围内每次击打时脉冲一下，节拍在音乐密集响亮时也会在这段范围内的每一拍脉冲一下，触发在范围达到阈值时发出脉冲，累加把另一个信号随时间加起来
 signal-kind-band = 频段
 signal-kind-level = 电平
 signal-kind-onset = 起音
@@ -62,6 +62,9 @@ signal-response-drift = 0 紧贴音乐，100 拖在后面
 signal-threshold = 阈值
 signal-threshold-trigger = 这段范围要达到多高才触发脉冲；在电平回落到上方表盘的刻度以下之前，它不会再触发
 signal-threshold-gate = 低于此值信号读作零，高于它输出重新从零开始上升，安静的段落就推不动旋钮。上方表盘上的刻度标出了它的位置
+signal-kind-beat = 节拍
+signal-label-beat = { signal-kind-beat } { $range }
+signal-threshold-beat = 这段范围要达到多高，一次节拍才算数，安静的段落就保持平静。上方表盘上的刻度标出了它的位置
 signal-low-bound = 低端
 signal-high-bound = 高端
 signal-adds-up = 累加对象
@@ -2186,7 +2189,7 @@ console-window-title = rox - 控制台
 signals-about-toggle = 关于信号
 signals-blurb-marked = 菜单里带这个标记的面板，大部分参数都能绑定：在面板设置里右键某个参数，选一个信号，或者直接从那里加一个。
 signals-blurb-shared = 在这里调的东西是共享的：一处改动会作用到路由到那个信号的每个参数上，跨面板、跨窗口都一样。
-signals-blurb-total = 累加是第四种：它把另一个信号随时间加起来，到 1 就回绕，所以音乐响时它往上升，不响时它停住。着色器需要一个跟着歌走而不是跟着时钟走的相位时，就用它。
+signals-blurb-total = 累加的方式不同：它把另一个信号随时间加起来，到 1 就回绕，所以音乐响时它往上升，不响时它停住。着色器需要一个跟着歌走而不是跟着时钟走的相位时，就用它。
 signals-blurb-what = 一个信号把正在播放的内容变成 0 到 1 之间的一个数：某个频段的能量、整个混音的电平，或者某个频段里每次击打的脉冲。“响应”决定它跟得多快，“阈值”让它在你挑的电平以下保持安静。
 signals-no-library = 没有打开的媒体库窗口，所以这些看不到音频。编辑照样保存。
 signals-window-title = rox - 信号

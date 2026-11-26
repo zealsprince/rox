@@ -38,7 +38,7 @@ query-source-selection = Selección
 
 ## Signals and routes
 signal-source = Origen
-    .description = Qué sigue la señal: Banda rastrea un rango de frecuencias, Nivel toda la mezcla, Ataque pulsa en cada golpe del rango, Disparo lanza un pulso cuando el rango alcanza su umbral, Total suma otra señal a lo largo del tiempo
+    .description = Qué sigue la señal: Banda rastrea un rango de frecuencias, Nivel toda la mezcla, Ataque pulsa en cada golpe del rango, Beat pulsa en cada tiempo del rango aunque la música sea densa y fuerte, Disparo lanza un pulso cuando el rango alcanza su umbral, Total suma otra señal a lo largo del tiempo
 signal-kind-band = Banda
 signal-kind-level = Nivel
 signal-kind-onset = Ataque
@@ -61,6 +61,9 @@ signal-response-drift = 0 se pega a la música, 100 va a la zaga
 signal-threshold = Umbral
 signal-threshold-trigger = El nivel que el rango tiene que alcanzar para lanzar el pulso; no vuelve a dispararse hasta que el nivel cae por debajo de la marca del medidor de arriba
 signal-threshold-gate = Por debajo de esto la señal no marca nada, y por encima la salida vuelve a subir desde cero, así las partes suaves no mueven el mando. La marca del medidor de arriba señala dónde está
+signal-kind-beat = Beat
+signal-label-beat = { signal-kind-beat } { $range }
+signal-threshold-beat = El nivel que el rango tiene que alcanzar para que un beat cuente, así las partes suaves se quedan quietas. La marca del medidor de arriba señala dónde está
 signal-low-bound = Límite inferior
 signal-high-bound = Límite superior
 signal-adds-up = Suma
@@ -2281,7 +2284,7 @@ console-window-title = rox - Consola
 signals-about-toggle = Sobre las señales
 signals-blurb-marked = Los paneles marcados con esto en los menús pueden enlazar casi todos sus parámetros: haz clic derecho en un parámetro de los ajustes del panel y elige una señal, o añade una desde ahí.
 signals-blurb-shared = Lo que se ajusta aquí es compartido: un cambio se aplica a todos los parámetros enrutados a esa señal, en todos los paneles y ventanas.
-signals-blurb-total = Un Total es la cuarta clase: suma otra señal a lo largo del tiempo y da la vuelta en 1, así que sube mientras la música está fuerte y se estanca mientras no lo está. Úsalo cuando un shader necesite una fase que avance con la canción y no con el reloj.
+signals-blurb-total = Un Total funciona de otra manera: suma otra señal a lo largo del tiempo y da la vuelta en 1, así que sube mientras la música está fuerte y se estanca mientras no lo está. Úsalo cuando un shader necesite una fase que avance con la canción y no con el reloj.
 signals-blurb-what = Una señal convierte lo que suena en un número entre 0 y 1: la energía de una banda de frecuencias, el nivel de toda la mezcla, o un pulso en cada golpe dentro de una banda. Respuesta marca la rapidez con que la sigue, Umbral la silencia por debajo de un nivel que elijas.
 signals-no-library = No hay ninguna ventana de biblioteca abierta, así que estas no muestran audio. Los cambios se guardan igual.
 signals-window-title = rox - Señales

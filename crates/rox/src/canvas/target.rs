@@ -1768,6 +1768,7 @@ fn wire_kind(source: &SignalSource) -> &'static str {
         SignalSource::Band { .. } => "band",
         SignalSource::Level => "level",
         SignalSource::Onset { .. } => "onset",
+        SignalSource::Beat { .. } => "beat",
         SignalSource::Trigger { .. } => "trigger",
         SignalSource::Aggregate { .. } => "aggregate",
     }
@@ -3602,8 +3603,14 @@ mod tests {
             reset_on_track: true,
             ..Signal::default()
         };
+        let beat = Signal {
+            id: 8,
+            source: SignalSource::Beat { lo: 30., hi: 120. },
+            threshold: 0.4,
+            ..Signal::default()
+        };
 
-        let pool = pool_line(&[named, level, long, onset, total]);
+        let pool = pool_line(&[named, level, long, onset, total, beat]);
         let read: serde_json::Value = serde_json::from_str(&pool).expect("json");
 
         // A signal's kind and the band it listens to describe the signal, so
@@ -3631,6 +3638,12 @@ mod tests {
         assert_eq!(
             read["pool"][4],
             serde_json::json!({ "id": 7, "name": "total of 3", "kind": "aggregate" })
+        );
+        assert_eq!(
+            read["pool"][5],
+            serde_json::json!({
+                "id": 8, "name": "beat 30-120 Hz", "kind": "beat", "low": 30, "high": 120,
+            })
         );
         assert_eq!(pool.matches('\n').count(), 1, "one line");
 

@@ -391,6 +391,13 @@ what it does on any ended queue: it replays that last track and runs on into wha
 the undo put back after it. A restore that lands while the last track's tail is still
 in the ring hasn't reached the end, and the queue runs on into what came back.
 
+A paused station that has let its connection go has no open source either: a pause past
+`LIVE_IDLE_HANGUP_SECS` (half an hour) hangs up, and a paused launch restore never dials.
+That's a paused track, not an ended queue, so an insert doesn't jump there: Play Next and
+Add to Queue queue behind the station, it stays current and paused, and Play rejoins it
+at the live edge, as a paused file stays current under the same edits. Play Now still
+plays the new track, as it does over any paused track.
+
 Moves of the same entries closer together than 800 ms merge into one step, and the stack
 holds 200 steps: the canvas's window and bound. Removes never merge. The stack lives for
 the session: Stop and the launch restore clear it.

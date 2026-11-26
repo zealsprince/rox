@@ -10,9 +10,9 @@
 //! approved opens the enable card first, and confirming it is the only way
 //! an approval gets written. Installing a package only lists it.
 //!
-//! Renderers (ADR 37) are the same packages and go through the same switch
-//! and card, listed in a section of their own under the plugins. Nothing on
-//! the page calls a renderer a plugin.
+//! Renderers (ADR 37) are the same packages underneath and list on a page of
+//! their own ([`super::renderers_page`]), which draws its rows with the row
+//! code here and raises the same card.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,13 +21,14 @@ use rox_library::members::InLibrary;
 use rox_library::projection::{FilterField, FilterSet};
 use rox_panel_api::toast::Toast;
 use rox_plugins::host::STOPPED_AFTER_CRASHES;
-use rox_plugins::manifest::{Manifest, ProviderDomain};
 use rox_plugins::{Loaded, Origin, Status, package};
 use rox_services::plugin_library;
-use rox_services::plugins::{self as host, Change, Grant, Since};
+use rox_services::plugins as host;
 use serde_json::Value;
 
 use super::*;
+
+pub(crate) use crate::enable_card::EnableCard;
 
 /// The action cell here holds Developer mode, Pack and Remove beside the
 /// switch.
@@ -52,7 +53,7 @@ const GUIDE_URL: &str = concat!(
 #[derive(Default)]
 pub(super) struct PluginsPage {
     generation: Option<u64>,
-    folders: Vec<Loaded>,
+    pub(super) folders: Vec<Loaded>,
     /// Member counts per synced collection, by plugin id.
     collections: HashMap<String, Vec<(String, usize)>>,
     in_library: HashMap<String, InLibrary>,
@@ -209,8 +210,9 @@ enum Standing {
 }
 
 /// Each picked file installs on its own and toasts its own outcome. The row
-/// shows up through the rescan that follows, switched off.
-fn install_plugins(window: &mut Window, cx: &mut App) {
+/// shows up through the rescan that follows, switched off, on the Plugins
+/// page or the Renderers page by what the package declares.
+pub(super) fn install_plugins(window: &mut Window, cx: &mut App) {
     let rx = rox_core::desktop::prompt_for_paths(
         cx,
         "settings plugins: install",
@@ -333,182 +335,9 @@ impl Standing {
     }
 }
 
-/// What the confirm reads out before a plugin runs for the first time, or
-/// again after its folder changed. Built once, when the switch is pressed.
-pub(crate) struct EnableCard {
-    pub(super) name: String,
-    /// The folder as scanned when the card opened: its hash is what gets
-    /// approved, not whatever is on disk by the time Confirm is pressed.
-    folder: Loaded,
-    /// Who made it and what it says it is, above the dialog's body.
-    pub(super) lead: Vec<SharedString>,
-    /// What it declares, the programs it uses, and what changed, below it.
-    pub(super) lines: Vec<SharedString>,
-}
-
-impl EnableCard {
-    fn of(folder: Loaded, record: Option<&PluginRecord>) -> Option<EnableCard> {
-        let manifest = folder.manifest.clone()?;
-        let mut lead: Vec<SharedString> = Vec::new();
-        let mut lines: Vec<SharedString> = Vec::new();
-
-        let mut byline = Vec::new();
-        if !manifest.meta.author.trim().is_empty() {
-            byline.push(
-                rox_i18n::t!(
-                    "workspace-byline-author",
-                    author = manifest.meta.author.trim()
-                )
-                .to_string(),
-            );
-        }
-        byline.push(
-            rox_i18n::t!(
-                "workspace-byline-version",
-                version = manifest.version.as_str()
-            )
-            .to_string(),
-        );
-        lead.push(byline.join(", ").into());
-
-        if !manifest.meta.description.trim().is_empty() {
-            lead.push(manifest.meta.description.trim().to_string().into());
-        }
-
-        if let Some(source) = &manifest.capabilities.source {
-            lines.push(rox_i18n::t!(
-                "settings-plugins-card-source",
-                label = source.label.as_str()
-            ));
-            if source.scrobble {
-                lines.push(rox_i18n::t!("settings-plugins-card-scrobbles"));
-            }
-            if source.lyrics {
-                lines.push(rox_i18n::t!("settings-plugins-card-lyrics"));
-            }
-            if source.favourites.is_some() {
-                lines.push(rox_i18n::t!("settings-plugins-card-favourites"));
-            }
-
-            if !source.actions.is_empty() {
-                let labels: Vec<&str> = source.actions.iter().map(|a| a.label.as_str()).collect();
-                lines.push(rox_i18n::t!(
-                    "settings-plugins-card-actions",
-                    actions = labels.join(", ")
-                ));
-            }
-        }
-
-        // What a renderer is sent, from the grants the host hands it, so the
-        // card can't promise less than it gets.
-        if let Some(renderer) = &manifest.capabilities.renderer {
-            lines.push(rox_i18n::t!(
-                "settings-plugins-card-renderer",
-                label = renderer.label.as_str()
-            ));
-        }
-        lines.extend(
-            host::grants(&manifest)
-                .into_iter()
-                .map(|grant| grant_line(grant, &manifest)),
-        );
-
-        let providers = manifest.capabilities.providers;
-        if providers.any() {
-            let domains: Vec<SharedString> = ProviderDomain::ALL
-                .into_iter()
-                .filter(|domain| providers.has(*domain))
-                .map(domain_name)
-                .collect();
-            lines.push(rox_i18n::t!(
-                "settings-plugins-card-providers",
-                domains = domains.join(", ")
-            ));
-        }
-
-        for (program, found) in &folder.programs {
-            lines.push(match found {
-                true => rox_i18n::t!(
-                    "settings-plugins-card-program-found",
-                    program = program.as_str()
-                ),
-                false => rox_i18n::t!(
-                    "settings-plugins-card-program-missing",
-                    program = program.as_str()
-                ),
-            });
-        }
-
-        // Only a re-approval has something to diff against.
-        if let Some(record) = record.filter(|record| !record.approved_manifest.is_null()) {
-            let files = match manifest.is_renderer() {
-                true => "settings-plugins-card-unchanged-renderer",
-                false => "settings-plugins-card-unchanged",
-            };
-
-            let since = host::since(
-                &record.approved_manifest,
-                &record.hash,
-                &folder.document,
-                &folder.hash,
-            );
-            match since {
-                Since::Declared(changes) => {
-                    lines.push(rox_i18n::t!("settings-plugins-card-changed"));
-                    lines.extend(changes.iter().map(|change| change_line(change, &manifest)));
-                }
-                Since::Manifest => {
-                    lines.push(rox_i18n::t!("settings-plugins-card-manifest-changed"))
-                }
-                Since::Files => lines.push(rox_i18n::t!(files)),
-                Since::Nothing => {}
-            }
-        }
-
-        Some(EnableCard {
-            name: manifest.name.clone(),
-            folder,
-            lead,
-            lines,
-        })
-    }
-}
-
-fn grant_line(grant: Grant, manifest: &Manifest) -> SharedString {
-    match grant {
-        Grant::MusicSignals => rox_i18n::t!("settings-plugins-card-renderer-signals"),
-        Grant::Pointer => rox_i18n::t!("settings-plugins-card-renderer-pointer"),
-        Grant::WantedSignals => rox_i18n::t!(
-            "settings-plugins-card-renderer-wanted",
-            signals = wanted_list(manifest)
-        ),
-        Grant::Palette => rox_i18n::t!("settings-plugins-card-renderer-palette"),
-        Grant::Cover => rox_i18n::t!("settings-plugins-card-renderer-cover"),
-    }
-}
-
-/// The signals a renderer asks for, worded as the pool would list them
-/// once added. The names are the renderer's, capped and plain by the
-/// manifest check.
-fn wanted_list(manifest: &Manifest) -> String {
-    let wanted = manifest
-        .capabilities
-        .renderer
-        .as_ref()
-        .map(|cap| cap.signals.as_slice())
-        .unwrap_or_default();
-
-    let adding = rox_services::renderers::signals_to_add(wanted, &[]);
-    adding
-        .iter()
-        .map(|signal| crate::canvas::target::signal_words(signal, &adding))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// A tooltip that wraps at [`TIP_MAX_W`], or narrower in a window too small
 /// for that, so it never runs past the window's edge.
-fn wrapped_tip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui::AnyView {
+pub(super) fn wrapped_tip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui::AnyView {
     let room = window.viewport_size().width - TIP_MARGIN * 2.;
     let width = if room < TIP_MAX_W { room } else { TIP_MAX_W };
 
@@ -519,52 +348,14 @@ fn wrapped_tip(text: SharedString, window: &mut Window, cx: &mut App) -> gpui::A
 
 /// Whether a scanned package is a renderer. One whose manifest doesn't
 /// parse can't say, and lists with the plugins.
-fn is_renderer(folder: &Loaded) -> bool {
+pub(super) fn is_renderer(folder: &Loaded) -> bool {
     folder.manifest.as_ref().is_some_and(|m| m.is_renderer())
 }
 
-fn change_line(change: &Change, manifest: &Manifest) -> SharedString {
-    match change {
-        Change::CapabilityAdded(name) => rox_i18n::t!(
-            "settings-plugins-change-capability-added",
-            name = name.as_str()
-        ),
-        Change::CapabilityRemoved(name) => rox_i18n::t!(
-            "settings-plugins-change-capability-removed",
-            name = name.as_str()
-        ),
-        Change::ProgramAdded(program) => rox_i18n::t!(
-            "settings-plugins-change-program",
-            program = program.as_str()
-        ),
-        Change::Scrobble(true) => rox_i18n::t!("settings-plugins-change-scrobble-on"),
-        Change::Scrobble(false) => rox_i18n::t!("settings-plugins-change-scrobble-off"),
-        Change::Entry => rox_i18n::t!("settings-plugins-change-entry"),
-        Change::ActionAdded(label) => rox_i18n::t!(
-            "settings-plugins-change-action-added",
-            label = label.as_str()
-        ),
-        Change::ActionChanged(label) => rox_i18n::t!(
-            "settings-plugins-change-action-changed",
-            label = label.as_str()
-        ),
-        Change::ProviderAdded(domain) => rox_i18n::t!(
-            "settings-plugins-change-provider",
-            domain = domain_name(*domain).to_string()
-        ),
-        // The card lists every grant above. Under the changes it says the
-        // new one again, worded the same.
-        Change::Grant(grant) => grant_line(*grant, manifest),
-    }
-}
-
-/// A provider domain as the card and the change lines name it, mid-sentence.
-fn domain_name(domain: ProviderDomain) -> SharedString {
-    match domain {
-        ProviderDomain::Lyrics => rox_i18n::t!("settings-plugins-domain-lyrics"),
-        ProviderDomain::Metadata => rox_i18n::t!("settings-plugins-domain-metadata"),
-        ProviderDomain::Artist => rox_i18n::t!("settings-plugins-domain-artist"),
-    }
+/// Whether a record whose package is gone was a renderer, by the manifest it
+/// was last approved under, so its Missing row stays on its own page.
+pub(super) fn was_renderer(record: &PluginRecord) -> bool {
+    record.approved_manifest["capabilities"]["renderer"].is_object()
 }
 
 /// Member counts per collection, on its own connection like the Sources
@@ -647,14 +438,21 @@ impl SettingsWindow {
     }
 
     /// From render: re-read when the host moved, and give every text field a
-    /// switched-on plugin's config shows an input to hold it.
+    /// switched-on plugin's config shows an input to hold it. The Renderers
+    /// page reads the same folders, with plugins on or off.
     pub(super) fn sync_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.plugins_enabled {
-            return;
-        }
-
         if self.plugin_page.generation != Some(host::generation()) {
             self.refresh_plugins(cx);
+        }
+
+        // Open, the Renderers page follows the folder so a renderer copied
+        // in lists without a Rescan. The watch only rescans.
+        if self.page == Page::Renderers {
+            host::watch_folder(cx);
+        }
+
+        if !self.plugins_enabled {
+            return;
         }
 
         // A Remove from Library elsewhere moves the counts without moving the host.
@@ -773,7 +571,7 @@ impl SettingsWindow {
         }
     }
 
-    fn switch_plugin(&mut self, id: &str, on: bool, cx: &mut Context<Self>) {
+    pub(super) fn switch_plugin(&mut self, id: &str, on: bool, cx: &mut Context<Self>) {
         if !on {
             host::set_enabled(id, false, cx);
             self.refresh_plugins(cx);
@@ -805,8 +603,9 @@ impl SettingsWindow {
 
     /// Only ever called from the enable card's Switch On.
     pub(super) fn confirm_enable_plugin(&mut self, card: Box<EnableCard>, cx: &mut Context<Self>) {
-        host::approve(&card.folder, cx);
-        self.plugin_page.open.insert(card.folder.id.clone());
+        let id = card.folder().id.clone();
+        card.accept(cx);
+        self.plugin_page.open.insert(id);
         self.refresh_plugins(cx);
         cx.notify();
     }
@@ -965,57 +764,13 @@ impl SettingsWindow {
     }
 
     pub(super) fn plugins_page(&self, q: &Query, cx: &mut Context<Self>) -> PageBody {
-        let dir = settings::plugins_dir();
-        let controls = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(tokens::SPACE_XS)
-            .child(
-                small_button(
-                    rox_i18n::t!("settings-plugins-install"),
-                    icons::DOWNLOAD,
-                    false,
-                    |_, window, cx| install_plugins(window, cx),
-                )
-                .keyed("plugins-install"),
-            )
-            .child(small_button(
-                rox_i18n::t!("settings-plugins-reveal"),
-                icons::FOLDER,
-                false,
-                move |_, _, cx| {
-                    // rox never makes the folder on its own; this is where
-                    // the user asks for it. The watch picks it up.
-                    if let Err(e) = std::fs::create_dir_all(&dir) {
-                        log::warn!("plugins: creating {}: {e}", dir.display());
-                    }
-                    rox_core::desktop::reveal_path(cx, "settings plugins: reveal folder", &dir);
-                },
-            ))
-            .child(small_button(
-                rox_i18n::t!("settings-common-rescan"),
-                icons::REFRESH_CW,
-                false,
-                |_, _, cx| host::rescan(cx),
-            ))
-            .child(small_button(
-                rox_i18n::t!("settings-plugins-guide"),
-                icons::EXTERNAL_LINK,
-                false,
-                |_, _, cx| {
-                    rox_core::desktop::open_url(cx, "settings plugins: open guide", GUIDE_URL)
-                },
-            ));
+        let controls =
+            package_controls("plugins", rox_i18n::t!("settings-plugins-guide"), GUIDE_URL);
 
         // One row per plugin the scan found, then one per record whose plugin
-        // is gone.
-        let missing: Vec<&str> = self
-            .plugins
-            .iter()
-            .map(|(record, _)| record.id.as_str())
-            .filter(|id| !self.plugin_page.folders.iter().any(|f| f.id == *id))
-            .collect();
+        // is gone. Renderers list on their own page.
+        let (rows, missing) = self.package_rows(false, cx);
+        let empty = rows.is_empty();
 
         let mut keywords = vec![
             "plugin",
@@ -1024,10 +779,14 @@ impl SettingsWindow {
             "folder",
             "approve",
             "developer",
-            "renderer",
-            "render",
         ];
-        keywords.extend(self.plugin_page.folders.iter().map(|f| f.id.as_str()));
+        keywords.extend(
+            self.plugin_page
+                .folders
+                .iter()
+                .filter(|f| !is_renderer(f))
+                .map(|f| f.id.as_str()),
+        );
         keywords.extend(missing.iter().copied());
 
         let intro = div()
@@ -1035,29 +794,6 @@ impl SettingsWindow {
             .text_color(palette::text_muted())
             .child(rox_i18n::t!("settings-plugins-intro"));
 
-        // The scan puts the plugin holding an id ahead of every package it
-        // refused, and those share its id, so each refused one draws as its
-        // own row under its own key.
-        let mut seen: HashMap<&str, usize> = HashMap::new();
-        let mut rows: Vec<AnyElement> = Vec::new();
-        let mut renderer_rows: Vec<AnyElement> = Vec::new();
-        for folder in &self.plugin_page.folders {
-            let before = seen.entry(folder.id.as_str()).or_default();
-            let refused = (*before > 0).then_some((folder, *before));
-            *before += 1;
-
-            let row = self.plugin_row(&folder.id, refused, cx).into_any_element();
-            match is_renderer(folder) {
-                true => renderer_rows.push(row),
-                false => rows.push(row),
-            }
-        }
-        for id in missing {
-            rows.push(self.plugin_row(id, None, cx).into_any_element());
-        }
-        // A renderer is installed the same way, so the line would mislead
-        // beside a filled Renderers section.
-        let empty = rows.is_empty() && renderer_rows.is_empty();
         let table = div().flex().flex_col().children(rows).when(empty, |d| {
             d.child(
                 div()
@@ -1065,38 +801,6 @@ impl SettingsWindow {
                     .text_color(palette::text_muted())
                     .child(rox_i18n::t!("settings-plugins-empty")),
             )
-        });
-
-        // Only once one is installed: an empty heading would explain a thing
-        // nobody has yet.
-        let renderers = (!renderer_rows.is_empty()).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_XS)
-                .pt(tokens::SPACE_MD)
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(tokens::SPACE_SM)
-                        .child(
-                            svg()
-                                .path(icons::APP_WINDOW)
-                                .size(px(14.))
-                                .flex_none()
-                                .text_color(palette::text_muted()),
-                        )
-                        .child(rox_i18n::t!("settings-plugins-renderers")),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette::text_muted())
-                        .child(rox_i18n::t!("settings-plugins-renderers-intro")),
-                )
-                .child(div().flex().flex_col().children(renderer_rows))
         });
 
         PageBody::new().section(Section::new(
@@ -1128,17 +832,53 @@ impl SettingsWindow {
                     )
                     .custom(&keywords, || intro.into_any_element())
                     .custom(&keywords, || table.into_any_element())
-                    .when_some(renderers, |rows, renderers| {
-                        rows.custom(&keywords, || renderers.into_any_element())
-                    })
                 })
             },
         ))
     }
 
+    /// The rows of one page: the renderers, or everything else. Each package
+    /// the scan found, then each record whose package is gone, with the ids
+    /// of those for the page's search words.
+    pub(super) fn package_rows(
+        &self,
+        renderers: bool,
+        cx: &mut Context<Self>,
+    ) -> (Vec<AnyElement>, Vec<&str>) {
+        // The scan puts the plugin holding an id ahead of every package it
+        // refused, and those share its id, so each refused one draws as its
+        // own row under its own key.
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for folder in &self.plugin_page.folders {
+            let before = seen.entry(folder.id.as_str()).or_default();
+            let refused = (*before > 0).then_some((folder, *before));
+            *before += 1;
+
+            if is_renderer(folder) == renderers {
+                rows.push(self.plugin_row(&folder.id, refused, cx).into_any_element());
+            }
+        }
+
+        let missing: Vec<&str> = self
+            .plugins
+            .iter()
+            .map(|(record, _)| record)
+            .filter(|record| !self.plugin_page.folders.iter().any(|f| f.id == record.id))
+            .filter(|record| was_renderer(record) == renderers)
+            .map(|record| record.id.as_str())
+            .collect();
+        for id in &missing {
+            rows.push(self.plugin_row(id, None, cx).into_any_element());
+        }
+
+        (rows, missing)
+    }
+
     /// `refused` is a package the scan turned away because another plugin
     /// holds its id, with how many rows for that id came before it. It has
-    /// no record of its own: the one under its id is the holder's.
+    /// no record of its own: the one under its id is the holder's. A
+    /// renderer's row is drawn here too, for the Renderers page.
     fn plugin_row(
         &self,
         id: &str,
@@ -1200,7 +940,7 @@ impl SettingsWindow {
             .child(
                 svg()
                     .path(match renderer {
-                        true => icons::APP_WINDOW,
+                        true => icons::MONITOR_PLAY,
                         false => icons::PLUG,
                     })
                     .size(px(14.))
@@ -1702,6 +1442,53 @@ impl SettingsWindow {
     }
 }
 
+/// Install, Reveal Folder, Rescan and a guide, at the head of the Plugins
+/// and the Renderers pages. Both install into the one plugins folder, and
+/// the scan sorts what lands there onto its page.
+pub(super) fn package_controls(key: &str, guide: SharedString, url: &'static str) -> Div {
+    let dir = settings::plugins_dir();
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        .child(
+            small_button(
+                rox_i18n::t!("settings-plugins-install"),
+                icons::DOWNLOAD,
+                false,
+                |_, window, cx| install_plugins(window, cx),
+            )
+            .keyed(SharedString::from(format!("{key}-install"))),
+        )
+        .child(small_button(
+            rox_i18n::t!("settings-plugins-reveal"),
+            icons::FOLDER,
+            false,
+            move |_, _, cx| {
+                // rox never makes the folder on its own; this is where
+                // the user asks for it. The watch picks it up.
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    log::warn!("plugins: creating {}: {e}", dir.display());
+                }
+                rox_core::desktop::reveal_path(cx, "settings plugins: reveal folder", &dir);
+            },
+        ))
+        .child(small_button(
+            rox_i18n::t!("settings-common-rescan"),
+            icons::REFRESH_CW,
+            false,
+            |_, _, cx| host::rescan(cx),
+        ))
+        .child(small_button(
+            guide,
+            icons::EXTERNAL_LINK,
+            false,
+            move |_, _, cx| rox_core::desktop::open_url(cx, "settings plugins: open guide", url),
+        ))
+}
+
 /// Narrow the shared search to the plugin's source alone and raise the
 /// workspace, where every panel following that search shows what it has.
 fn show_in_library(state: &AppState, source: &str, workspace: AnyWindowHandle, cx: &mut App) {
@@ -1854,149 +1641,6 @@ mod tests {
         );
         assert_eq!(standing(Some(&ok), Some(&on), true, None), Standing::On);
         assert_eq!(standing(Some(&ok), None, false, None), Standing::Off);
-    }
-
-    #[test]
-    fn the_card_names_every_declared_domain() {
-        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
-        let mut provider = folder(None, &[]);
-        provider.manifest = Some(
-            rox_plugins::manifest::parse(
-                r#"{ "id": "tones", "name": "Tones", "version": "1", "api": 1,
-                     "entry": { "native": { "linux-x86_64": "a" } },
-                     "capabilities": { "providers": { "lyrics": true, "artist": true } } }"#,
-            )
-            .unwrap(),
-        );
-
-        let card = EnableCard::of(provider, None).unwrap();
-
-        assert_eq!(card.lines.len(), 1, "{:?}", card.lines);
-        assert!(
-            card.lines[0].contains("lyrics, artist info"),
-            "{}",
-            card.lines[0]
-        );
-    }
-
-    #[test]
-    fn a_renderers_card_says_what_it_gets_and_never_plugin() {
-        rox_i18n::pin_thread_locale(rox_i18n::SOURCE_LOCALE);
-        let mut renderer = folder(None, &[("python3", true)]);
-        renderer.manifest = Some(
-            rox_plugins::manifest::parse(
-                r#"{ "id": "bars", "name": "Bars", "version": "2", "api": 1,
-                     "entry": { "script": { "path": "draw.py", "interpreter": "python3" } },
-                     "capabilities": { "renderer": { "label": "Bars" } } }"#,
-            )
-            .unwrap(),
-        );
-
-        let card = EnableCard::of(renderer.clone(), None).unwrap();
-        let grants = host::grants(renderer.manifest.as_ref().unwrap());
-        assert_eq!(
-            card.lines.len(),
-            1 + grants.len() + 1,
-            "what it draws, each grant, the program: {:?}",
-            card.lines
-        );
-        assert!(card.lines[0].contains("Bars"), "{}", card.lines[0]);
-        let manifest = renderer.manifest.clone().unwrap();
-        for (line, grant) in card.lines[1..].iter().zip(&grants) {
-            assert_eq!(*line, grant_line(*grant, &manifest));
-        }
-
-        // Re-approving a renderer whose manifest didn't move.
-        let mut changed = renderer.clone();
-        changed.document = json!({ "id": "bars" });
-        let approved = PluginRecord {
-            approved_manifest: json!({ "id": "bars" }),
-            ..record(true, "old")
-        };
-        let again = EnableCard::of(changed, Some(&approved)).unwrap();
-        assert_eq!(
-            again.lines.last(),
-            Some(&rox_i18n::t!("settings-plugins-card-unchanged-renderer"))
-        );
-
-        // One whose description moved and nothing it declares.
-        let mut described = renderer.clone();
-        described.document = json!({ "id": "bars", "meta": { "description": "Louder." } });
-        let redescribed = EnableCard::of(described, Some(&approved)).unwrap();
-        assert_eq!(
-            redescribed.lines.last(),
-            Some(&rox_i18n::t!("settings-plugins-card-manifest-changed"))
-        );
-
-        // One that asks for everything a renderer can, and one that gained
-        // the palette and the cover since it was approved.
-        let mut asking = renderer.clone();
-        let document = json!({
-            "id": "bars", "name": "Bars", "version": "2", "api": 1,
-            "entry": { "script": { "path": "draw.py", "interpreter": "python3" } },
-            "capabilities": { "renderer": {
-                "label": "Bars", "palette": true, "cover": true,
-                "signals": [
-                    { "kind": "band", "low": 30, "high": 120, "name": "Kick" },
-                    { "kind": "level" },
-                ],
-            } },
-        });
-        asking.manifest = Some(rox_plugins::manifest::parse(&document.to_string()).unwrap());
-        asking.document = document;
-        let asks = EnableCard::of(asking.clone(), None).unwrap();
-        let wanted = "Follows these signals: Kick (Band 30-120 Hz), Level. \
-                      When you place a render target for it, rox offers to add the ones you don't have yet.";
-        assert_eq!(
-            asks.lines[1..6],
-            [
-                rox_i18n::t!("settings-plugins-card-renderer-signals"),
-                rox_i18n::t!("settings-plugins-card-renderer-pointer"),
-                SharedString::from(wanted),
-                SharedString::from(
-                    "Gets the colours of the current theme, which follow the cover when song theming is on.",
-                ),
-                SharedString::from("Gets the cover of the playing track, as a picture."),
-            ]
-        );
-
-        let mut approved_manifest = asking.document.clone();
-        approved_manifest["capabilities"]["renderer"]["palette"] = json!(false);
-        approved_manifest["capabilities"]["renderer"]
-            .as_object_mut()
-            .unwrap()
-            .remove("cover");
-        let before = PluginRecord {
-            approved_manifest,
-            ..record(true, "old")
-        };
-        let regained = EnableCard::of(asking, Some(&before)).unwrap();
-        let tail = &regained.lines[regained.lines.len() - 3..];
-        assert_eq!(
-            tail,
-            [
-                rox_i18n::t!("settings-plugins-card-changed"),
-                SharedString::from(
-                    "Gets the colours of the current theme, which follow the cover when song theming is on.",
-                ),
-                SharedString::from("Gets the cover of the playing track, as a picture."),
-            ]
-        );
-
-        let everything: Vec<String> = card
-            .lines
-            .iter()
-            .chain(&again.lines)
-            .chain(&redescribed.lines)
-            .chain(&asks.lines)
-            .chain(&regained.lines)
-            .chain(&card.lead)
-            .map(|line| line.to_lowercase())
-            .collect();
-        assert!(
-            everything.iter().all(|line| !line.contains("plugin")),
-            "{everything:?}"
-        );
     }
 
     #[test]

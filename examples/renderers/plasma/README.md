@@ -19,7 +19,7 @@ cargo build --release --manifest-path examples/renderers/plasma/Cargo.toml
 ```
 
 A renderer package is a folder holding `plugin.json` and what it runs. Make one in rox's
-plugins folder (Reveal Folder on the Plugins page opens it) and copy the build into it:
+plugins folder (Reveal Folder on the Renderers page opens it) and copy the build into it:
 
 ```sh
 mkdir <plugins>/plasma
@@ -33,14 +33,14 @@ on one mounted `noexec` the start fails with "Permission denied".
 
 ## Trying it
 
-1. Turn on Enable Plugins at the top of Settings > Plugins. With the folder above in
-   place, Plasma lists under Renderers, switched off.
-2. Switch Plasma on and confirm the card.
-3. Add a Canvas panel (Panels > Arrangement > Canvas). With Panels > Design Mode on,
-   right-click the empty stage, or press the plus in the canvas inspector's header, and
-   pick Add Render Target > Plasma.
-4. Leave design mode and play something with a few signals in the pool (Application >
-   Signals).
+1. With the folder above in place, Plasma lists on the Settings > Renderers page,
+   switched off.
+2. Add a Renderer panel (Panels > Visualizers > Renderer), press Pick a Renderer and pick
+   Plasma, then confirm its card. Or switch it on from the Renderers page.
+3. Play something with a few signals in the pool (Application > Signals).
+
+A canvas takes it too: with Panels > Design Mode on, right-click the empty stage, or
+press the plus in the canvas inspector's header, and pick Add Render Target > Plasma.
 
 Switched on, Developer mode on the renderer's row shows Pack, which writes the folder
 to a `.roxp` to share.

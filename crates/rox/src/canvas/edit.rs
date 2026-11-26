@@ -446,6 +446,21 @@ pub(crate) fn step_depth(depths: &[f32], index: usize, forward: bool) -> Option<
     })
 }
 
+/// The depth that carries sibling `index` in front of every other sibling,
+/// or behind them all, or None when it's already there.
+pub(crate) fn end_depth(depths: &[f32], index: usize, front: bool) -> Option<f32> {
+    let order = paint_order(depths);
+    let at = order.iter().position(|&ix| ix == index)?;
+    let last = order.len().checked_sub(1)?;
+
+    match front {
+        true if at == last => None,
+        false if at == 0 => None,
+        true => Some(depths[order[last]] + DEPTH_STEP),
+        false => Some(depths[order[0]] - DEPTH_STEP),
+    }
+}
+
 /// Each sibling's depth, as the painter orders them.
 pub(crate) fn depths(siblings: &[CanvasItem], parent: &Frame) -> Vec<f32> {
     siblings
@@ -1089,6 +1104,26 @@ mod tests {
         let mut moved = tied;
         moved[0] = z;
         assert_eq!(paint_order(&moved)[2], 0);
+    }
+
+    #[test]
+    fn to_front_and_to_back_pass_every_sibling() {
+        let depths = [0., 30., 10., 20.];
+
+        let z = end_depth(&depths, 2, true).expect("room to go");
+        let mut moved = depths;
+        moved[2] = z;
+        assert_eq!(paint_order(&moved).last(), Some(&2));
+
+        let z = end_depth(&depths, 1, false).expect("room to go");
+        let mut moved = depths;
+        moved[1] = z;
+        assert_eq!(paint_order(&moved).first(), Some(&1));
+
+        // Already at that end, or alone.
+        assert_eq!(end_depth(&depths, 1, true), None);
+        assert_eq!(end_depth(&depths, 0, false), None);
+        assert_eq!(end_depth(&[4.], 0, true), None);
     }
 
     #[test]

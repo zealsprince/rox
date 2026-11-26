@@ -83,10 +83,10 @@ pub(crate) struct Inspector {
     renderers: Option<RendererRows>,
 }
 
-/// A generation, the picker's owner and label pairs, and the renderers.
+/// A generation, the picker's rows, and the renderers.
 type RendererRows = (
     u64,
-    Vec<(String, String)>,
+    Vec<target::Choice>,
     Vec<rox_services::renderers::Renderer>,
 );
 
@@ -219,7 +219,7 @@ pub(crate) fn render(
             .is_none_or(|(seen, ..)| *seen != generation)
         {
             let renderers = rox_services::renderers::all();
-            let rows = canvas::target_choices(&renderers);
+            let rows = target::renderer_choices(&renderers);
             panel.inspector.renderers = Some((generation, rows, renderers));
         }
     }
@@ -698,7 +698,8 @@ fn item_rows(
             rox_i18n::t!("canvas-item-anchor"),
             None,
             anchor_picker(&id, place.anchor, viewport, cx),
-        ));
+        ))
+        .child(arrange_rows(panel, item, flat, cx));
 
     let axes = [
         rox_i18n::t!("canvas-item-position-x"),
@@ -1263,18 +1264,6 @@ fn actions(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
         .flex_row()
         .flex_wrap()
         .gap(tokens::SPACE_XS)
-        .child(button(
-            rox_i18n::t!("canvas-bring-forward"),
-            icons::ARROW_UP,
-            "canvas-forward",
-            |this, window, cx| this.step_depth(true, window, cx),
-        ))
-        .child(button(
-            rox_i18n::t!("canvas-send-back"),
-            icons::ARROW_DOWN,
-            "canvas-back",
-            |this, window, cx| this.step_depth(false, window, cx),
-        ))
         .child(if is_group {
             button(
                 rox_i18n::t!("canvas-ungroup"),
@@ -1305,6 +1294,154 @@ fn actions(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
                     objects::open_export(this, &id, window, cx);
                 }
             },
+        ))
+        .into_any_element()
+}
+
+/// What an arrange tool does when it's pressed.
+type ToolPress = Rc<dyn Fn(&mut CanvasPanel, &mut Window, &mut Context<CanvasPanel>)>;
+
+/// The arrange tools beside the anchor: the six aligns, fill and fit
+/// against the parent's box, and the paint order, each an icon with a
+/// tooltip and each one undo step. With one item selected, its parent's box
+/// is the stage, or the group it's in.
+fn arrange_rows(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    flat: bool,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    use crate::canvas::align::{Arrange, Line};
+
+    let locked = item.locked;
+    let me = cx.entity().downgrade();
+    let tool =
+        |icon: &'static str, tip: SharedString, key: String, inert: bool, press: ToolPress| {
+            let me = me.clone();
+            div()
+                .id(SharedString::from(format!("{key}-tip")))
+                .child(
+                    settings_ui::icon_button(icon, inert, move |_, window, cx| {
+                        let press = press.clone();
+                        me.update(cx, |this, cx| press(this, window, cx)).ok();
+                    })
+                    .keyed(SharedString::from(key)),
+                )
+                .tooltip(move |window, cx| {
+                    gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
+        };
+
+    let aligns = Line::ALL.map(|line| {
+        let (icon, tip, key) = match line {
+            Line::Left => (icons::ALIGN_START_VERTICAL, "canvas-align-left", "left"),
+            Line::CenterX => (
+                icons::ALIGN_CENTER_VERTICAL,
+                "canvas-align-center-x",
+                "center-x",
+            ),
+            Line::Right => (icons::ALIGN_END_VERTICAL, "canvas-align-right", "right"),
+            Line::Top => (icons::ALIGN_START_HORIZONTAL, "canvas-align-top", "top"),
+            Line::CenterY => (
+                icons::ALIGN_CENTER_HORIZONTAL,
+                "canvas-align-center-y",
+                "center-y",
+            ),
+            Line::Bottom => (icons::ALIGN_END_HORIZONTAL, "canvas-align-bottom", "bottom"),
+        };
+        tool(
+            icon,
+            rox_i18n::t!(tip),
+            format!("canvas-align-{key}"),
+            locked,
+            Rc::new(move |this, window, cx| {
+                this.arrange_selected(Arrange::Align(line), window, cx)
+            }),
+        )
+    });
+    let fill = tool(
+        icons::FILL,
+        rox_i18n::t!("canvas-align-fill"),
+        "canvas-align-fill".into(),
+        locked,
+        Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fill, window, cx)),
+    );
+    let fit = tool(
+        icons::RATIO,
+        rox_i18n::t!("canvas-align-fit"),
+        "canvas-align-fit".into(),
+        locked,
+        Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fit, window, cx)),
+    );
+
+    let order = [
+        (icons::BRING_TO_FRONT, "canvas-bring-to-front", "front"),
+        (icons::ARROW_UP, "canvas-bring-forward", "forward"),
+        (icons::ARROW_DOWN, "canvas-send-back", "back"),
+        (icons::SEND_TO_BACK, "canvas-send-to-back", "to-back"),
+    ]
+    .map(|(icon, tip, key)| {
+        let press: ToolPress = match key {
+            "front" => Rc::new(|this, window, cx| this.end_depth(true, window, cx)),
+            "forward" => Rc::new(|this, window, cx| this.step_depth(true, window, cx)),
+            "back" => Rc::new(|this, window, cx| this.step_depth(false, window, cx)),
+            _ => Rc::new(|this, window, cx| this.end_depth(false, window, cx)),
+        };
+        tool(
+            icon,
+            rox_i18n::t!(tip),
+            format!("canvas-order-{key}"),
+            false,
+            press,
+        )
+    });
+
+    let row = |tools: Vec<gpui::Stateful<Div>>| {
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(2.))
+            .children(tools)
+    };
+
+    let in_group = crate::canvas::edit::path_to(&panel.config.canvas.items, &item.id)
+        .is_some_and(|path| path.len() > 1);
+    let to = match in_group {
+        true => rox_i18n::t!("canvas-align-to-group"),
+        false => rox_i18n::t!("canvas-align-to-stage"),
+    };
+    let turned = !flat
+        && item
+            .place
+            .rotation
+            .iter()
+            .any(|degrees| degrees.abs() > f32::EPSILON);
+
+    let mut align_tools: Vec<gpui::Stateful<Div>> = aligns.into_iter().collect();
+    align_tools.push(fill);
+    align_tools.push(fit);
+    let align = row(align_tools).when(turned, |d| {
+        d.child(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!("canvas-align-turned")),
+        )
+    });
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(tokens::SPACE_SM)
+        .child(setting_block(to, None, None, align))
+        .child(setting_block(
+            rox_i18n::t!("canvas-order"),
+            None,
+            None,
+            row(order.into_iter().collect()),
         ))
         .into_any_element()
 }
@@ -1489,7 +1626,7 @@ fn image_rows(
 }
 
 /// The resolution chips, width by height.
-const TARGET_PRESETS: [(&str, [u32; 2]); 3] = [
+pub(crate) const TARGET_PRESETS: [(&str, [u32; 2]); 3] = [
     ("720p", [1280, 720]),
     ("1080p", [1920, 1080]),
     ("4K", [3840, 2160]),
@@ -1528,16 +1665,21 @@ fn target_rows(
     }
 
     // A saved renderer this machine doesn't have stays picked, by its id.
-    let mut choices: Vec<(String, SharedString)> = panel
+    let rows = panel
         .inspector
         .renderers
         .as_ref()
-        .map(|(_, rows, _)| {
-            rows.iter()
-                .map(|(owner, label)| (owner.clone(), SharedString::from(label.clone())))
-                .collect()
-        })
+        .map(|(_, rows, _)| rows.clone())
         .unwrap_or_default();
+    let off: Vec<String> = rows
+        .iter()
+        .filter(|choice| choice.ready == target::Readiness::Off)
+        .map(|choice| choice.owner.clone())
+        .collect();
+    let mut choices: Vec<(String, SharedString)> = rows
+        .iter()
+        .map(|choice| (choice.owner.clone(), choice.shown()))
+        .collect();
     if !choices.iter().any(|(listed, _)| listed == owner) {
         let shown = match crate::canvas::target::renderer_id(owner) {
             Some(id) => rox_i18n::t!("canvas-target-not-installed", id = id),
@@ -1553,6 +1695,10 @@ fn target_rows(
         choices,
         false,
         move |this: &mut CanvasPanel, picked: String, cx| {
+            // One that isn't switched on asks right here, after the pick.
+            if off.contains(&picked) {
+                this.ask_enable_later(picked.clone(), cx);
+            }
             this.change_later(
                 "target.owner",
                 edit_target(&owner_id, move |owner, _, _| *owner = picked.clone()),
@@ -1621,6 +1767,29 @@ fn target_rows(
         .gap(tokens::SPACE_SM)
         .children(fields);
 
+    let rests = matches!(item.content, Content::Target { rests: true, .. });
+    let rest_id = item.id.clone();
+    let rest = panel::toggle(
+        rests,
+        move |this: &mut CanvasPanel, on, cx| {
+            let id = rest_id.clone();
+            this.change_later(
+                "target.rests",
+                move |canvas| {
+                    if let Some(CanvasItem {
+                        content: Content::Target { rests, .. },
+                        ..
+                    }) = canvas.find_mut(&id)
+                    {
+                        *rests = on;
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    );
+
     div()
         .flex()
         .flex_col()
@@ -1636,7 +1805,12 @@ fn target_rows(
             Some(chips.into_any_element()),
             resolution,
         ))
-        .children(target_status(panel, item, cx))
+        .child(setting_row(
+            rox_i18n::t!("canvas-target-rests"),
+            rox_i18n::try_translate("canvas-target-rests.description"),
+            rest,
+        ))
+        .children(target_status(panel, item, owner, cx))
         .children(target_signals(panel, owner, cx))
         .into_any_element()
 }
@@ -1686,72 +1860,38 @@ fn target_signals(
 fn target_status(
     panel: &CanvasPanel,
     item: &CanvasItem,
+    owner: &str,
     cx: &mut Context<CanvasPanel>,
 ) -> Option<AnyElement> {
-    use crate::canvas::target::Status;
-    use rox_services::renderers::Refused;
-
     let status = panel.target_status(item)?;
-
-    let words = match &status {
-        Status::Starting(None) => rox_i18n::t!("canvas-target-starting"),
-        Status::Starting(Some(why)) => {
-            rox_i18n::t!("canvas-target-retrying", error = why.as_str())
-        }
-        Status::Running => rox_i18n::t!("canvas-target-running"),
-        Status::Paused => rox_i18n::t!("canvas-target-paused"),
-        Status::Stopped(None) => rox_i18n::t!("canvas-target-stopped"),
-        Status::Stopped(Some(refused)) => match refused {
-            Refused::Missing => rox_i18n::t!("canvas-target-refused-missing"),
-            Refused::Broken(_) => rox_i18n::t!("canvas-target-refused-broken"),
-            Refused::NotRenderer => rox_i18n::t!("canvas-target-refused-not-renderer"),
-            Refused::PluginsOff => rox_i18n::t!("canvas-target-refused-plugins-off"),
-            Refused::NotApproved => rox_i18n::t!("canvas-target-refused-not-approved"),
-            Refused::Off => rox_i18n::t!("canvas-target-refused-off"),
-            Refused::Stopped => rox_i18n::t!("canvas-target-refused-stopped"),
-            Refused::Size => rox_i18n::t!(
-                "canvas-target-refused-size",
-                min_width = *rox_services::renderers::WIDTHS.start() as u64,
-                min_height = *rox_services::renderers::HEIGHTS.start() as u64,
-                max_width = *rox_services::renderers::WIDTHS.end() as u64,
-                max_height = *rox_services::renderers::HEIGHTS.end() as u64
-            ),
-            Refused::Start(why) => {
-                rox_i18n::t!("canvas-target-refused-start", error = why.as_str())
-            }
-        },
-    };
-
-    // Only a stop the user can lift from here gets the button. The gate's
-    // refusals are lifted on the Plugins page, where the approving is.
-    let again = matches!(
-        status,
-        Status::Stopped(None | Some(Refused::Stopped | Refused::Start(_)))
-    )
-    .then(|| {
+    let fix = target::status_fix(&status).map(|fix| {
+        let owner = owner.to_string();
         let id = item.id.clone();
-        settings_ui::small_button(
-            rox_i18n::t!("canvas-target-start-again"),
-            icons::REFRESH_CW,
-            false,
-            cx.listener(move |this, _, _, cx| {
-                this.start_target_again(&id);
-                cx.notify();
-            }),
+        target::fix_button(
+            fix,
+            move |this: &mut CanvasPanel, fix, window, cx| match fix {
+                target::Fix::SwitchOn => this.ask_enable(&owner, false, window, cx),
+                target::Fix::Settings => {
+                    panel_settings::open_app_page(canvas::RENDERERS_PAGE, window, cx)
+                }
+                target::Fix::StartAgain => {
+                    this.start_target_again(&id);
+                    cx.notify();
+                }
+            },
+            cx,
         )
-        .keyed("canvas-target-start-again")
-        .into_any_element()
     });
 
     Some(
         setting_block(
             rox_i18n::t!("canvas-target-status"),
             None,
-            again,
+            fix,
             div()
                 .text_xs()
                 .text_color(palette::text_muted())
-                .child(words),
+                .child(target::status_words(&status)),
         )
         .into_any_element(),
     )
@@ -2687,8 +2827,58 @@ pub(crate) fn object_dialog(
 
             (body, vec![not_now, add], 360.)
         }
+
+        // The enable card a settings page shows, raised here. Switch On is
+        // the approving act, so it's the accent and nothing else approves.
+        Dialog::Enable { card, .. } => {
+            let switch_on = settings_ui::dialog_button(
+                rox_i18n::t!("settings-plugins-switch-on"),
+                true,
+                cx.listener(|this, _, window, cx| this.confirm_enable(window, cx)),
+            );
+
+            (card.body(), vec![cancel, switch_on], 380.)
+        }
     };
 
+    let keys = cx.listener(
+        |this: &mut CanvasPanel, event: &gpui::KeyDownEvent, window, cx| {
+            // On a destructive confirm Enter backs out too, while the dialog
+            // itself holds focus: a focused button keeps its own Enter.
+            let enter = event.keystroke.key == "enter"
+                && this.object_dialog.as_ref().is_some_and(|dialog| {
+                    dialog.destructive() && dialog.focus().is_some_and(|f| f.is_focused(window))
+                });
+            if event.keystroke.key == "escape" || enter {
+                this.close_object_dialog(window, cx);
+                cx.stop_propagation();
+            }
+        },
+    );
+
+    Some(dialog_layer(
+        "canvas-object-dialog",
+        dialog.focus(),
+        body,
+        buttons,
+        width,
+        size,
+        keys,
+    ))
+}
+
+/// A dialog card centered over the whole window on a scrim, the way a menu
+/// sits over it: the canvas's prompts and the Renderer panel's enable card.
+/// Only the buttons, Escape and what `keys` does close it.
+pub(crate) fn dialog_layer(
+    id: &'static str,
+    focus: Option<&gpui::FocusHandle>,
+    body: Div,
+    buttons: Vec<settings_ui::DialogButton>,
+    width: f32,
+    window_size: gpui::Size<gpui::Pixels>,
+    keys: impl Fn(&gpui::KeyDownEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
     let footer = div()
         .flex()
         .flex_row()
@@ -2697,48 +2887,37 @@ pub(crate) fn object_dialog(
         .gap(tokens::SPACE_SM)
         .children(buttons);
 
-    Some(
-        deferred(
-            // Pinned to the window's corner: left at the panel's origin, the
-            // scrim would stop short of the window's top edge.
-            anchored().position(gpui::point(px(0.), px(0.))).child(
-                div()
-                    .id("canvas-object-dialog")
-                    .when_some(dialog.focus(), |d, focus| d.track_focus(focus))
-                    .w(size.width)
-                    .h(size.height)
-                    .occlude()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(tokens::SPACE_MD)
-                    .bg(gpui::rgba(0x00000066))
-                    .text_sm()
-                    .text_color(palette::text())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                        // On a destructive confirm Enter backs out too, while
-                        // the dialog itself holds focus: a focused button
-                        // keeps its own Enter.
-                        let enter = event.keystroke.key == "enter"
-                            && this.object_dialog.as_ref().is_some_and(|dialog| {
-                                dialog.destructive()
-                                    && dialog.focus().is_some_and(|f| f.is_focused(window))
-                            });
-                        if event.keystroke.key == "escape" || enter {
-                            this.close_object_dialog(window, cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .child(
-                        settings_ui::dialog_card("canvas-object-dialog-body", body, footer)
-                            .w(px(width)),
-                    ),
-            ),
-        )
-        .with_priority(2)
-        .into_any_element(),
+    deferred(
+        // Pinned to the window's corner: left at the panel's origin, the
+        // scrim would stop short of the window's top edge.
+        anchored().position(gpui::point(px(0.), px(0.))).child(
+            div()
+                .id(id)
+                .when_some(focus, |d, focus| d.track_focus(focus))
+                .w(window_size.width)
+                .h(window_size.height)
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(tokens::SPACE_MD)
+                .bg(gpui::rgba(0x00000066))
+                .text_sm()
+                .text_color(palette::text())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_key_down(keys)
+                .child(
+                    settings_ui::dialog_card(
+                        SharedString::from(format!("{id}-body")),
+                        body,
+                        footer,
+                    )
+                    .w(px(width)),
+                ),
+        ),
     )
+    .with_priority(2)
+    .into_any_element()
 }

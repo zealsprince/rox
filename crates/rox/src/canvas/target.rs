@@ -52,6 +52,7 @@ use gpui::{
     prelude::*, px,
 };
 use rox_canvas::{CanvasItem, CanvasState, Content, Projected};
+use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, Seed};
 use rox_frames::cover::{self, Cover};
 use rox_frames::{ANNOUNCE_MAX, Mapping, Refusal, Spec};
@@ -505,6 +506,9 @@ struct State {
     pending: Option<Announced>,
     /// The canvas didn't draw the item.
     held: bool,
+    /// Paused for the music, with the last frame still drawn: the target's
+    /// own setting, while playback is paused or stopped.
+    rested: bool,
     /// A frame went untaken past the idle limit.
     idle: bool,
     /// The session being read, so an old session's reader stops.
@@ -562,6 +566,11 @@ enum Lend {
 
 impl State {
     fn paused(&self) -> bool {
+        self.held || self.idle || self.rested
+    }
+
+    /// Paused because nothing draws it, which a take ends.
+    fn unseen(&self) -> bool {
         self.held || self.idle
     }
 }
@@ -584,6 +593,8 @@ pub(crate) enum Status {
     Running,
     /// Running, and paused because the canvas doesn't draw it.
     Paused,
+    /// Running, and paused for the music, its last frame still drawn.
+    Resting,
     /// Not running until something changes. None when rox stopped it and
     /// the gate would let it run now.
     Stopped(Option<Refused>),
@@ -656,6 +667,7 @@ impl Source {
                 published_at: Instant::now(),
                 pending: None,
                 held: false,
+                rested: false,
                 idle: false,
                 session: 0,
                 ended: None,
@@ -709,10 +721,11 @@ impl Source {
     }
 
     /// The newest frame. Taking it is what says the target is drawn: it
-    /// lets the next copy go and resumes a paused renderer.
+    /// lets the next copy go and resumes a renderer paused for being unseen.
+    /// One resting for the music stays paused, and this is its last frame.
     fn take(&self) -> Option<Picture> {
         let mut state = self.shared.lock();
-        let wanted = (!state.taken && state.pending.is_some()) || state.paused();
+        let wanted = (!state.taken && state.pending.is_some()) || state.unseen();
 
         state.taken = true;
         state.held = false;
@@ -735,6 +748,22 @@ impl Source {
 
         state.held = true;
         state.out.pause();
+        drop(state);
+        self.shared.wake.notify_all();
+    }
+
+    /// Pauses the renderer for the music, or lets it go on. The same pause
+    /// as being unseen, and it composes with it: either keeps it paused.
+    fn rest(&self, on: bool) {
+        let mut state = self.shared.lock();
+        if state.rested == on {
+            return;
+        }
+
+        state.rested = on;
+        if on {
+            state.out.pause();
+        }
         drop(state);
         self.shared.wake.notify_all();
     }
@@ -789,7 +818,8 @@ impl Source {
                 Some(Refused::Start(why)) => Some(why.clone()),
                 _ => None,
             }),
-            Phase::Running if state.paused() => Status::Paused,
+            Phase::Running if state.unseen() => Status::Paused,
+            Phase::Running if state.rested => Status::Resting,
             Phase::Running => Status::Running,
             Phase::Resting => Status::Stopped(state.refused.clone()),
         }
@@ -2180,17 +2210,17 @@ impl Target {
     }
 
     /// The supervisor waits for the canvas to make the GPU texture.
-    fn texture_asked(&self) -> bool {
+    pub(crate) fn texture_asked(&self) -> bool {
         self.source.shared.asked().is_some()
     }
 
     /// The target stopped and let its texture go, and the view hasn't freed
     /// its own yet.
-    fn texture_released(&self) -> bool {
+    pub(crate) fn texture_released(&self) -> bool {
         self.source.shared.lock().released
     }
 
-    fn lender(&self) -> Arc<dyn Lender> {
+    pub(crate) fn lender(&self) -> Arc<dyn Lender> {
         self.source.shared.clone()
     }
 
@@ -2199,15 +2229,20 @@ impl Target {
         self.source.hold();
     }
 
-    fn feed(&self, feed: &Feed) {
+    /// Paused for the music while `on`, with its last frame still showing.
+    pub(crate) fn rest(&self, on: bool) {
+        self.source.rest(on);
+    }
+
+    pub(crate) fn feed(&self, feed: &Feed) {
         self.source.feed(feed);
     }
 
-    fn point(&self, pointer: Pointer) {
+    pub(crate) fn point(&self, pointer: Pointer) {
         self.source.point(pointer);
     }
 
-    fn cover(&self, ask: &CoverAsk) {
+    pub(crate) fn cover(&self, ask: &CoverAsk) {
         self.source.cover(ask);
     }
 
@@ -2252,6 +2287,163 @@ pub(crate) fn renderers_moved(_cx: &mut App) {
     }
 }
 
+/// How ready a listed renderer is to run, as a picker marks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Readiness {
+    /// Installed, approved and switched on: it starts when shown.
+    Ready,
+    /// Switched off, or new or changed since its approval: its enable card
+    /// switches it on.
+    Off,
+    /// It doesn't load: only the Renderers page says why.
+    Broken,
+}
+
+impl Readiness {
+    /// Through the gate, without starting anything. One stopped after its
+    /// exits, or that failed to start, is switched on: Start Again is its fix.
+    pub(crate) fn of(id: &str) -> Readiness {
+        match renderers::refusal(id) {
+            Some(Refused::Off | Refused::NotApproved) => Readiness::Off,
+            Some(Refused::Missing | Refused::Broken(_) | Refused::NotRenderer) => Readiness::Broken,
+            Some(Refused::Stopped | Refused::Size | Refused::Start(_)) | None => Readiness::Ready,
+        }
+    }
+}
+
+/// Every installed renderer as the pickers list it: its owner, its label,
+/// and how ready it is. One that isn't ready stays pickable, and picking it
+/// offers its enable card.
+pub(crate) fn renderer_choices(renderers: &[renderers::Renderer]) -> Vec<Choice> {
+    renderers
+        .iter()
+        .map(|renderer| Choice {
+            owner: owner_of(&renderer.id),
+            label: renderer_label(renderer),
+            ready: Readiness::of(&renderer.id),
+        })
+        .collect()
+}
+
+/// One installed renderer in a picker.
+#[derive(Clone, Debug)]
+pub(crate) struct Choice {
+    pub(crate) owner: String,
+    pub(crate) label: String,
+    pub(crate) ready: Readiness,
+}
+
+impl Choice {
+    /// Its label with a quiet mark when it isn't ready, worded now, so a
+    /// list held across a language switch words it in the new language.
+    pub(crate) fn shown(&self) -> SharedString {
+        let label = self.label.as_str();
+        match self.ready {
+            Readiness::Ready => SharedString::from(label.to_string()),
+            Readiness::Off => rox_i18n::t!("canvas-target-renderer-off", label = label),
+            Readiness::Broken => rox_i18n::t!("canvas-target-renderer-broken", label = label),
+        }
+    }
+}
+
+/// A renderer's name in a list: its manifest's label, or its name when the
+/// label is blank.
+pub(crate) fn renderer_label(renderer: &renderers::Renderer) -> String {
+    match renderer.label.trim().is_empty() {
+        true => renderer.name.clone(),
+        false => renderer.label.clone(),
+    }
+}
+
+/// A status line's words, for the canvas inspector and the Renderer panel.
+pub(crate) fn status_words(status: &Status) -> SharedString {
+    match status {
+        Status::Starting(None) => rox_i18n::t!("canvas-target-starting"),
+        Status::Starting(Some(why)) => {
+            rox_i18n::t!("canvas-target-retrying", error = why.as_str())
+        }
+        Status::Running => rox_i18n::t!("canvas-target-running"),
+        Status::Paused => rox_i18n::t!("canvas-target-paused"),
+        Status::Resting => rox_i18n::t!("canvas-target-resting"),
+        Status::Stopped(None) => rox_i18n::t!("canvas-target-stopped"),
+        Status::Stopped(Some(refused)) => match refused {
+            Refused::Missing => rox_i18n::t!("canvas-target-refused-missing"),
+            Refused::Broken(_) => rox_i18n::t!("canvas-target-refused-broken"),
+            Refused::NotRenderer => rox_i18n::t!("canvas-target-refused-not-renderer"),
+            Refused::NotApproved => rox_i18n::t!("canvas-target-refused-not-approved"),
+            Refused::Off => rox_i18n::t!("canvas-target-refused-off"),
+            Refused::Stopped => rox_i18n::t!("canvas-target-refused-stopped"),
+            Refused::Size => rox_i18n::t!(
+                "canvas-target-refused-size",
+                min_width = *renderers::WIDTHS.start() as u64,
+                min_height = *renderers::HEIGHTS.start() as u64,
+                max_width = *renderers::WIDTHS.end() as u64,
+                max_height = *renderers::HEIGHTS.end() as u64
+            ),
+            Refused::Start(why) => {
+                rox_i18n::t!("canvas-target-refused-start", error = why.as_str())
+            }
+        },
+    }
+}
+
+/// What a stopped target's status line offers to do about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fix {
+    /// Off, or new or changed since approval: the enable card, raised here.
+    SwitchOn,
+    /// Missing or broken: only the Renderers page can say why.
+    Settings,
+    /// Stopped after its exits, or by rox: the gate would let it run.
+    StartAgain,
+}
+
+pub(crate) fn status_fix(status: &Status) -> Option<Fix> {
+    match status {
+        Status::Stopped(Some(Refused::Off | Refused::NotApproved)) => Some(Fix::SwitchOn),
+        Status::Stopped(Some(Refused::Missing | Refused::Broken(_) | Refused::NotRenderer)) => {
+            Some(Fix::Settings)
+        }
+        Status::Stopped(None | Some(Refused::Stopped | Refused::Start(_))) => Some(Fix::StartAgain),
+        _ => None,
+    }
+}
+
+/// The status line's button for `fix`. Switch On only raises the card: the
+/// card's own Switch On is what approves.
+pub(crate) fn fix_button<P: 'static>(
+    fix: Fix,
+    press: impl Fn(&mut P, Fix, &mut Window, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> AnyElement {
+    let (label, icon, key) = match fix {
+        Fix::SwitchOn => (
+            rox_i18n::t!("canvas-target-switch-on"),
+            icons::POWER,
+            "canvas-target-switch-on",
+        ),
+        Fix::Settings => (
+            rox_i18n::t!("canvas-target-open-settings"),
+            icons::SETTINGS,
+            "canvas-target-open-settings",
+        ),
+        Fix::StartAgain => (
+            rox_i18n::t!("canvas-target-start-again"),
+            icons::REFRESH_CW,
+            "canvas-target-start-again",
+        ),
+    };
+
+    rox_panel_kit::ui::small_button(
+        label,
+        icon,
+        false,
+        cx.listener(move |this, _, window, cx| press(this, fix, window, cx)),
+    )
+    .keyed(key)
+    .into_any_element()
+}
+
 /// The renderer an owner names, if it names one.
 pub(crate) fn renderer_id(owner: &str) -> Option<&str> {
     owner.strip_prefix(OWNER_PREFIX).filter(|id| !id.is_empty())
@@ -2263,7 +2455,7 @@ pub(crate) fn owner_of(id: &str) -> String {
 }
 
 /// Every renderer a render target anywhere in `value` names, by id: an item,
-/// an object's item or a whole layout dump.
+/// an object's item, a Renderer panel or a whole layout dump.
 pub(crate) fn named_renderers(value: &serde_json::Value, out: &mut BTreeSet<String>) {
     match value {
         serde_json::Value::Object(map) => {
@@ -2271,6 +2463,20 @@ pub(crate) fn named_renderers(value: &serde_json::Value, out: &mut BTreeSet<Stri
             if target
                 && let Some(id) = map
                     .get("owner")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(renderer_id)
+            {
+                out.insert(id.to_string());
+            }
+
+            // A Renderer panel names its renderer the way a plugin's panel
+            // names its plugin, in the owner its config holds.
+            let panel = map.get("panel_name").and_then(serde_json::Value::as_str)
+                == Some(crate::panels::renderer::PANEL_NAME);
+            if panel
+                && let Some(id) = map
+                    .get("info")
+                    .and_then(|info| info.pointer("/panel/owner"))
                     .and_then(serde_json::Value::as_str)
                     .and_then(renderer_id)
             {
@@ -2288,11 +2494,12 @@ pub(crate) fn named_renderers(value: &serde_json::Value, out: &mut BTreeSet<Stri
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct Key {
-    owner: String,
-    width: u32,
-    height: u32,
+/// What a session is for: a renderer at a size. A new key is a new session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Key {
+    pub(crate) owner: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 fn key_of(content: &Content) -> Option<Key> {
@@ -2311,40 +2518,132 @@ fn key_of(content: &Content) -> Option<Key> {
     }
 }
 
-struct Shown {
+/// One render target's session and the view that paints it: a canvas item's,
+/// or a Renderer panel's whole body. Both hosts draw through
+/// [`Shown::paint`], so a target behaves the same in either.
+pub(crate) struct Shown {
     key: Key,
     /// None for an owner that names no renderer.
     target: Option<Target>,
     view: Option<Entity<TextureView>>,
 }
 
-/// One canvas's render targets, by item id.
+impl Shown {
+    pub(crate) fn new(key: Key) -> Shown {
+        Shown {
+            key,
+            target: None,
+            view: None,
+        }
+    }
+
+    pub(crate) fn key(&self) -> &Key {
+        &self.key
+    }
+
+    pub(crate) fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
+    }
+
+    /// This frame's picture on `face`, `crop` of it when only part shows,
+    /// and whether there was one. The session starts the first time it's
+    /// drawn. `rest` pauses it for the music, with its last frame still on
+    /// show. The view paints while a texture is to be made or freed, since
+    /// only its paint has the window in hand.
+    pub(crate) fn paint<V: 'static>(
+        &mut self,
+        face: Projected,
+        crop: Option<gpui::Bounds<f32>>,
+        rest: bool,
+        feed: Option<&Feed>,
+        cx: &mut Context<V>,
+    ) -> (Option<AnyElement>, bool) {
+        if self.target.is_none()
+            && let Some(id) = renderer_id(&self.key.owner)
+        {
+            self.target = Some(Target::new(id, self.key.width, self.key.height, cx));
+        }
+
+        // Before the take, so a target resting for the music keeps its last
+        // frame on show and its renderer paused.
+        if let Some(target) = &self.target {
+            target.rest(rest);
+        }
+        let picture = self.target.as_ref().and_then(Target::take);
+        if let (Some(target), Some(feed)) = (&self.target, feed) {
+            target.feed(feed);
+        }
+
+        let busy = self
+            .target
+            .as_ref()
+            .is_some_and(|target| target.texture_asked() || target.texture_released());
+        let Some(target) = self.target.as_ref().filter(|_| picture.is_some() || busy) else {
+            return (None, false);
+        };
+
+        let view = match &self.view {
+            Some(view) => view.clone(),
+            None => {
+                let lender = target.lender();
+                let view = cx.new(|cx| TextureView::lending(lender, cx));
+                self.view = Some(view.clone());
+                view
+            }
+        };
+        let showing = picture.is_some();
+        view.update(cx, |view, _| {
+            view.show(picture);
+            view.place(Some(face));
+            view.crop(crop);
+        });
+
+        (Some(view.into_any_element()), showing)
+    }
+
+    /// Not drawn this frame: its renderer can pause.
+    pub(crate) fn hold(&self) {
+        if let Some(target) = &self.target {
+            target.hold();
+        }
+    }
+
+    /// Frees what its view holds in `window`, which is in hand here.
+    pub(crate) fn release(&self, window: &mut Window, cx: &mut App) {
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.release(window, cx));
+        }
+    }
+
+    /// The host moves to another window and keeps the session; see
+    /// [`Targets::carry`].
+    pub(crate) fn carry(&self, window: &mut Window, cx: &mut App) {
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| view.leave(window, cx));
+        }
+    }
+}
+
+/// This frame's reading for the targets a host draws, and the cover they
+/// follow. A canvas holds one for all its targets, a Renderer panel one of
+/// its own.
 #[derive(Default)]
-pub(crate) struct Targets {
-    shown: HashMap<String, Shown>,
+pub(crate) struct Reading {
     /// This frame's reading, for every target drawn in it.
     feed: Option<Feed>,
     /// Playback stopped and the signals are still falling to rest.
     tail: bool,
     /// The playing track's cover as last asked for.
     cover: CoverAsk,
-    /// The window the canvas left and the renderers its targets ran, until
-    /// it's drawn again.
-    left: Option<(gpui::WindowId, Vec<String>)>,
+    /// Playback runs, as this frame's reading saw it. A target set to rest
+    /// with the music pauses while it doesn't.
+    playing: bool,
 }
 
-/// Whether any item in the canvas, a group's child included, is a render
-/// target.
-pub(crate) fn holds_targets(canvas: &CanvasState) -> bool {
-    let mut found = false;
-    canvas.walk(&mut |item, _| found |= matches!(item.content, Content::Target { .. }));
-    found
-}
-
-impl Targets {
+impl Reading {
     /// Reads the hub for this frame's targets. Once playback stops the
-    /// signals go on only until they come to rest, so a paused canvas reads
-    /// the hub no more. Call it only on a frame the canvas draws anyway.
+    /// signals go on only until they come to rest, so a paused host reads
+    /// the hub no more. Call it only on a frame the host draws anyway.
     pub(crate) fn read(
         &mut self,
         hub: &SignalHub,
@@ -2352,6 +2651,7 @@ impl Targets {
         time: impl FnOnce() -> f64,
         palette: String,
     ) {
+        self.playing = running;
         let send = if running {
             self.tail = true;
             true
@@ -2371,10 +2671,69 @@ impl Targets {
         });
     }
 
+    pub(crate) fn feed(&self) -> Option<&Feed> {
+        self.feed.as_ref()
+    }
+
+    pub(crate) fn playing(&self) -> bool {
+        self.playing
+    }
+
+    /// The playing track moved. Answers whether it's news, so the host tells
+    /// every target that runs now, without a frame drawn for it.
+    pub(crate) fn follow_cover(&mut self, ask: &CoverAsk) -> bool {
+        if self.cover.same(ask) {
+            return false;
+        }
+
+        self.cover = ask.clone();
+        true
+    }
+}
+
+/// One canvas's render targets, by item id.
+#[derive(Default)]
+pub(crate) struct Targets {
+    shown: HashMap<String, Shown>,
+    reading: Reading,
+    /// The window the canvas left and the renderers its targets ran, until
+    /// it's drawn again.
+    left: Option<(gpui::WindowId, Vec<String>)>,
+}
+
+/// Whether any item in the canvas, a group's child included, is a render
+/// target.
+pub(crate) fn holds_targets(canvas: &CanvasState) -> bool {
+    let mut found = false;
+    canvas.walk(&mut |item, _| found |= matches!(item.content, Content::Target { .. }));
+    found
+}
+
+/// Whether any render target in the canvas rests while the music doesn't
+/// play.
+pub(crate) fn holds_resting(canvas: &CanvasState) -> bool {
+    let mut found = false;
+    canvas
+        .walk(&mut |item, _| found |= matches!(item.content, Content::Target { rests: true, .. }));
+    found
+}
+
+impl Targets {
+    /// Reads the hub for this frame's targets: see [`Reading::read`].
+    pub(crate) fn read(
+        &mut self,
+        hub: &SignalHub,
+        running: bool,
+        time: impl FnOnce() -> f64,
+        palette: String,
+    ) {
+        self.reading.read(hub, running, time, palette);
+    }
+
     /// The playing track moved. Every target that runs hears it now,
     /// without a frame drawn for it, and one paused hears it on its next.
     pub(crate) fn follow_cover(&mut self, ask: CoverAsk) {
-        if self.cover.same(&ask) {
+        if !self.reading.follow_cover(&ask) {
             return;
         }
 
@@ -2385,7 +2744,6 @@ impl Targets {
         {
             target.cover(&ask);
         }
-        self.cover = ask;
     }
 
     /// A pointer event for target `id`. The canvas sends one only off
@@ -2411,65 +2769,26 @@ impl Targets {
         let Some(key) = key_of(&item.content) else {
             return Vec::new();
         };
+        let rests = matches!(item.content, Content::Target { rests: true, .. });
 
-        let fresh = || Shown {
-            key: key.clone(),
-            target: None,
-            view: None,
-        };
-        let shown = self.shown.entry(item.id.clone()).or_insert_with(fresh);
+        let shown = self
+            .shown
+            .entry(item.id.clone())
+            .or_insert_with(|| Shown::new(key.clone()));
         if shown.key != key {
-            *shown = fresh();
+            *shown = Shown::new(key.clone());
         }
 
         let Some(face) = face else {
-            if let Some(target) = &shown.target {
-                target.hold();
-            }
+            shown.hold();
             return Vec::new();
         };
 
-        if shown.target.is_none()
-            && let Some(id) = renderer_id(&key.owner)
-        {
-            shown.target = Some(Target::new(id, key.width, key.height, cx));
-        }
-
-        let picture = shown.target.as_ref().and_then(Target::take);
-        if let (Some(target), Some(feed)) = (&shown.target, &self.feed) {
-            target.feed(feed);
-        }
-
-        // The view paints while a texture is to be made or freed, since only
-        // its paint has the window in hand.
-        let mut elements = Vec::new();
-        let busy = shown
-            .target
-            .as_ref()
-            .is_some_and(|target| target.texture_asked() || target.texture_released());
-
-        if (picture.is_some() || busy)
-            && let Some(target) = &shown.target
-        {
-            let view = match &shown.view {
-                Some(view) => view.clone(),
-                None => {
-                    let lender = target.lender();
-                    let view = cx.new(|cx| TextureView::lending(lender, cx));
-                    shown.view = Some(view.clone());
-                    view
-                }
-            };
-            let showing = picture.is_some();
-            view.update(cx, |view, _| {
-                view.show(picture);
-                view.place(Some(face));
-            });
-
-            elements.push(view.into_any_element());
-            if showing {
-                return elements;
-            }
+        let rest = rests && !self.reading.playing();
+        let (view, showing) = shown.paint(face, None, rest, self.reading.feed(), cx);
+        let mut elements: Vec<AnyElement> = view.into_iter().collect();
+        if showing {
+            return elements;
         }
 
         if design {
@@ -2507,8 +2826,8 @@ impl Targets {
 
     /// The canvas skipped the item this frame.
     pub(crate) fn hold(&self, id: &str) {
-        if let Some(target) = self.shown.get(id).and_then(|shown| shown.target.as_ref()) {
-            target.hold();
+        if let Some(shown) = self.shown.get(id) {
+            shown.hold();
         }
     }
 
@@ -2521,8 +2840,8 @@ impl Targets {
                 .and_then(|item| key_of(&item.content))
                 .is_some_and(|key| key == shown.key);
 
-            if !kept && let Some(view) = &shown.view {
-                view.update(cx, |view, cx| view.release(window, cx));
+            if !kept {
+                shown.release(window, cx);
             }
             kept
         });
@@ -2531,8 +2850,8 @@ impl Targets {
     /// The canvas moves to another window with its targets, and each keeps
     /// its session. Their textures belong to this window and go here.
     pub(crate) fn carry(&mut self, window: &mut Window, cx: &mut App) {
-        for view in self.shown.values().filter_map(|shown| shown.view.as_ref()) {
-            view.update(cx, |view, cx| view.leave(window, cx));
+        for shown in self.shown.values() {
+            shown.carry(window, cx);
         }
     }
 
@@ -2547,9 +2866,7 @@ impl Targets {
         self.left = Some((window.window_handle().window_id(), ran));
 
         for shown in self.shown.values() {
-            if let Some(view) = &shown.view {
-                view.update(cx, |view, cx| view.release(window, cx));
-            }
+            shown.release(window, cx);
         }
         self.shown.clear();
     }
@@ -3129,6 +3446,74 @@ mod tests {
         rig.source.take();
         assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
         until("the frame", || rig.peek().is_some());
+
+        rig.finish();
+    }
+
+    #[test]
+    fn resting_for_the_music_pauses_and_keeps_the_last_frame() {
+        let rig = Rig::new(slow());
+        let mut fake = rig.session();
+
+        fake.writer.frame(0, pattern(4));
+        fake.announce("f 0 0\n");
+        until("a frame", || rig.peek().is_some());
+        assert!(rig.source.take().is_some());
+
+        rig.source.rest(true);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+        assert_eq!(rig.source.status(), Status::Resting);
+
+        // Drawn while it rests: the same frame, and the renderer stays put.
+        fake.writer.frame(1, pattern(8));
+        fake.announce("f 1 1\n");
+        settle();
+        let held = match rig.source.take() {
+            Some(Picture::Frame(frame)) => frame.rgba8[0],
+            _ => panic!("a resting target still paints its last frame"),
+        };
+        assert_eq!(held, 4);
+        assert_eq!(rig.copies(), 1, "nothing new is copied while it rests");
+        assert!(fake.stdin.try_recv().is_err(), "and nothing is sent");
+
+        // The music again: on at once, and the waiting announce goes through.
+        rig.source.rest(false);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        until("the new frame", || {
+            rig.peek().is_some_and(|frame| frame.rgba8[0] == 8)
+        });
+        assert_eq!(rig.source.status(), Status::Running);
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_rest_and_a_hide_each_keep_it_paused() {
+        let rig = Rig::new(slow());
+        let fake = rig.session();
+
+        rig.source.rest(true);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+        rig.source.hold();
+        assert_eq!(rig.source.status(), Status::Paused, "unseen reads first");
+
+        // The music comes back while it's hidden: still paused.
+        rig.source.rest(false);
+        settle();
+        assert!(fake.stdin.try_recv().is_err());
+
+        // Shown again while the music is stopped: still paused.
+        rig.source.rest(true);
+        rig.source.take();
+        settle();
+        assert!(fake.stdin.try_recv().is_err());
+        assert_eq!(rig.source.status(), Status::Resting);
+
+        // Both lifted: told to go on, once.
+        rig.source.rest(false);
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        settle();
+        assert!(fake.stdin.try_recv().is_err());
 
         rig.finish();
     }
@@ -4197,6 +4582,15 @@ mod tests {
                 ] } },
                 { "id": "p", "panel_name": "plugin-panel", "owner": "plugin:tones" },
                 { "id": "c", "content": { "kind": "target", "owner": "" } },
+                {
+                    "panel_name": "renderer",
+                    "children": [],
+                    "info": { "panel": { "owner": "plugin:ember", "width": 1280 } },
+                },
+                {
+                    "panel_name": "source browser",
+                    "info": { "panel": { "owner": "plugin:radio" } },
+                },
             ],
         });
 
@@ -4204,8 +4598,8 @@ mod tests {
         named_renderers(&dump, &mut named);
         assert_eq!(
             named.into_iter().collect::<Vec<_>>(),
-            ["bars", "waves"],
-            "a plugin panel's owner is a plugin"
+            ["bars", "ember", "waves"],
+            "a Renderer panel names its renderer; a plugin panel's owner is a plugin"
         );
     }
 

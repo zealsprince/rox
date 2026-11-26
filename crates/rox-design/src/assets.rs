@@ -47,6 +47,18 @@ pub mod icons {
     pub const ALIGN_LEFT: &str = "icons/align-left.svg";
     pub const ALIGN_CENTER: &str = "icons/align-center.svg";
     pub const ALIGN_RIGHT: &str = "icons/align-right.svg";
+    /// The canvas inspector's arrange row: an item's edges or middle on one
+    /// of the stage's.
+    pub const ALIGN_START_VERTICAL: &str = "icons/align-start-vertical.svg";
+    pub const ALIGN_CENTER_VERTICAL: &str = "icons/align-center-vertical.svg";
+    pub const ALIGN_END_VERTICAL: &str = "icons/align-end-vertical.svg";
+    pub const ALIGN_START_HORIZONTAL: &str = "icons/align-start-horizontal.svg";
+    pub const ALIGN_CENTER_HORIZONTAL: &str = "icons/align-center-horizontal.svg";
+    pub const ALIGN_END_HORIZONTAL: &str = "icons/align-end-horizontal.svg";
+    pub const BRING_TO_FRONT: &str = "icons/bring-to-front.svg";
+    pub const SEND_TO_BACK: &str = "icons/send-to-back.svg";
+    /// Fit inside, aspect kept: the two orientations of one box.
+    pub const RATIO: &str = "icons/ratio.svg";
     pub const ROWS_2: &str = "icons/rows-2.svg";
     pub const ROWS_3: &str = "icons/rows-3.svg";
     pub const REFRESH_CW: &str = "icons/refresh-cw.svg";
@@ -138,6 +150,8 @@ pub mod icons {
     pub const WAVES: &str = "icons/waves.svg";
     pub const MINIMIZE: &str = "icons/minimize-2.svg";
     pub const MAXIMIZE: &str = "icons/maximize-2.svg";
+    /// Fill the stage: corners out to the edges.
+    pub const FILL: &str = "icons/scan.svg";
     /// Bracket-style so it can't be mistaken for the mini toggle's arrows.
     pub const FULLSCREEN_EXIT: &str = "icons/minimize.svg";
     pub const SQUARE_DASHED: &str = "icons/square-dashed.svg";
@@ -150,6 +164,8 @@ pub mod icons {
     pub const MOON: &str = "icons/moon.svg";
     pub const MINUS: &str = "icons/minus.svg";
     pub const APP_WINDOW: &str = "icons/app-window.svg";
+    /// Renderers (ADR 37): a picture another program draws.
+    pub const MONITOR_PLAY: &str = "icons/monitor-play.svg";
     pub const MENU: &str = "icons/menu.svg";
     pub const USER: &str = "icons/user-round.svg";
     pub const MOVE: &str = "icons/move.svg";
@@ -208,6 +224,15 @@ pub mod icons {
         ALIGN_LEFT,
         ALIGN_CENTER,
         ALIGN_RIGHT,
+        ALIGN_START_VERTICAL,
+        ALIGN_CENTER_VERTICAL,
+        ALIGN_END_VERTICAL,
+        ALIGN_START_HORIZONTAL,
+        ALIGN_CENTER_HORIZONTAL,
+        ALIGN_END_HORIZONTAL,
+        BRING_TO_FRONT,
+        SEND_TO_BACK,
+        RATIO,
         ROWS_2,
         ROWS_3,
         REFRESH_CW,
@@ -275,6 +300,7 @@ pub mod icons {
         WAVES,
         MINIMIZE,
         MAXIMIZE,
+        FILL,
         FULLSCREEN_EXIT,
         SQUARE_DASHED,
         FLASK,
@@ -283,6 +309,7 @@ pub mod icons {
         SUN,
         MOON,
         APP_WINDOW,
+        MONITOR_PLAY,
         USER,
         LAYERS,
         PLUG,

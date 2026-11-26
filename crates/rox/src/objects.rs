@@ -738,6 +738,15 @@ pub(crate) enum Dialog {
         words: Vec<String>,
         focus: FocusHandle,
     },
+    /// The enable card for a renderer that isn't switched on or approved,
+    /// raised where it was picked. Its Switch On is the approving act.
+    Enable {
+        card: Box<crate::enable_card::EnableCard>,
+        /// The owner placed with it, offered its wanted signals once it's
+        /// switched on: None when nothing new was placed.
+        then_offer: Option<String>,
+        focus: FocusHandle,
+    },
 }
 
 impl Dialog {
@@ -746,7 +755,10 @@ impl Dialog {
     pub(crate) fn destructive(&self) -> bool {
         match self {
             Dialog::Remove { .. } => true,
-            Dialog::Export { .. } | Dialog::Place { .. } | Dialog::Signals { .. } => false,
+            Dialog::Export { .. }
+            | Dialog::Place { .. }
+            | Dialog::Signals { .. }
+            | Dialog::Enable { .. } => false,
         }
     }
 
@@ -754,7 +766,8 @@ impl Dialog {
         match self {
             Dialog::Place { focus, .. }
             | Dialog::Remove { focus, .. }
-            | Dialog::Signals { focus, .. } => Some(focus),
+            | Dialog::Signals { focus, .. }
+            | Dialog::Enable { focus, .. } => Some(focus),
             Dialog::Export { .. } => None,
         }
     }

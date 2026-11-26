@@ -16,15 +16,16 @@ The contract it follows is in [the renderers doc](../../../docs/03-implementatio
 
 ## Trying it
 
-1. Turn on Enable Plugins at the top of Settings > Plugins.
-2. Press Reveal Folder on the Plugins page and copy this `bars` folder into it. Bars
-   lists under Renderers, switched off.
-3. Switch Bars on and confirm the card.
-4. Add a Canvas panel (Panels > Arrangement > Canvas). With Panels > Design Mode on,
-   right-click the empty stage, or press the plus in the canvas inspector's header, and
-   pick Add Render Target > Bars.
-5. Leave design mode and play something. Add signals under Application > Signals to get
-   bars: each one in the pool is a bar.
+1. Press Reveal Folder on the Settings > Renderers page and copy this `bars` folder into
+   it. Bars lists there, switched off.
+2. Add a Renderer panel (Panels > Visualizers > Renderer), press Pick a Renderer and pick
+   Bars. Its card comes up: Switch On confirms it. Switching Bars on from the Renderers
+   page does the same.
+3. Play something. Add signals under Application > Signals to get bars: each one in the
+   pool is a bar.
+
+A canvas takes it too: with Panels > Design Mode on, right-click the empty stage, or
+press the plus in the canvas inspector's header, and pick Add Render Target > Bars.
 
 Python 3.7 or later has to be on PATH as `python3` or `python`, or as `py` on Windows.
 The example runs on Linux and macOS. On Windows rox hands a renderer a section handle

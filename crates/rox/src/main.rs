@@ -23,6 +23,7 @@ mod cover;
 mod documents;
 mod duplicates;
 mod embeddings;
+mod enable_card;
 mod eq_presets;
 mod eq_window;
 mod genre_tagger;

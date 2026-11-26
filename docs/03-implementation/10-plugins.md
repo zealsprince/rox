@@ -23,8 +23,10 @@ the Plugins page links to [README_PLUGINS.md](../../README_PLUGINS.md), the auth
 guide drawn from this document.
 
 1. Plugins are behind one switch, Enable Plugins at the top of Settings > Plugins
-   (`set_plugins_enabled`, `rox/src/settings/window/plugins_page.rs:491`). The rest of
-   the page lists only while it's on.
+   (`set_plugins_enabled`, `rox/src/settings/window/plugins_page.rs`). The rest of the
+   page lists only while it's on. A renderer is the same package underneath and isn't
+   behind it: it lists on the Renderers page with a switch of its own
+   ([the renderers doc](11-renderers.md)).
 2. Install on the Plugins page takes one or more `.roxp` files from the file dialog
    (`install_plugins`, `plugins_page.rs:202-246`). Each is copied in as
    `plugins/<id>.roxp` and listed with its switch off, and a toast names it or gives
@@ -115,7 +117,12 @@ The limits a package is held to are `LIMITS` (`package.rs:25-29`): 20,000 entrie
 `rox-package`'s. The executable bit is kept from the unix mode an entry stores, masked to
 `0o755`. An entry with no stored mode unpacks as `0o644`.
 
-The watch follows the plugins folder, and follows its parent until the folder exists
+The folder is scanned at launch whether plugins are on or off, and a renderer in it lists
+either way. The watch follows the plugins folder while plugins are on, or any renderer is
+installed, or the Renderers page is open, which rescans once as it starts it (`watch` and
+`watch_folder`, `rox-services/src/plugins.rs`). Once started it runs until rox quits. A
+scan starts nothing, and only the hosts `apply` builds, which need the switch on, run a
+plugin. The watch follows its parent until the folder exists
 (`Watch`, `loader.rs:300-377`). A dropped or replaced `.roxp` raises an event like a
 folder edit. Events are hints to scan again, 500 ms debounced; a scan that finds what
 the last one found changes nothing (`rescan`, `rox-services/src/plugins.rs:634-663`).

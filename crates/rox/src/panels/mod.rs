@@ -9,5 +9,6 @@ pub mod group;
 pub mod menu;
 pub mod overlay;
 pub mod queue_widget;
+pub mod renderer;
 pub mod slide;
 pub mod window_controls;

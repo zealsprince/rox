@@ -5,10 +5,12 @@ render target, the shared memory its frames arrive through, the GPU texture it c
 into instead on Linux, the lines it reads and writes, and the rules that stop it. This
 makes [ADR 37](../02-architecture/decisions/37-adr-render-targets.md) concrete, with its
 amendments of 2026-11-16 (renderers are listed apart from plugins), 2026-11-23 (shared
-memory is rox's own channel) and 2026-11-25 (a GPU texture, Linux first). Underneath, a renderer is the package of
+memory is rox's own channel), 2026-11-25 (a GPU texture, Linux first) and 2026-11-26 (a
+page and a switch of their own, and the Renderer panel). Underneath, a renderer is the package of
 [ADR 30](../02-architecture/decisions/30-adr-plugins.md) under its renderer amendment:
-the same folder or `.roxp`, the same hash, approval and switch, so
-[10-plugins.md](10-plugins.md) holds for everything this doc doesn't say otherwise. A
+the same folder or `.roxp`, the same hash and the same approval, so
+[10-plugins.md](10-plugins.md) holds for everything this doc doesn't say otherwise. The
+Plugins page's Enable Plugins switch is the plugins' alone and doesn't reach a renderer. A
 frame is a stranger's bytes under
 [ADR 35](../02-architecture/decisions/35-adr-package-security.md). It belongs to the
 plugin host in [components](../02-architecture/02-components.md#plugin-host). Two
@@ -30,27 +32,27 @@ windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
 
 ## Trying the examples
 
-1. Turn on Enable Plugins at the top of Settings > Plugins. Renderers are behind the
-   same switch, and none starts while it's off (`check`,
-   `rox-services/src/renderers.rs:143`).
-2. Copy `examples/renderers/bars` into the plugins folder (Reveal Folder on the Plugins
-   page opens it), or install a `.roxp` packed from it. It lists under Renderers,
-   switched off.
-3. Switch it on. The card says it draws in render targets on a canvas, gets the music's
-   signals and the playing position, gets the pointer while it's over the render target,
-   and gets the colours of the current theme, since its manifest asks for the palette.
-   Switch On approves exactly the files in the package, as it does for a plugin.
-4. Add a Canvas panel: an empty window offers one, and in design mode (the toggle at the
-   left end of the menubar) the Panels menu lists it under Arrangement. With design mode
-   on, right-click empty stage, or press the plus in the canvas inspector's header, and
-   pick Add Render Target > Bars (`open_add_menu`,
-   `rox/src/panels/canvas.rs:2135`). The new target draws at 1280 by 720 pixels on a
-   640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`, `canvas.rs:3081-3082`).
-   The inspector's Resolution row changes the pixel size, and Status says whether the
-   renderer runs.
-5. Leave design mode and play something. Bars draws a bar for each signal in the pool
-   (Application > Signals edits it) in the theme's accent, so a pool with nothing in it
-   draws one empty bar.
+1. Copy `examples/renderers/bars` into the plugins folder, which the Renderers settings
+   page calls the packages folder and opens with Reveal Folder, or install a `.roxp`
+   packed from it there. It lists on the Renderers page, switched off. The page follows
+   the folder while it's open, so a copied folder shows without Rescan.
+2. Add a Renderer panel: an empty window offers one, and in design mode (the toggle at
+   the left end of the menubar) the Panels menu lists it under Visualizers. Press Pick a Renderer and pick Bars, marked "switched off". Its enable
+   card comes up over the window: it says Bars draws in a Renderer panel or a render
+   target on a canvas, gets the music's signals and the playing position, gets the
+   pointer while it's over the render target, and gets the colours of the current theme,
+   since its manifest asks for the palette. Switch On approves exactly the files in the
+   package and switches it on, as the switch on the Renderers page does, and the panel
+   starts it.
+3. Or on a canvas: with design mode on, right-click empty stage, or press the
+   plus in the canvas inspector's header, and pick Add Render Target > Bars
+   (`open_add_menu`, `rox/src/panels/canvas.rs`). The same card comes up for a renderer
+   that isn't switched on, and the signals offer after it. The new target draws at 1280
+   by 720 pixels on a 640 by 360 unit item (`TARGET_PIXELS` and `TARGET_UNITS`). The
+   inspector's Resolution row changes the pixel size, and Status says whether the
+   renderer runs, with a button that fixes what it can.
+4. Play something. Bars draws a bar for each signal in the pool (Application > Signals
+   edits it) in the theme's accent, so a pool with nothing in it draws one empty bar.
 
 The Python example needs Python 3.7 or later and a Unix that lends it fd 3, so it exits
 on Windows (see [Platforms](#platforms)). Plasma is a Cargo project. Its README says how to build it and put the build in a package folder.
@@ -110,6 +112,12 @@ the texture gives it none of that. It's memory for the target's own pixels, whic
 renderer already draws. A manifest that gains `gpu` is still a changed manifest, so the
 renderer switches off until it's approved again.
 
+A fifth key, `rests`, suggests that a new render target pause the renderer while the
+music is paused or stopped. It's `true` or `false`, off when left out, and refused like
+the others when it's anything else. It isn't a grant either: it only sets the starting
+value of the target's Pause With the Music setting, in a canvas or a Renderer panel, and
+the user's setting wins from then on ([Lifecycle](#lifecycle)).
+
 A manifest asking for everything:
 
 ```json
@@ -144,7 +152,7 @@ Each entry under `signals` is one signal the renderer follows:
 A renderer can suggest how an added signal is shaped and nothing else: Response and
 Threshold are where the Signals window puts its own defaults, and a renderer that
 expects a sharp pulse or a gated band can say so. Reset on Track, Flush and the routes
-stay the user's. The manifest is refused with one reason, on the Plugins page, for more
+stay the user's. The manifest is refused with one reason, on the Renderers page, for more
 than 16 entries, two entries a pool signal would answer alike, and any field outside the
 ranges above (`check_wanted`, `rox-plugins/src/manifest.rs:453`).
 
@@ -184,10 +192,12 @@ A renderer gets no settings from rox: nothing in `hello` comes from `config_sche
 A renderer runs one process per render target. Two targets naming the same renderer are
 two processes. A target's `owner` is `plugin:<id>` (`renderer_id`,
 `rox/src/canvas/target.rs:1960`), and the canvas starts its renderer the first time it
-draws the item. The start goes through the gate on a thread of the target's own: Enable
-Plugins on, the package approved for its current hash, switched on, and not stopped by
-exits (`start`, `rox-services/src/renderers.rs:264`). rox never starts a renderer at
-launch, only when a target asks.
+draws the item. The start goes through the gate on a thread of the target's own: the
+package approved for its current hash, switched on, and not stopped by exits (`check`
+and `start`, `rox-services/src/renderers.rs`). Enable Plugins isn't part of it, and a
+package that declares `renderer` can't declare a source, panels or providers, so the
+gate can't start a plugin. rox never starts a renderer at launch, only when a target
+asks.
 
 The process starts in the package's folder (for a `.roxp`, rox's unpacked copy under
 `plugin-cache`) in the environment a plugin gets: a fixed list of rox's variables, PATH
@@ -219,7 +229,19 @@ mode, and one with a corner behind the camera or its quad off the stage. A targe
 a group that's hidden, or that a state takes off the stage, isn't paused that way. It
 waits, as a target does when its canvas isn't drawn at all, as with a hidden window or a
 tab behind another: a frame left untaken for 500 ms pauses it (`LIMITS.idle`,
-`target.rs:109`). Shown again, it gets `{"pause":false}`. While paused rox sends nothing
+`target.rs:109`). Shown again, it gets `{"pause":false}`.
+
+A target can also rest with the music. Its Pause With the Music setting, in the canvas
+inspector and in a Renderer panel's settings, pauses the renderer while playback is
+paused or stopped, with the same `{"pause":true}`, and keeps its last frame on show
+(`rest`, `target.rs`). It's off for a new target unless the renderer's manifest suggests
+it with `rests` ([What a renderer asks for](#what-a-renderer-asks-for)), and the user's
+setting wins from then on. The causes add up: a target hidden and resting is paused until
+it's both shown and the music plays, and the first of those that ends while the other
+holds sends nothing. Playback going on wakes a resting target at once, since nothing it
+draws would. One that never drew before it rested keeps showing nothing.
+
+While paused rox sends nothing
 else, drops what it had queued, and reads nothing from the renderer's stdout. A renderer
 that keeps announcing frames fills that pipe and blocks in its own write. rox looks for
 an exit once a second while it's paused.
@@ -245,12 +267,48 @@ rox stops a session in two ways:
   renderer's stdin, wait up to 200 ms for it to exit, then kill its process group
   (`Session::stop` and `GRACE`, `renderers.rs:41` and `:436`). A new resolution is a new
   session with a new mapping.
-- Switching the renderer off, removing it, a change to its files and turning Enable
-  Plugins off kill it at once (`enforce`, `renderers.rs:502`). So does quitting rox
-  (`stop_all`, `:537`).
+- Switching the renderer off, removing it and a change to its files kill it at once
+  (`enforce`, `renderers.rs`). So does quitting rox (`stop_all`). Turning Enable Plugins
+  off doesn't: it stops the plugins and leaves renderers running.
 
 Kill is `SIGKILL` to the process group on Unix. A renderer has no shutdown to answer
 and nothing to save. Exiting when stdin closes is all rox asks.
+
+## The Renderer panel
+
+A Renderer panel shows one renderer filling a panel: add it from Visualizers, dock it,
+tab it, pop it out (`RendererPanel`, `rox/src/panels/renderer.rs`). It runs the same
+session as a canvas target (`Shown`, `Target` and `Reading`, `rox/src/canvas/target.rs`),
+so everything above holds for it: the gate, the frame paths, the grants, the signals, the
+palette, the cover and the pointer. A renderer can't tell the two apart.
+
+Its menu and its settings pick the renderer from every installed one, marked when it
+isn't switched on or doesn't load, and picking one that isn't switched on raises its
+enable card over the panel's window. The panel saves the renderer as `plugin:<id>` in its
+`owner`, the key a plugin's panel uses, so a workspace holding it lists the renderer in
+`requires` and its apply card names it when it won't run (`named_renderers`). With no
+renderer picked the panel says so and offers Pick a Renderer. With none installed it
+offers Open Renderers Settings. A stopped session shows its status with the same button
+the canvas inspector has: Switch On... for one switched off or not approved, Open
+Renderers Settings for one missing or broken, Start Again for one stopped after its exits.
+
+The session's size is fixed while it runs, as a target's is. Size in the panel's settings
+picks how:
+
+| Size | What the panel shows |
+|---|---|
+| Fixed, the default, 1280 by 720 | That resolution, chosen from the same presets and fields as the canvas inspector, scaled to Fit (the whole picture, with the panel's background in the bands) or Fill (the panel covered, the overflow cropped through the texture's own crop) |
+| Match the Panel | The panel's size in device pixels, held to 16 to 3840 by 16 to 2160 and rounded down to even. After a resize the renderer starts again at the new size once the size has held for half a second with no mouse button down, and the last frame shows stretched meanwhile (`SETTLE` and `matched_size`) |
+
+The pointer over the picture goes to the renderer, mapped through the fit or the crop, as
+over a canvas target outside design mode. The right button is the panel's: its press opens
+the panel menu and never reaches the renderer. A pointer over the bands around a fitted
+picture is off the surface, and the renderer gets `leave`.
+
+A panel behind another tab, or in a minimised window, isn't drawn, so its session pauses
+after the untaken frame's 500 ms, as a canvas target's does. Pop Out and Dock Back carry
+the session as they carry a canvas's targets: one on shared memory goes on with the same
+process, and one lent a texture starts again in the new window.
 
 ## The mapping
 
@@ -520,7 +578,8 @@ starts, then each time the playing track changes, between frames, without a redr
 gap between two tracks of one queue doesn't count: the last cover holds, as the
 backdrop's does.
 
-`pause` is `true` when nothing shows the target and `false` when something does again.
+`pause` is `true` when nothing shows the target, or while it rests with the music, and
+`false` once it's shown and not resting again.
 While paused, the palette and the cover wait too: rox writes nothing into the cover
 mapping, and on the resume the current palette and cover go once if they changed.
 
@@ -1092,7 +1151,7 @@ renderer.
 | A restart after an exit | The same texture, lent again |
 | A new resolution | The target is new: the old texture is released and a new one made |
 | Pop Out, Dock Back, or a move to another window | The texture belongs to the window that made it, so rox lets it go, makes one in the new window and starts the renderer again with its fd. That doesn't count as an exit, and the log says `moved window, starting again` for each move |
-| Switching the renderer off, Enable Plugins off, a changed package, the fifth exit | The session ends and the target gives its texture back. The next session gets a new one |
+| Switching the renderer off, a changed package, the fifth exit | The session ends and the target gives its texture back. The next session gets a new one |
 | Deleting the item, closing the canvas, applying a workspace, quitting | Released with the item |
 | Paused, hidden, or a window not drawn | Kept, and not painted. The renderer gets `pause` as with slots |
 | A lost GPU device | rox stops every renderer and restarts itself. Its fds close at the exec |
@@ -1263,8 +1322,11 @@ the signals, the palette and the stage for it each frame, follows the playing tr
 sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), adds it from the
 Add menu, and offers its wanted signals (`offer_signals`). The prompt and the inspector's
 Signals row are in `crates/rox/src/canvas/overlay.rs`. A pool entry's kind and band come from `Source` in
-`crates/rox-viz/src/signal.rs`. The Renderers section of the Plugins page is
-`crates/rox/src/settings/window/plugins_page.rs`.
+`crates/rox-viz/src/signal.rs`. The Renderer panel is `crates/rox/src/panels/renderer.rs`,
+over the same `Shown` session the canvas uses. The Renderers settings page is
+`crates/rox/src/settings/window/renderers_page.rs`, drawing its rows with the row code in
+`plugins_page.rs`, and the enable card both pages and both hosts raise is
+`crates/rox/src/enable_card.rs`.
 
 The examples are `examples/renderers/bars/bars.py` and
 `examples/renderers/plasma/src/main.rs`, each with a `plugin.json` and a README.

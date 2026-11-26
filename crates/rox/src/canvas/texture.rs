@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, AnyWindowHandle, App, Bounds, Context, IntoElement, Render, UserTextureId, Window,
-    canvas, point, prelude::*, px, size,
+    canvas, point, prelude::*, px,
 };
 use rox_canvas::{Content, Projected};
 
@@ -90,6 +90,7 @@ impl Texture {
         &mut self,
         frame: &Frame,
         corners: [gpui::Point<gpui::Pixels>; 4],
+        source: Bounds<f32>,
         opacity: f32,
         window: &mut Window,
         cx: &mut App,
@@ -136,7 +137,7 @@ impl Texture {
             held.seq = Some(frame.seq);
         }
 
-        quad(window, corners, held.id, opacity);
+        quad(window, corners, source, held.id, opacity);
     }
 
     /// Makes a texture another process draws into, in this window, in place
@@ -181,6 +182,7 @@ impl Texture {
     pub(crate) fn paint_external(
         &self,
         corners: [gpui::Point<gpui::Pixels>; 4],
+        source: Bounds<f32>,
         opacity: f32,
         window: &mut Window,
     ) {
@@ -191,7 +193,7 @@ impl Texture {
             return;
         }
 
-        quad(window, corners, external.id, opacity);
+        quad(window, corners, source, external.id, opacity);
     }
 
     /// Only the registry that made a texture can free it. From another
@@ -230,18 +232,23 @@ fn free(owner: AnyWindowHandle, id: UserTextureId, window: &mut Window, cx: &mut
     }
 }
 
-/// The whole texture on `corners`.
+/// The whole texture, 0 to 1 across and down.
+pub(crate) const WHOLE: Bounds<f32> = Bounds {
+    origin: gpui::Point { x: 0., y: 0. },
+    size: gpui::Size {
+        width: 1.,
+        height: 1.,
+    },
+};
+
+/// `source` of the texture, in 0 to 1 across and down, on `corners`.
 fn quad(
     window: &mut Window,
     corners: [gpui::Point<gpui::Pixels>; 4],
+    source: Bounds<f32>,
     id: UserTextureId,
     opacity: f32,
 ) {
-    let source = Bounds {
-        origin: point(0., 0.),
-        size: size(1., 1.),
-    };
-
     window
         .paint_texture_quad(corners, source, id, [opacity; 4], gpui::transparent_black())
         .ok();
@@ -256,6 +263,8 @@ pub(crate) struct TextureView {
     /// A render target on the GPU path, whose texture this view registers
     /// when it's asked for one.
     lender: Option<Arc<dyn Lender>>,
+    /// The part of the texture it paints. None paints all of it.
+    crop: Option<Bounds<f32>>,
 }
 
 impl TextureView {
@@ -284,6 +293,7 @@ impl TextureView {
             picture,
             face: None,
             lender,
+            crop: None,
         }
     }
 
@@ -296,6 +306,12 @@ impl TextureView {
     /// Where it paints this frame, panel-relative. None paints nothing.
     pub(crate) fn place(&mut self, face: Option<Projected>) {
         self.face = face;
+    }
+
+    /// Which part of the texture it paints, 0 to 1 across and down. None
+    /// paints the whole of it.
+    pub(crate) fn crop(&mut self, crop: Option<Bounds<f32>>) {
+        self.crop = crop;
     }
 
     /// For the canvas's own cleanup, which has the window in hand.
@@ -327,6 +343,7 @@ impl Render for TextureView {
         let texture = self.texture.clone();
         let picture = self.picture.clone();
         let lender = self.lender.clone();
+        let source = self.crop.unwrap_or(WHOLE);
         on_box(face.corners, move |corners, window, cx| {
             let mut texture = texture.borrow_mut();
 
@@ -359,9 +376,11 @@ impl Render for TextureView {
 
             match &picture {
                 Some(Picture::Frame(frame)) => {
-                    texture.paint(frame, corners, face.opacity, window, cx)
+                    texture.paint(frame, corners, source, face.opacity, window, cx)
                 }
-                Some(Picture::External) => texture.paint_external(corners, face.opacity, window),
+                Some(Picture::External) => {
+                    texture.paint_external(corners, source, face.opacity, window)
+                }
                 None => {}
             }
         })

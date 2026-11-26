@@ -8,6 +8,7 @@
 //! with no body here (a kind this build doesn't know, or one that didn't
 //! build) is kept exactly as it was read and written back the same.
 
+pub(crate) mod align;
 pub(crate) mod cost;
 pub(crate) mod edit;
 pub(crate) mod grid;

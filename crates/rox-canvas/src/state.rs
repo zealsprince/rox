@@ -376,6 +376,10 @@ pub enum Content {
         /// where a session starts; saved as written.
         width: u32,
         height: u32,
+        /// Pauses the renderer while the music is paused or stopped, holding
+        /// its last frame. Left out reads as running on.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rests: bool,
         /// The renderer's own settings, opaque to rox. Reserved: nothing
         /// reads or writes it yet.
         #[serde(default)]
@@ -942,6 +946,7 @@ mod tests {
                 owner: owner.into(),
                 width,
                 height,
+                rests: false,
                 config: Value::Null,
             },
             ..CanvasItem::default()
@@ -973,6 +978,16 @@ mod tests {
         .unwrap();
         assert_eq!(bare.content, target("t", "", 64, 32).content);
         assert_eq!(bare.assets().count(), 0);
+
+        // Resting with the music is written only when it's on.
+        assert!(!text.contains("rests"), "{text}");
+        let mut calm = target("calm", "plugin:bars", 64, 32);
+        if let Content::Target { rests, .. } = &mut calm.content {
+            *rests = true;
+        }
+        let written = serde_json::to_value(&calm).unwrap();
+        assert_eq!(written["content"]["rests"], json!(true));
+        assert_eq!(serde_json::from_value::<CanvasItem>(written).unwrap(), calm);
     }
 
     #[test]

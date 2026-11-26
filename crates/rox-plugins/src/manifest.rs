@@ -90,9 +90,9 @@ pub struct Capabilities {
     pub renderer: Option<RendererCap>,
 }
 
-/// Each field past the label but `gpu` is a grant: the enable card names
-/// it, and rox sends or offers it only to a renderer whose approved
-/// manifest asks.
+/// Each field past the label but `gpu` and `rests` is a grant: the enable
+/// card names it, and rox sends or offers it only to a renderer whose
+/// approved manifest asks.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct RendererCap {
     /// What rox lists the renderer as.
@@ -112,6 +112,11 @@ pub struct RendererCap {
     /// target's own pixels, which every renderer already draws.
     #[serde(default)]
     pub gpu: bool,
+    /// Suggests that a new render target pause it while the music is paused
+    /// or stopped. Only the starting value of the target's own setting, so
+    /// it isn't a grant either.
+    #[serde(default)]
+    pub rests: bool,
 }
 
 /// One signal a renderer asks for. Matched against the pool by kind and
@@ -1695,6 +1700,21 @@ mod tests {
         );
 
         for bad in [r#""gpu": "yes""#, r#""gpu": 1"#, r#""gpu": null"#] {
+            let err = renderer_asking(bad).unwrap_err();
+            assert!(err.contains("plugin.json"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_renderer_suggests_resting_when_the_music_stops() {
+        assert!(renderer_asking(r#""rests": true"#).unwrap().rests);
+        assert!(!renderer_asking(r#""rests": false"#).unwrap().rests);
+        assert!(
+            !renderer_asking(r#""palette": true"#).unwrap().rests,
+            "off unless suggested"
+        );
+
+        for bad in [r#""rests": "yes""#, r#""rests": 1"#, r#""rests": null"#] {
             let err = renderer_asking(bad).unwrap_err();
             assert!(err.contains("plugin.json"), "{bad}: {err}");
         }

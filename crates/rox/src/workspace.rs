@@ -2433,6 +2433,7 @@ fn register_panels(state: &AppState, workspace: WeakEntity<Workspace>, cx: &mut 
     configured!("particles", ParticlesPanel);
     configured!("shader", ShaderPanel);
     configured!("milkdrop", MilkdropPanel);
+    configured!("renderer", crate::panels::renderer::RendererPanel);
     configured!("drag anchor", DragAnchorPanel);
     configured!("spacer", SpacerPanel);
     configured!("theme toggle", ThemeTogglePanel);

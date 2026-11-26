@@ -16,6 +16,7 @@ use crate::panels::group::{GroupConfig, GroupPanel};
 use crate::panels::menu::{MenuConfig, MenuPanel};
 use crate::panels::overlay::{OverlayConfig, OverlayPanel};
 use crate::panels::queue_widget::{QueueWidgetConfig, QueueWidgetPanel};
+use crate::panels::renderer::{RendererConfig, RendererPanel};
 use crate::panels::slide::{SlideConfig, SlidePanel};
 use crate::panels::window_controls::{WindowControlsConfig, WindowControlsPanel};
 use crate::workspace::Workspace;
@@ -607,6 +608,19 @@ pub(crate) static VISUALIZERS: PanelSection = PanelSection {
             build: |state, _, _, cx| {
                 Arc::new(
                     cx.new(|cx| MilkdropPanel::new(state.clone(), MilkdropConfig::default(), cx)),
+                )
+            },
+        },
+        // A picture another program draws (ADR 37), listed whether or not a
+        // renderer is installed: its empty state says how to get one.
+        PanelDef {
+            label: "panel-catalog-renderer",
+            name: "renderer",
+            icon: icons::MONITOR_PLAY,
+            placement: PanelPlacement::Center,
+            build: |state, _, _, cx| {
+                Arc::new(
+                    cx.new(|cx| RendererPanel::new(state.clone(), RendererConfig::default(), cx)),
                 )
             },
         },

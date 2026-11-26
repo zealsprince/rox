@@ -59,6 +59,7 @@ use crate::canvas::target::{self, Pointer, Status as TargetStatus, Targets};
 use crate::canvas::text::{self, Values};
 use crate::canvas::texture::{self, TextureView};
 use crate::canvas::{self, Body, Placing};
+use crate::enable_card::EnableCard;
 use crate::keymap;
 use crate::objects;
 use crate::panels::controls;
@@ -454,12 +455,24 @@ impl CanvasPanel {
             }
         });
         // A render target granted the cover hears of a new track here, with
-        // no frame drawn for it.
-        let cover = cx.observe(&state.player, |this: &mut Self, _, cx| {
-            if target::holds_targets(&this.config.canvas)
-                && let Some(ask) = this.playing_cover(cx)
-            {
+        // no frame drawn for it. One resting for the music draws nothing new
+        // while it rests, so playback going on is the redraw that wakes it.
+        let mut was_running = None;
+        let cover = cx.observe(&state.player, move |this: &mut Self, player, cx| {
+            if !target::holds_targets(&this.config.canvas) {
+                return;
+            }
+
+            if let Some(ask) = this.playing_cover(cx) {
                 this.targets.follow_cover(ask);
+            }
+
+            let player = player.read(cx);
+            let running = routes::playback_running(player.is_playing(), player.queue_ended());
+            if was_running.replace(running) != Some(running)
+                && target::holds_resting(&this.config.canvas)
+            {
+                cx.notify();
             }
         });
 
@@ -2194,15 +2207,17 @@ impl CanvasPanel {
 
         let object_menu = crate::canvas::overlay::objects_menu(window, cx);
 
-        // Read once per opening: the list is the gate's, read off disk.
-        let renderers = target_choices(&rox_services::renderers::all());
+        // Read once per opening: the list is the gate's, read off disk. One
+        // that isn't ready is marked and still picks: placing it raises its
+        // enable card.
+        let renderers = target::renderer_choices(&rox_services::renderers::all());
         let target_menu = (!renderers.is_empty()).then(|| {
             let pick = pick.clone();
             PopupMenu::build(window, cx, move |mut menu, _, _| {
-                for (owner, label) in renderers {
+                for choice in renderers {
                     menu = menu.item(
-                        PopupMenuItem::new(SharedString::from(label))
-                            .on_click(pick(NewItem::Target(owner))),
+                        PopupMenuItem::new(choice.shown())
+                            .on_click(pick(NewItem::Target(choice.owner))),
                     );
                 }
                 menu
@@ -2240,7 +2255,7 @@ impl CanvasPanel {
             let menu = match target_menu {
                 Some(targets) => menu.item(
                     PopupMenuItem::submenu(rox_i18n::t!("canvas-add-target"), targets)
-                        .icon(Icon::default().path(icons::APP_WINDOW)),
+                        .icon(Icon::default().path(icons::MONITOR_PLAY)),
                 ),
                 None => menu,
             };
@@ -2345,6 +2360,7 @@ impl CanvasPanel {
             NewItem::Target(owner) => (
                 "target",
                 Content::Target {
+                    rests: suggests_rest(&owner),
                     owner,
                     width: TARGET_PIXELS[0],
                     height: TARGET_PIXELS[1],
@@ -2413,7 +2429,74 @@ impl CanvasPanel {
         );
         self.select(Some(id), window, cx);
 
+        // A renderer that isn't switched on asks first, and offers its
+        // signals once its card is accepted.
         if let Some(owner) = placed {
+            match target::renderer_id(&owner).map(target::Readiness::of) {
+                Some(target::Readiness::Off) => self.ask_enable(&owner, true, window, cx),
+                _ => self.offer_signals(&owner, window, cx),
+            }
+        }
+    }
+
+    /// Raises the enable card for the renderer `owner` names over this
+    /// window. `offer` is a target just placed, whose wanted signals are
+    /// offered once the card is accepted. A renderer with no card to show,
+    /// one that doesn't load, opens the Renderers page instead.
+    pub(crate) fn ask_enable(
+        &mut self,
+        owner: &str,
+        offer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(card) = target::renderer_id(owner).and_then(EnableCard::for_renderer) else {
+            panel_settings::open_app_page(RENDERERS_PAGE, window, cx);
+            return;
+        };
+
+        let focus = cx.focus_handle();
+        focus.focus(window);
+        self.object_dialog = Some(objects::Dialog::Enable {
+            card: Box::new(card),
+            then_offer: offer.then(|| owner.to_string()),
+            focus,
+        });
+        cx.notify();
+    }
+
+    /// [`ask_enable`](Self::ask_enable) from a control that isn't handed the
+    /// window, on the next turn.
+    pub(crate) fn ask_enable_later(&mut self, owner: String, cx: &mut Context<Self>) {
+        let Some(handle) = self.window else {
+            return;
+        };
+
+        let me = cx.entity().downgrade();
+        let app: &mut App = cx;
+        app.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    me.update(cx, |this, cx| this.ask_enable(&owner, false, window, cx))
+                        .ok();
+                })
+                .ok();
+        });
+    }
+
+    /// The enable card's Switch On, the only approval on this path: what the
+    /// settings switch does, then the signals offer for a target just placed.
+    pub(crate) fn confirm_enable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(objects::Dialog::Enable {
+            card, then_offer, ..
+        }) = self.object_dialog.take()
+        else {
+            return;
+        };
+        self.close_object_dialog(window, cx);
+
+        card.accept(cx);
+        if let Some(owner) = then_offer {
             self.offer_signals(&owner, window, cx);
         }
     }
@@ -2680,6 +2763,78 @@ impl CanvasPanel {
         );
     }
 
+    /// Bring to Front and Send to Back: past every sibling in paint order.
+    pub(crate) fn end_depth(&mut self, front: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+
+        let viewport = self.viewport();
+        self.change(
+            |canvas| {
+                let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
+                    return;
+                };
+                let Some(siblings) = edit::siblings(&canvas.items, &id) else {
+                    return;
+                };
+                let Some(index) = siblings.iter().position(|item| item.id == id) else {
+                    return;
+                };
+
+                let depths = edit::depths(siblings, &parent);
+                let Some(target) = edit::end_depth(&depths, index, front) else {
+                    return;
+                };
+                let z = edit::z_for_depth(&siblings[index], &parent, depths[index], target);
+
+                if let Some(item) = canvas.find_mut(&id) {
+                    item.place.position[2] = z;
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The inspector's align, fill and fit, on the selected item against its
+    /// parent's box: the stage, or the group it's in. One undo step. A locked
+    /// item doesn't move.
+    pub(crate) fn arrange_selected(
+        &mut self,
+        arrange: canvas::align::Arrange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let Some(item) = self.config.canvas.find(&id).filter(|item| !item.locked) else {
+            return;
+        };
+
+        let flat = self.is_flat(item, cx);
+        let viewport = self.viewport();
+        self.change(
+            |canvas| {
+                let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
+                    return;
+                };
+                let Some(item) = canvas.find_mut(&id) else {
+                    return;
+                };
+
+                if let Some(place) =
+                    canvas::align::arranged(&item.place, parent.size, flat, arrange)
+                {
+                    item.place = place;
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Arrow keys: one unit in the parent's space, ten with shift.
     fn nudge(&mut self, by: [f32; 2], window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.selected.clone() else {
@@ -2776,7 +2931,7 @@ pub(crate) fn hit(shapes: &[Shape], canvas: &CanvasState, point: [f32; 2]) -> Hi
 }
 
 /// A button's name on the renderer wire.
-fn button_name(button: MouseButton) -> &'static str {
+pub(crate) fn button_name(button: MouseButton) -> &'static str {
     match button {
         MouseButton::Left => "left",
         MouseButton::Right => "right",
@@ -2788,7 +2943,7 @@ fn button_name(button: MouseButton) -> &'static str {
 
 /// A wheel's travel in lines, at the 20 pixels a line the other wheel
 /// handlers use.
-fn scroll_lines(delta: ScrollDelta) -> [f32; 2] {
+pub(crate) fn scroll_lines(delta: ScrollDelta) -> [f32; 2] {
     match delta {
         ScrollDelta::Lines(lines) => [lines.x, lines.y],
         ScrollDelta::Pixels(pixels) => [f32::from(pixels.x) / 20., f32::from(pixels.y) / 20.],
@@ -3107,22 +3262,33 @@ fn paint_turn_handles(shape: &Shape, origin: Point<Pixels>, window: &mut Window)
 const TARGET_PIXELS: [u32; 2] = [1280, 720];
 const TARGET_UNITS: [f32; 2] = [640., 360.];
 
-/// Add Render Target's list: each installed renderer's owner and label. An
-/// empty list hides the row.
+/// Each installed renderer's owner and label, for naming a new target. An
+/// empty list hides the Add Render Target row.
 pub(crate) fn target_choices(
     renderers: &[rox_services::renderers::Renderer],
 ) -> Vec<(String, String)> {
     renderers
         .iter()
         .map(|renderer| {
-            let label = if renderer.label.trim().is_empty() {
-                renderer.name.clone()
-            } else {
-                renderer.label.clone()
-            };
-            (crate::canvas::target::owner_of(&renderer.id), label)
+            (
+                target::owner_of(&renderer.id),
+                target::renderer_label(renderer),
+            )
         })
         .collect()
+}
+
+/// The Renderers settings page's nav key.
+pub(crate) const RENDERERS_PAGE: &str = "settings-page-renderers";
+
+/// Whether the renderer `owner` names suggests resting with the music: a new
+/// target's starting value, which the user's setting replaces.
+pub(crate) fn suggests_rest(owner: &str) -> bool {
+    target::renderer_id(owner).is_some_and(|id| {
+        rox_services::renderers::all()
+            .iter()
+            .any(|renderer| renderer.id == id && renderer.rests)
+    })
 }
 
 /// The image assets in the store, id and file, for the Add Image list.
@@ -3443,6 +3609,7 @@ mod tests {
             approved: false,
             enabled: false,
             signals: Vec::new(),
+            rests: false,
         };
         let unlabelled = rox_services::renderers::Renderer {
             id: "waves".into(),

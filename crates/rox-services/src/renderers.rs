@@ -41,7 +41,7 @@ pub const HEIGHTS: std::ops::RangeInclusive<u32> = 16..=2160;
 /// closes.
 const GRACE: Duration = Duration::from_millis(200);
 
-/// A renderer as the Plugins page lists it.
+/// A renderer as the Renderers page lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Renderer {
     pub id: String,
@@ -55,6 +55,9 @@ pub struct Renderer {
     pub enabled: bool,
     /// The signals its manifest asks for.
     pub signals: Vec<WantedSignal>,
+    /// Its manifest suggests pausing while the music is paused or stopped.
+    /// Only a new render target's starting value; the user's setting wins.
+    pub rests: bool,
 }
 
 /// Why [`start`] won't run a renderer. The page and the toast word it; the
@@ -67,8 +70,6 @@ pub enum Refused {
     Broken(String),
     /// The package doesn't declare `renderer`.
     NotRenderer,
-    /// The Plugins switch is off.
-    PluginsOff,
     /// Never approved, or changed on disk since.
     NotApproved,
     /// Approved and switched off.
@@ -87,7 +88,6 @@ impl std::fmt::Display for Refused {
             Refused::Missing => write!(f, "no renderer has that id"),
             Refused::Broken(why) => write!(f, "the package doesn't load: {why}"),
             Refused::NotRenderer => write!(f, "the package isn't a renderer"),
-            Refused::PluginsOff => write!(f, "plugins are off"),
             Refused::NotApproved => write!(f, "the renderer isn't approved"),
             Refused::Off => write!(f, "the renderer is switched off"),
             Refused::Stopped => write!(f, "stopped after repeated exits"),
@@ -133,6 +133,7 @@ fn listed(
                 approved: approved(&folder.id, &folder.hash),
                 enabled: records.iter().any(|r| r.id == folder.id && r.enabled),
                 signals: cap.signals.clone(),
+                rests: cap.rests,
             })
         })
         .collect()
@@ -141,12 +142,16 @@ fn listed(
 /// The gate, read from what's on disk and in the records now. Every start
 /// passes through it, and so does every running session when the plugins
 /// apply.
+///
+/// The Plugins switch isn't part of it (ADR 37, amended 2026-11-26): a
+/// renderer runs on its own switch and its approval of these exact files,
+/// and a package that declares `renderer` can't declare anything that would
+/// give it a plugin host, so nothing here can start a plugin.
 fn check<'a>(
     id: &str,
     folders: &'a [Loaded],
     records: &[PluginRecord],
     approved: &dyn Fn(&str, &str) -> bool,
-    allowed: bool,
 ) -> Result<&'a Loaded, Refused> {
     // The first row for an id is the one that holds it, as in the scan.
     let folder = folders
@@ -161,9 +166,6 @@ fn check<'a>(
         return Err(Refused::NotRenderer);
     }
 
-    if !allowed {
-        return Err(Refused::PluginsOff);
-    }
     if !approved(&folder.id, &folder.hash) {
         return Err(Refused::NotApproved);
     }
@@ -179,13 +181,7 @@ fn check<'a>(
 pub fn refusal(id: &str) -> Option<Refused> {
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let gate = check(
-        id,
-        &folders,
-        &records,
-        &settings::plugin_approved,
-        crate::plugins::allowed(),
-    );
+    let gate = check(id, &folders, &records, &settings::plugin_approved);
 
     match gate {
         Err(refused) => Some(refused),
@@ -205,14 +201,7 @@ pub fn forgive(id: &str) {
 pub fn asks(id: &str) -> Option<RendererCap> {
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let folder = check(
-        id,
-        &folders,
-        &records,
-        &settings::plugin_approved,
-        crate::plugins::allowed(),
-    )
-    .ok()?;
+    let folder = check(id, &folders, &records, &settings::plugin_approved).ok()?;
 
     folder.manifest.as_ref()?.capabilities.renderer.clone()
 }
@@ -277,13 +266,7 @@ pub fn start(
 
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let folder = check(
-        id,
-        &folders,
-        &records,
-        &settings::plugin_approved,
-        crate::plugins::allowed(),
-    )?;
+    let folder = check(id, &folders, &records, &settings::plugin_approved)?;
 
     if due(id).is_none() {
         return Err(Refused::Stopped);
@@ -593,9 +576,7 @@ fn wait_after(times: &mut VecDeque<Instant>, now: Instant) -> Option<Duration> {
 pub(crate) fn enforce(cx: &mut App) {
     let folders = crate::plugins::loaded();
     let records = Settings::load().accounts.plugins;
-    let allowed = crate::plugins::allowed();
-    let passes =
-        |id: &str| check(id, &folders, &records, &settings::plugin_approved, allowed).is_ok();
+    let passes = |id: &str| check(id, &folders, &records, &settings::plugin_approved).is_ok();
 
     forget_exits(&passes);
 
@@ -847,6 +828,7 @@ mod tests {
                 approved: true,
                 enabled: true,
                 signals: Vec::new(),
+                rests: false,
             }]
         );
 
@@ -863,47 +845,107 @@ mod tests {
         let on = [record("bars", true), record("tones", true)];
         let off = [record("bars", false)];
 
-        let gate =
-            |id, records: &[PluginRecord], approved: &dyn Fn(&str, &str) -> bool, allowed| {
-                check(id, &folders, records, approved, allowed).map(|folder| folder.id.clone())
-            };
+        let gate = |id, records: &[PluginRecord], approved: &dyn Fn(&str, &str) -> bool| {
+            check(id, &folders, records, approved).map(|folder| folder.id.clone())
+        };
 
-        assert_eq!(gate("bars", &on, &all_approved, true), Ok("bars".into()));
-        assert_eq!(gate("bars", &off, &all_approved, true), Err(Refused::Off));
-        assert_eq!(gate("bars", &[], &all_approved, true), Err(Refused::Off));
+        assert_eq!(gate("bars", &on, &all_approved), Ok("bars".into()));
+        assert_eq!(gate("bars", &off, &all_approved), Err(Refused::Off));
+        assert_eq!(gate("bars", &[], &all_approved), Err(Refused::Off));
         assert_eq!(
-            gate("bars", &on, &none_approved, true),
+            gate("bars", &on, &none_approved),
             Err(Refused::NotApproved),
             "switched on but not approved for this folder is a changed one"
         );
-        assert_eq!(
-            gate("bars", &on, &all_approved, false),
-            Err(Refused::PluginsOff)
-        );
 
         assert_eq!(
-            gate("tones", &on, &all_approved, true),
+            gate("tones", &on, &all_approved),
             Err(Refused::NotRenderer),
             "a plugin switched on and approved still isn't a renderer"
         );
-        assert_eq!(
-            gate("gone", &on, &all_approved, true),
-            Err(Refused::Missing)
-        );
+        assert_eq!(gate("gone", &on, &all_approved), Err(Refused::Missing));
 
         // Approval is for one exact folder.
         let other_hash = |_: &str, hash: &str| hash == "an-older-hash";
-        assert_eq!(
-            gate("bars", &on, &other_hash, true),
-            Err(Refused::NotApproved)
-        );
+        assert_eq!(gate("bars", &on, &other_hash), Err(Refused::NotApproved));
 
         let mut broken = renderer("bars");
         broken.error = Some("entry draw.sh is missing".into());
         assert_eq!(
-            check("bars", &[broken], &on, &all_approved, true).map(|_| ()),
+            check("bars", &[broken], &on, &all_approved).map(|_| ()),
             Err(Refused::Broken("entry draw.sh is missing".into()))
         );
+    }
+
+    /// The gate a session starts through and stays running through, with the
+    /// Plugins switch off as it is for every test in this process.
+    #[test]
+    fn a_renderer_starts_with_plugins_off() {
+        assert!(
+            !crate::plugins::allowed(),
+            "the tests run with Enable Plugins off"
+        );
+
+        let folders = [renderer("bars")];
+        let on = [record("bars", true)];
+        assert_eq!(
+            check("bars", &folders, &on, &all_approved).map(|folder| folder.id.as_str()),
+            Ok("bars"),
+            "its own switch and its approval are the whole gate"
+        );
+
+        // Still nothing runs without both.
+        assert_eq!(
+            check("bars", &folders, &on, &none_approved).map(|_| ()),
+            Err(Refused::NotApproved)
+        );
+        assert_eq!(
+            check("bars", &folders, &[record("bars", false)], &all_approved).map(|_| ()),
+            Err(Refused::Off)
+        );
+    }
+
+    /// A package that would be both is refused at the manifest, so the gate
+    /// above never meets one: a renderer can't bring a plugin host with it.
+    #[test]
+    fn a_package_cant_be_a_renderer_and_a_plugin() {
+        let document = |capabilities: serde_json::Value| {
+            json!({
+                "id": "both",
+                "name": "Both",
+                "version": "1",
+                "api": 1,
+                "entry": { "script": { "path": "draw.sh", "interpreter": "sh" } },
+                "capabilities": capabilities,
+            })
+            .to_string()
+        };
+
+        for also in [
+            json!({ "source": { "label": "Both" } }),
+            json!({ "providers": { "lyrics": true } }),
+            json!({ "panels": [{ "name": "P", "preset": { "panel_name": "library", "info": { "panel": {} } } }] }),
+        ] {
+            let mut capabilities = also.clone();
+            capabilities["renderer"] = json!({ "label": "Both" });
+
+            let refused = manifest::parse(&document(capabilities)).unwrap_err();
+            assert!(
+                refused.contains("declares nothing else"),
+                "{also}: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_renderer_suggests_resting_and_the_list_says_so() {
+        let folders = [package(
+            "calm",
+            json!({ "renderer": { "label": "Calm", "rests": true } }),
+        )];
+
+        assert!(listed(&folders, &[], &none_approved)[0].rests);
+        assert!(!listed(&[renderer("bars")], &[], &none_approved)[0].rests);
     }
 
     #[test]
@@ -949,7 +991,7 @@ mod tests {
         let on = [record(id, true)];
         let off = [record(id, false)];
         let passes = |kept: &str, records: &[PluginRecord]| {
-            kept != id || check(kept, &folders, records, &all_approved, true).is_ok()
+            kept != id || check(kept, &folders, records, &all_approved).is_ok()
         };
 
         forget_exits(&|kept| passes(kept, &on));

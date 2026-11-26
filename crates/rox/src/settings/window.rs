@@ -86,6 +86,7 @@ mod playback_page;
 mod plugins_page;
 mod providers_page;
 mod radio_page;
+mod renderers_page;
 mod shader_page;
 mod storage_page;
 mod subsonic;
@@ -166,6 +167,7 @@ enum Page {
     Plugins,
     Providers,
     Radio,
+    Renderers,
     Shader,
     Storage,
     Workspace,
@@ -195,6 +197,11 @@ const PAGES: &[(Page, &str, &str)] = &[
     (Page::Plugins, "settings-page-plugins", icons::PLUG),
     (Page::Providers, "settings-page-providers", icons::DOWNLOAD),
     (Page::Radio, "settings-page-radio", icons::RADIO),
+    (
+        Page::Renderers,
+        "settings-page-renderers",
+        icons::MONITOR_PLAY,
+    ),
     (Page::Shader, "settings-page-shader", icons::BLEND),
     (Page::Storage, "settings-page-storage", icons::DATABASE),
     (
@@ -228,8 +235,8 @@ enum Pending {
     /// Asked for because the catalog only comes back by syncing again; the
     /// switch is the non-destructive way to stop using a server.
     RemoveSubsonic(u64),
-    /// The enable card: switching a plugin on is the approving act, and this
-    /// is the one dialog in front of it (ADR 30).
+    /// The enable card: switching a plugin or a renderer on is the approving
+    /// act, and this is the one dialog in front of it (ADR 30).
     EnablePlugin(Box<plugins_page::EnableCard>),
     /// Asked for for the same reason as a server: rows and synced
     /// collections only come back by syncing again.
@@ -1386,6 +1393,7 @@ impl SettingsWindow {
             Page::Providers => self.providers_page(q, cx),
             Page::Shader => self.shader_page(q, window, cx),
             Page::Radio => self.radio_page(q, cx),
+            Page::Renderers => self.renderers_page(q, cx),
             Page::Storage => self.storage_page(q, cx),
             Page::Workspace => self.workspace_page(q, cx),
             Page::Development => self.development_page(q, cx),
@@ -1564,7 +1572,8 @@ impl Render for SettingsWindow {
         // Read at render so a window that was already up jumps too.
         self.sync_requested_page(window, cx);
 
-        // A rescan or a switch elsewhere moves what the Plugins page shows.
+        // A rescan or a switch elsewhere moves what the Plugins and Renderers
+        // pages show.
         self.sync_plugins(window, cx);
 
         // A model's file can land or go without a download from this window.
@@ -1762,6 +1771,7 @@ mod tests {
             Page::Plugins => "settings-page-plugins",
             Page::Providers => "settings-page-providers",
             Page::Radio => "settings-page-radio",
+            Page::Renderers => "settings-page-renderers",
             Page::Shader => "settings-page-shader",
             Page::Storage => "settings-page-storage",
             Page::Workspace => "settings-page-workspace",
@@ -1782,6 +1792,7 @@ mod tests {
         Page::Plugins,
         Page::Providers,
         Page::Radio,
+        Page::Renderers,
         Page::Shader,
         Page::Storage,
         Page::Workspace,

@@ -16,9 +16,11 @@
 //! copy the scan unpacks (ADR 32). Installing only lists it: the switch is
 //! still the one approval.
 //!
-//! A renderer (ADR 37) is listed, approved and switched here like any
-//! package, and never gets a host: [`crate::renderers`] runs it, and only
-//! while a render target shows it.
+//! A renderer (ADR 37) is approved and switched here like any package, and
+//! never gets a host: [`crate::renderers`] runs it, and only while a render
+//! target shows it. The Plugins switch is the plugins' alone. With it off the
+//! folder is still scanned, a renderer still lists and runs on its own
+//! switch, and no plugin gets a host.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -404,7 +406,7 @@ pub fn start(library: Entity<Library>, player: Entity<Player>, cx: &mut App) {
     .detach();
 }
 
-/// Plugins run only with the Plugins switch on.
+/// Plugins run only with the Plugins switch on. Renderers don't ask it.
 pub fn allowed() -> bool {
     settings::plugins_enabled()
 }
@@ -464,11 +466,15 @@ pub fn apply(cx: &mut App) {
         return;
     };
     let on = allowed();
-    if on {
-        watch(cx);
+    let folders = loaded();
+
+    // The watch only rescans, which runs nothing. It follows the folder for
+    // the plugins while they're on, and for any renderer installed whether
+    // they are or not, so a save in a renderer's folder is seen either way.
+    if on || folders.iter().any(is_renderer) {
+        let _ = watch(cx);
     }
 
-    let folders = loaded();
     let folder = |id: &str| folders.iter().find(|folder| folder.id == id);
 
     let mut records = Settings::load().accounts.plugins;
@@ -504,16 +510,7 @@ pub fn apply(cx: &mut App) {
         });
     }
 
-    let wanted: HashMap<String, (Loaded, PluginRecord)> = records
-        .into_iter()
-        .filter(|_| on)
-        .filter(|record| record.enabled && !changed.contains(&record.id))
-        .filter_map(|record| {
-            let folder = folder(&record.id)?;
-
-            hosts(folder).then(|| (source_of(&record.id), (folder.clone(), record)))
-        })
-        .collect();
+    let wanted = hosted(records, &folders, &changed, on);
 
     let (stopping, fresh) = reconcile(wanted);
 
@@ -552,6 +549,38 @@ pub fn apply(cx: &mut App) {
     }
 }
 
+/// The plugins that get a host: switched on, not changed since approval, a
+/// folder that hosts, and the Plugins switch on. The one place that switch
+/// gates anything that runs, and a renderer never passes [`hosts`], so this
+/// never starts one.
+fn hosted(
+    records: Vec<PluginRecord>,
+    folders: &[Loaded],
+    changed: &[String],
+    on: bool,
+) -> HashMap<String, (Loaded, PluginRecord)> {
+    records
+        .into_iter()
+        .filter(|_| on)
+        .filter(|record| record.enabled && !changed.contains(&record.id))
+        .filter_map(|record| {
+            let folder = folders.iter().find(|folder| folder.id == record.id)?;
+
+            hosts(folder).then(|| (source_of(&record.id), (folder.clone(), record)))
+        })
+        .collect()
+}
+
+/// Follows the plugins folder from now on, for the Renderers page while
+/// it's open: a renderer copied in shows without a Rescan even before one is
+/// installed and with plugins off. What landed before the watch began is
+/// found by one rescan. Both only scan, so they start nothing.
+pub fn watch_folder(cx: &mut App) {
+    if watch(cx) {
+        rescan(cx);
+    }
+}
+
 /// Whether a folder gets a plugin host once it's switched on and approved:
 /// it loads and answers the plugin wire as a source or a provider. A
 /// renderer never does. It runs only while a render target shows it.
@@ -562,7 +591,7 @@ fn hosts(folder: &Loaded) -> bool {
         })
 }
 
-/// Whether the folder is a renderer, which the Plugins page lists apart.
+/// Whether the folder is a renderer, which the Renderers page lists.
 pub fn is_renderer(folder: &Loaded) -> bool {
     folder.manifest.as_ref().is_some_and(|m| m.is_renderer())
 }
@@ -753,8 +782,8 @@ fn other_package(plugins: &Path, target: &Path, id: &str) -> Option<String> {
 
 /// A folder plugin, packed for its author. Blocking.
 ///
-/// A folder copied in since the last scan is looked for afresh: with plugins
-/// off nothing watches the folder, and a socket client has no Rescan button.
+/// A folder copied in since the last scan is looked for afresh: the watch may
+/// not be running, and a socket client has no Rescan button.
 /// Packing runs nothing, so the fresh read leaves the listed set alone.
 pub fn pack(id: &str, out: &Path) -> Result<(), String> {
     let mut folders = loaded();
@@ -775,13 +804,13 @@ pub fn pack(id: &str, out: &Path) -> Result<(), String> {
 }
 
 /// Starts following the plugins folder, once. A folder that appears later is
-/// picked up through its parent.
-fn watch(cx: &mut App) {
+/// picked up through its parent. Answers whether it started now.
+fn watch(cx: &mut App) -> bool {
     let Some(wiring) = cx.try_global::<Wiring>() else {
-        return;
+        return false;
     };
     if wiring.watch.is_some() {
-        return;
+        return false;
     }
 
     let (tx, events) = async_channel::unbounded::<()>();
@@ -791,7 +820,7 @@ fn watch(cx: &mut App) {
         Ok(watch) => Arc::new(watch),
         Err(e) => {
             log::warn!("plugins: not watching the plugins folder: {e}");
-            return;
+            return false;
         }
     };
 
@@ -806,6 +835,8 @@ fn watch(cx: &mut App) {
         }
     })
     .detach();
+
+    true
 }
 
 /// Switching on is the approving act: the folder's hash goes in the
@@ -1045,8 +1076,8 @@ pub fn remove(id: &str, cx: &mut App) -> Task<Result<usize, String>> {
         return removed;
     }
 
-    // The watch only runs with plugins allowed, and the package's row has to
-    // go either way.
+    // The watch may not be running, and the package's row has to go either
+    // way.
     cx.spawn(async move |cx| {
         let result = removed.await;
         cx.update(rescan).ok();
@@ -3383,6 +3414,35 @@ mod tests {
                 Change::CapabilityAdded("renderer".into()),
                 Change::CapabilityRemoved("source".into()),
             ]
+        );
+    }
+
+    /// Turning plugins off ends every plugin's host and leaves the renderers'
+    /// sessions, which [`crate::renderers`] gates on their own switches.
+    #[test]
+    fn plugins_off_stops_plugins_and_never_hosts_a_renderer() {
+        let folders = [
+            folder_of("bars", json!({ "renderer": { "label": "Bars" } })),
+            folder_of("tones", json!({ "source": { "label": "Tones" } })),
+        ];
+        let on = |id: &str| PluginRecord {
+            id: id.into(),
+            enabled: true,
+            ..Default::default()
+        };
+        let records = || vec![on("bars"), on("tones")];
+
+        let with_plugins: Vec<String> =
+            hosted(records(), &folders, &[], true).into_keys().collect();
+        assert_eq!(with_plugins, ["plugin:tones"], "never the renderer");
+
+        assert!(
+            hosted(records(), &folders, &[], false).is_empty(),
+            "a plugin switched on gets no host while plugins are off"
+        );
+        assert!(
+            hosted(records(), &folders, &["tones".into()], true).is_empty(),
+            "nor one changed since its approval"
         );
     }
 

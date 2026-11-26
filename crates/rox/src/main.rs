@@ -314,6 +314,9 @@ fn install_gpu_lost_restart() {
             return;
         };
         log::error!("restarting to get a fresh GPU device");
+        // Each renderer leads its own process group, so the exec would
+        // leave it running, holding any GPU texture it imported.
+        rox_services::renderers::stop_all();
         log::logger().flush();
         // Documents stay behind, or the restart opens them a second time.
         let args = std::env::args_os()

@@ -7,8 +7,9 @@
 //! A renderer is never a plugin host. It gets no `Host` and no plugin wire,
 //! answers no requests, and is started only when a render target asks, never
 //! with the plugins at launch. What it gets is its pipes, three variables,
-//! the `hello` line and one lent handle (fd 3 on Unix), and a second (fd 4)
-//! for the cover when its approved manifest asks for one. Restarting is the
+//! the `hello` line and one lent handle (fd 3 on Unix), then the cover's
+//! when its approved manifest asks for one, then a GPU texture's when it
+//! asks for that and the render target could make one. Restarting is the
 //! render target's job, on the plugin host's schedule through [`due`] and
 //! [`note_exit`].
 
@@ -259,12 +260,14 @@ static EXITS: LazyLock<Mutex<HashMap<String, VecDeque<Instant>>>> =
 
 /// Starts renderer `id` drawing at `width` by `height` into the mapping
 /// behind `handle`, after the gate and the exit count agree. `cover` is
-/// lent only to a renderer whose approved manifest asks for the cover.
-/// Blocking: it may probe an interpreter, so never on the UI thread.
+/// lent only to a renderer whose approved manifest asks for the cover, and
+/// `texture` only to one whose approved manifest says `gpu`. Blocking: it
+/// may probe an interpreter, so never on the UI thread.
 pub fn start(
     id: &str,
     handle: Lent<'_>,
     cover: Option<Lent<'_>>,
+    texture: Option<&gpui::ExternalTexture>,
     width: u32,
     height: u32,
 ) -> Result<Session, Refused> {
@@ -295,10 +298,12 @@ pub fn start(
         .unwrap_or_default();
     let cover = cover.filter(|_| asks.cover);
     asks.cover = cover.is_some();
+    let texture = texture.filter(|_| asks.gpu);
+    asks.gpu = texture.is_some();
 
     // A renderer that can't start counts as one that exits, as a plugin's
     // failed start does, so a broken one stops rather than looping.
-    let started = launch(folder, handle, cover, width, height);
+    let started = launch(folder, handle, cover, texture, width, height);
     if started.is_err() {
         note_exit(id);
     }
@@ -315,7 +320,10 @@ pub fn start(
         live.push(Arc::downgrade(&run));
     }
 
-    log::info!("renderer {id}: started at {width}x{height}");
+    match asks.gpu {
+        true => log::info!("renderer {id}: started at {width}x{height}, lent a texture"),
+        false => log::info!("renderer {id}: started at {width}x{height}"),
+    }
 
     Ok(Session {
         id: id.to_string(),
@@ -334,6 +342,7 @@ fn launch(
     folder: &Loaded,
     handle: Lent,
     cover: Option<Lent>,
+    texture: Option<&gpui::ExternalTexture>,
     width: u32,
     height: u32,
 ) -> Result<Launched, String> {
@@ -346,19 +355,33 @@ fn launch(
         .env("ROX_RENDER_API", API.to_string())
         .env("ROX_FRAMES_WIDTH", width.to_string())
         .env("ROX_FRAMES_HEIGHT", height.to_string());
+
+    // The frames first, always: they're the fallback a renderer that can't
+    // import the texture draws into.
+    let texture_fd = texture.and_then(lent_texture);
+    let fds = places(cover.is_some(), texture_fd.is_some());
+    let mut lent = vec![handle];
+    lent.extend(cover);
+    lent.extend(texture_fd);
+
     #[cfg(unix)]
-    command.env("ROX_FRAMES_FD", "3");
-    #[cfg(unix)]
-    if cover.is_some() {
-        command.env("ROX_COVER_FD", COVER_FD.to_string());
+    {
+        command.env("ROX_FRAMES_FD", fds.frames.to_string());
+        if let Some(fd) = fds.cover {
+            command.env("ROX_COVER_FD", fd.to_string());
+        }
+        if let Some(fd) = fds.texture {
+            command.env("ROX_TEXTURE_FD", fd.to_string());
+        }
     }
 
-    let lent = match cover {
-        Some(cover) => Extra::Handles(vec![handle, cover]),
-        None => Extra::Handle(handle),
-    };
-    let (mut process, pipes) =
-        process::spawn_with("renderer", &folder.id, command, &folder.dir, lent)?;
+    let (mut process, pipes) = process::spawn_with(
+        "renderer",
+        &folder.id,
+        command,
+        &folder.dir,
+        Extra::Handles(lent),
+    )?;
     let mut stdin = pipes.stdin;
 
     let mut hello = json!({
@@ -367,8 +390,11 @@ fn launch(
         "height": height,
         "handle": process.handle().unwrap_or(0),
     });
-    if cover.is_some() {
-        hello["cover"] = cover_hello(&process);
+    if let Some(fd) = fds.cover {
+        hello["cover"] = cover_hello(&process, fd);
+    }
+    if let (Some(texture), Some(fd)) = (texture, fds.texture) {
+        hello["texture"] = texture_hello(texture, fd);
     }
     let line = format!("{hello}\n");
     if let Err(e) = stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
@@ -379,9 +405,33 @@ fn launch(
     Ok((process, stdin, pipes.stdout))
 }
 
-/// The fd the cover arrives as on Unix, the one after the frames'.
-#[cfg(unix)]
-const COVER_FD: u32 = 4;
+/// Where each lent handle lands in a renderer on Unix. The order is fixed:
+/// the frames always, then the cover when it's lent, then the texture when
+/// it's lent. Each is named in the environment and in `hello`, so a
+/// renderer never works one out by position. On Windows the lending order
+/// is the same and `hello` carries the values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Places {
+    // Read where the environment names it, which Windows has no use for.
+    #[cfg_attr(windows, allow(dead_code))]
+    frames: u32,
+    cover: Option<u32>,
+    texture: Option<u32>,
+}
+
+/// The fd the first lent handle arrives as on Unix.
+const FIRST_FD: u32 = 3;
+
+fn places(cover: bool, texture: bool) -> Places {
+    let cover = cover.then_some(FIRST_FD + 1);
+    let texture = texture.then_some(FIRST_FD + 1 + u32::from(cover.is_some()));
+
+    Places {
+        frames: FIRST_FD,
+        cover,
+        texture,
+    }
+}
 
 /// The cover's side in pixels: `rox_frames::cover::SIZE`, which this crate
 /// doesn't link. A test in the render target pins the two equal.
@@ -389,16 +439,57 @@ pub const COVER_SIDE: u32 = 256;
 
 /// Where the cover is and its size, for `hello`.
 #[cfg(unix)]
-fn cover_hello(_process: &Process) -> serde_json::Value {
-    json!({ "fd": COVER_FD, "width": COVER_SIDE, "height": COVER_SIDE })
+fn cover_hello(_process: &Process, fd: u32) -> serde_json::Value {
+    json!({ "fd": fd, "width": COVER_SIDE, "height": COVER_SIDE })
 }
 
 /// Never compiled: no Windows target builds here. The cover's handle is
 /// the second one lent.
 #[cfg(windows)]
-fn cover_hello(process: &Process) -> serde_json::Value {
+fn cover_hello(process: &Process, _fd: u32) -> serde_json::Value {
     let handle = process.handles().get(1).copied().unwrap_or(0);
     json!({ "handle": handle, "width": COVER_SIDE, "height": COVER_SIDE })
+}
+
+/// The texture's memory, borrowed for the spawn.
+#[cfg(unix)]
+fn lent_texture(texture: &gpui::ExternalTexture) -> Option<Lent<'_>> {
+    use std::os::fd::AsFd;
+
+    Some(texture.fd.as_fd())
+}
+
+/// gpui makes no external texture off Linux, so there's never one to lend.
+#[cfg(windows)]
+fn lent_texture(_texture: &gpui::ExternalTexture) -> Option<Lent<'_>> {
+    None
+}
+
+/// What a renderer needs to import the texture, for `hello`: the image's
+/// create info as raw Vulkan values, the allocation it repeats, and the
+/// device it has to be on. rox describes its own allocation here and reads
+/// nothing back about it.
+fn texture_hello(texture: &gpui::ExternalTexture, fd: u32) -> serde_json::Value {
+    json!({
+        "fd": fd,
+        "width": texture.width,
+        "height": texture.height,
+        "allocation_size": texture.allocation_size,
+        "memory_type": texture.memory_type,
+        "handle_type": "opaque-fd",
+        "format": texture.format,
+        "view_formats": texture.view_formats,
+        "flags": texture.flags,
+        "usage": texture.usage,
+        "tiling": texture.tiling,
+        "layout": texture.layout,
+        "device_uuid": hex(&texture.device_uuid),
+        "driver_uuid": hex(&texture.driver_uuid),
+    })
+}
+
+fn hex(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 impl Session {
@@ -533,8 +624,9 @@ pub(crate) fn enforce(cx: &mut App) {
         .detach();
 }
 
-/// Every session, for rox quitting.
-pub(crate) fn stop_all() {
+/// Every session, for rox quitting and for the re-exec after a lost GPU,
+/// which would otherwise leave them running outside it.
+pub fn stop_all() {
     let running: Vec<Arc<Run>> = LIVE
         .lock()
         .map(|live| live.iter().filter_map(Weak::upgrade).collect())
@@ -964,6 +1056,157 @@ mod tests {
                 .any(|s| matches!(s.source, Source::Aggregate { of: 3, .. }))
         );
         assert!(signals_to_add(&[], &pool).is_empty());
+    }
+
+    /// A texture as gpui describes one, its memory the file at `path`.
+    #[cfg(unix)]
+    fn external(path: &std::path::Path) -> gpui::ExternalTexture {
+        gpui::ExternalTexture {
+            fd: std::fs::File::open(path).unwrap().into(),
+            width: 1920,
+            height: 1080,
+            allocation_size: 8_355_840,
+            memory_type: 7,
+            format: 37,
+            view_formats: vec![43, 37],
+            flags: 8,
+            usage: 0x1f,
+            tiling: 0,
+            layout: 1,
+            device_uuid: [0xab; 16],
+            driver_uuid: *b"0123456789abcdef",
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_texture_in_hello_says_everything_an_importer_repeats() {
+        let path = std::env::temp_dir().join(format!("rox-renderers-hello-{}", std::process::id()));
+        std::fs::write(&path, "texture").unwrap();
+        let texture = external(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            texture_hello(&texture, 5),
+            json!({
+                "fd": 5,
+                "width": 1920,
+                "height": 1080,
+                "allocation_size": 8_355_840,
+                "memory_type": 7,
+                "handle_type": "opaque-fd",
+                "format": 37,
+                "view_formats": [43, 37],
+                "flags": 8,
+                "usage": 31,
+                "tiling": 0,
+                "layout": 1,
+                "device_uuid": "abababababababababababababababab",
+                "driver_uuid": "30313233343536373839616263646566",
+            })
+        );
+    }
+
+    #[test]
+    fn the_handles_land_in_a_fixed_order() {
+        let at = |cover, texture| {
+            let places = places(cover, texture);
+            (places.frames, places.cover, places.texture)
+        };
+
+        assert_eq!(at(false, false), (3, None, None));
+        assert_eq!(at(true, false), (3, Some(4), None));
+        assert_eq!(at(false, true), (3, None, Some(4)));
+        assert_eq!(at(true, true), (3, Some(4), Some(5)));
+    }
+
+    /// Starts a renderer package whose script prints `hello`, the three fd
+    /// variables and what each lent fd holds, with the frames, and the cover
+    /// and the texture when asked, each a file holding its own name.
+    #[cfg(unix)]
+    fn spawned(tag: &str, cover: bool, texture: bool) -> (serde_json::Value, String, String) {
+        use std::io::Read as _;
+        use std::os::fd::AsFd;
+
+        let dir = std::env::temp_dir().join(format!("rox-renderers-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("draw.sh"),
+            r#"read hello
+printf '%s\n' "$hello"
+printf '%s|%s|%s\n' "$ROX_FRAMES_FD" "${ROX_COVER_FD-}" "${ROX_TEXTURE_FD-}"
+n=3; while [ $n -le 24 ]; do
+  if [ -e /dev/fd/$n ]; then printf '%s=' $n; eval "cat <&$n"; fi
+  n=$((n+1))
+done
+"#,
+        )
+        .unwrap();
+
+        let file = |name: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("{name}\n")).unwrap();
+            std::fs::File::open(&path).unwrap()
+        };
+        let frames = file("frames");
+        let cover_file = file("cover");
+        drop(file("texture"));
+        let memory = texture.then(|| external(&dir.join("texture")));
+
+        let mut folder = package(tag, json!({ "renderer": { "label": "Probe" } }));
+        folder.dir = dir.clone();
+        let (mut process, stdin, mut stdout) = launch(
+            &folder,
+            frames.as_fd(),
+            cover.then(|| cover_file.as_fd()),
+            memory.as_ref(),
+            64,
+            32,
+        )
+        .unwrap();
+
+        let mut out = String::new();
+        stdout.read_to_string(&mut out).unwrap();
+        drop(stdin);
+        process.wait_for(Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut lines = out.splitn(3, '\n');
+        let hello = serde_json::from_str(lines.next().unwrap()).unwrap();
+        let vars = lines.next().unwrap().to_string();
+        let held = lines.next().unwrap_or_default().to_string();
+        (hello, vars, held)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_handle_is_named_where_it_lands() {
+        let cases = [
+            (false, false, "3||", "3=frames\n"),
+            (true, false, "3|4|", "3=frames\n4=cover\n"),
+            (false, true, "3||4", "3=frames\n4=texture\n"),
+            (true, true, "3|4|5", "3=frames\n4=cover\n5=texture\n"),
+        ];
+
+        for (n, (cover, texture, vars, held)) in cases.into_iter().enumerate() {
+            let (hello, got_vars, got_held) = spawned(&format!("order-{n}"), cover, texture);
+            let case = format!("cover {cover}, texture {texture}");
+
+            assert_eq!(got_vars, vars, "{case}");
+            assert_eq!(got_held, held, "{case}: nothing else is inherited");
+            assert_eq!(hello["hello"], API, "{case}");
+            assert_eq!(
+                (hello["width"].clone(), hello["height"].clone()),
+                (json!(64), json!(32))
+            );
+
+            let cover_fd = hello.get("cover").map(|cover| cover["fd"].clone());
+            assert_eq!(cover_fd, cover.then(|| json!(4)), "{case}");
+
+            let texture_fd = hello.get("texture").map(|texture| texture["fd"].clone());
+            let expected = texture.then(|| json!(if cover { 5 } else { 4 }));
+            assert_eq!(texture_fd, expected, "{case}: hello names the texture's fd");
+        }
     }
 
     #[test]

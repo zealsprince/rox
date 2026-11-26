@@ -1,11 +1,11 @@
 # Renderers
 
 How a renderer is built and how to write one: the package, the process rox starts for a
-render target, the shared memory its frames arrive through, the lines it reads and
-writes, and the rules that stop it. This makes
-[ADR 37](../02-architecture/decisions/37-adr-render-targets.md) concrete, with its
-amendments of 2026-11-16 (renderers are listed apart from plugins) and 2026-11-23 (shared
-memory is rox's own channel). Underneath, a renderer is the package of
+render target, the shared memory its frames arrive through, the GPU texture it can draw
+into instead on Linux, the lines it reads and writes, and the rules that stop it. This
+makes [ADR 37](../02-architecture/decisions/37-adr-render-targets.md) concrete, with its
+amendments of 2026-11-16 (renderers are listed apart from plugins), 2026-11-23 (shared
+memory is rox's own channel) and 2026-11-25 (a GPU texture, Linux first). Underneath, a renderer is the package of
 [ADR 30](../02-architecture/decisions/30-adr-plugins.md) under its renderer amendment:
 the same folder or `.roxp`, the same hash, approval and switch, so
 [10-plugins.md](10-plugins.md) holds for everything this doc doesn't say otherwise. A
@@ -22,8 +22,11 @@ the magic `RXF1` (`VERSION` and `MAGIC`, `rox-frames/src/layout.rs:10-12`), and 
 mapping is layout version 1 behind `RXC1` (`rox-frames/src/cover.rs`). The manifest
 is plugin API 1 (`SUPPORTED_API`, `rox-plugins/src/manifest.rs:24`). `rox-frames` uses
 libc 0.2 on Unix (0.2.186 in rox's lockfile, 0.2.190 in the plasma example's) and
-windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) says of wgpu
-was read in wgpu 30.0.2, which rox doesn't depend on.
+windows-sys 0.61 (0.61.2) on Windows. What [A GPU renderer](#a-gpu-renderer) and
+[A GPU texture](#a-gpu-texture) say of wgpu was read in wgpu 30.0.2 and wgpu-hal 30.0.2,
+which rox doesn't depend on. The texture comes from blade-graphics 0.7.1, vendored with
+`patches/blade-graphics/a0-shared-textures.patch`, through gpui's
+`Window::register_external_texture` (`patches/gpui/e5-external-user-textures.patch`).
 
 ## Trying the examples
 
@@ -98,6 +101,14 @@ it.
 | `palette` | `true` or `false` | the theme's colours, on [`palette` lines](#rox-to-the-renderer) | Gets the colours of the current theme. |
 | `cover` | `true` or `false` | the playing track's cover as pixels, through [the cover mapping](#the-cover-mapping) | Gets the cover of the playing track, as a picture. |
 
+A fourth key, `gpu`, says the renderer can draw into a GPU texture rox lends it (see
+[A GPU texture](#a-gpu-texture)). It's `true` or `false`, off when left out, and refused
+like the others when it's anything else. It isn't a grant, and the card says nothing of
+it: the card lists what a renderer is given about the music, the user and the theme, and
+the texture gives it none of that. It's memory for the target's own pixels, which every
+renderer already draws. A manifest that gains `gpu` is still a changed manifest, so the
+renderer switches off until it's approved again.
+
 A manifest asking for everything:
 
 ```json
@@ -106,6 +117,7 @@ A manifest asking for everything:
     "label": "Pulse",
     "palette": true,
     "cover": true,
+    "gpu": true,
     "signals": [
       { "kind": "band", "low": 30, "high": 120, "name": "Kick", "response": 20 },
       { "kind": "trigger", "low": 2000, "high": 8000, "threshold": 60 },
@@ -188,10 +200,14 @@ with](#what-a-native-renderer-starts-with) has the whole of it. On top of those:
 | `ROX_FRAMES_WIDTH`, `ROX_FRAMES_HEIGHT` | The target's size in pixels |
 | `ROX_FRAMES_FD` | `3`, on Unix only |
 | `ROX_COVER_FD` | `4`, on Unix only, and only for a renderer granted the cover |
+| `ROX_TEXTURE_FD` | The texture's fd, on Linux only, and only for a renderer lent one: `4`, or `5` when the cover is lent too |
 
-On Unix the renderer leads its own process group, gets the mapping as fd 3 and, granted
-the cover, the cover mapping as fd 4. Every fd past the last one lent is marked to close
-at exec (`lend` and `close_from`, `process.rs:204-288`).
+On Unix the renderer leads its own process group and gets its handles from fd 3 up in a
+fixed order: the frame mapping at 3 always, then the cover mapping when it's granted,
+then the GPU texture when it's lent (`places`, `rox-services/src/renderers.rs`). Each is
+named in the environment and in `hello`, so read the number from there rather than
+counting. Every fd past the last one lent is marked to close at exec (`lend` and
+`close_from`, `process.rs:204-288`).
 rox writes `hello` as soon as the process runs. A renderer that can't be spawned, or
 whose `hello` can't be written, counts as an exit (`launch`, `renderers.rs:333`).
 
@@ -391,6 +407,7 @@ These are every line rox writes (`target.rs:1327-1592`):
 ```json
 {"hello":1,"width":1280,"height":720,"handle":0}
 {"hello":1,"width":1280,"height":720,"handle":0,"cover":{"fd":4,"width":256,"height":256}}
+{"hello":1,"width":1920,"height":1080,"handle":0,"texture":{"fd":4,"width":1920,"height":1080,"allocation_size":8847360,"memory_type":0,"handle_type":"opaque-fd","format":37,"view_formats":[43,37],"flags":8,"usage":31,"tiling":0,"layout":1,"device_uuid":"00000000100000000000000000000000","driver_uuid":"414d442d4d4553412d44525600000000"}}
 {"pool":[{"id":1,"name":"Kick","kind":"band","low":30,"high":120},{"id":2,"name":"onset 30-120 Hz","kind":"onset","low":30,"high":120},{"id":3,"name":"level","kind":"level"},{"id":4,"name":"total of 1","kind":"aggregate"}]}
 {"signals":[0.3958,0.0,1.0],"time":4.224}
 {"pointer":{"kind":"move","x":0.27,"y":0.36}}
@@ -404,7 +421,9 @@ These are every line rox writes (`target.rs:1327-1592`):
 mapping's handle value on Windows and 0 elsewhere. A renderer granted the cover finds it
 under `cover`: `fd` 4 on Unix, `handle` on Windows, the section's handle value in the
 renderer, and the square's `width` and `height`, both 256. Without the grant `hello` has no
-`cover` key.
+`cover` key. A renderer lent the GPU texture finds what it needs to import it under
+`texture` ([hello's texture](#hellos-texture)). One that wasn't lent it, for any reason,
+gets no `texture` key.
 
 `pool` describes the signal pool by id, in pool order. A name is the user's, trimmed
 and cut at 64 characters, or one worded in English from the signal's source: `band
@@ -556,11 +575,13 @@ to 0 at their falling rate, and a pulse finishes its decay.
 ### The renderer to rox
 
 A renderer writes announce lines to stdout and nothing else: `f`, a space, the frame number in
-decimal digits, a space, the slot `0` or `1`, and `\n`. A line is at most 64 bytes,
-newline included, and `\r\n` is refused (`ANNOUNCE_MAX` and `parse_announce`,
-`rox-frames/src/lib.rs:39-86`). Any other line, or a longer one, is dropped without a
-log line, and still counts toward the flood rule below. Of the lines waiting when rox
-reads, only the newest announce is acted on (`read`, `target.rs:1734`).
+decimal digits, a space, the slot `0` or `1`, and `\n`. A renderer lent the GPU texture
+can also write `t`, a space, the frame number and `\n`, for a frame it drew in the
+texture. A line is at most 64 bytes, newline included, and `\r\n` is refused
+(`ANNOUNCE_MAX`, `parse_announce` and `parse_texture_announce`, `rox-frames/src/lib.rs`).
+Any other line, or a longer one, is dropped without a log line, and still counts toward
+the flood rule below, as `t` lines do. Of the lines waiting when rox reads, only the
+newest announce is acted on, `f` or `t` (`read`, `target.rs`).
 
 stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 KiB
 (`drain_stderr` and `STDERR_LINE`, `rox-plugins/src/process.rs:22` and `:336`).
@@ -582,6 +603,8 @@ stderr goes to rox's log a line at a time as `renderer <id>: <line>`, cut at 4 K
 | Wanted signals | 16 | `MAX_WANTED_SIGNALS`, `manifest.rs:176` |
 | A wanted signal's name | 32 characters | `WANTED_NAME_MAX` |
 | The cover | 256 by 256 pixels | `SIZE`, `rox-frames/src/cover.rs` |
+| The GPU texture | One per target, at its resolution; Linux only; the canvas's wait to make it is 2 s, then the session runs on slots | `LIMITS.texture_wait`, `target.rs` |
+| `t` from a session lent no texture | Counts as a refused frame: 60 in a row stop the renderer | `show_texture`, `target.rs` |
 
 The flood rule counts lines in one-second spans from the first line, and stops a
 renderer whose current span passes 500 right after one that did. A renderer that
@@ -618,7 +641,10 @@ Placed in another rox, the renderer reads that rox's pool.
 
 On Linux the block is a sealed `memfd`, lent as fd 3 with `ROX_FRAMES_FD=3`, and
 `hello`'s `handle` is 0. The cover is a second `memfd`, future-write sealed, lent as fd 4
-with `ROX_COVER_FD=4`.
+with `ROX_COVER_FD=4`. The GPU texture is lent on Linux alone, after the cover. On macOS
+and Windows gpui answers unsupported, rox never asks the canvas for one, and every target
+draws through the slots. That code compiles on both by `cfg`, and no macOS or Windows
+build of it has been made.
 
 On macOS the design is the same fd 3 handoff, with the block a POSIX shared memory
 object under a random name that's unlinked as soon as it's open. macOS has no seals.
@@ -642,7 +668,9 @@ from `hello`.
 ## A GPU renderer
 
 Both examples fill their slot from the CPU. A renderer that draws on the GPU reads each
-frame back into the slot, and the contract above leaves it a few things to get right.
+frame back into the slot, and the contract above leaves it a few things to get right. On
+Linux it can skip the readback and draw into a texture rox lends it
+([A GPU texture](#a-gpu-texture)), and it still needs the slots for the times it can't.
 
 ### Reading a frame back
 
@@ -752,6 +780,174 @@ The flake's dev shell puts the loader on `LD_LIBRARY_PATH`, and a rox run from t
 passes it on. A renderer that runs under a dev build can fail to load `libvulkan.so.1`
 under the package.
 
+## A GPU texture
+
+On Linux a renderer can draw into a GPU texture the render target owns, and rox shows it
+with no copy through the CPU. rox makes the texture in the window that shows the target,
+exports its memory as an opaque fd and lends it at spawn beside the frame mapping
+(`register_external_texture`, `patches/gpui/e5-external-user-textures.patch`; `Lend` and
+`Supervisor::texture`, `rox/src/canvas/target.rs`). The frame mapping is always made and
+lent too, so the slots are there whenever the texture isn't.
+
+A session is lent the texture when all of these hold:
+
+- the approved manifest says `"gpu": true`;
+- rox runs on Linux, where gpui's Vulkan windows can make one (everywhere else it answers
+  unsupported, and so does a device that can't share the image as an opaque fd);
+- the canvas made it within 2 s of the session's start. Only a paint of the target can
+  make it, since a texture belongs to a window, so a window that isn't drawn starts the
+  session on slots. A texture made later goes to the next session.
+
+One texture is made per target and lent to every session of it, so a restart imports the
+same memory. A new resolution, a move to another window and a switch-off each let it go,
+and the next session is lent a new one.
+
+### hello's texture
+
+The values are the image's create info as raw Vulkan numbers, for an importer to repeat
+exactly (`texture_hello`, `rox-services/src/renderers.rs`):
+
+| Key | Vulkan | Value |
+|---|---|---|
+| `fd` | The memory, `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` | the same number as `ROX_TEXTURE_FD` |
+| `width`, `height` | `VkImageCreateInfo::extent` | the target's resolution |
+| `allocation_size` | `VkMemoryAllocateInfo::allocationSize` | rox's dedicated allocation, in bytes |
+| `memory_type` | `VkMemoryAllocateInfo::memoryTypeIndex` | the type rox allocated from |
+| `handle_type` | `VkExternalMemoryHandleTypeFlagBits` | `"opaque-fd"` |
+| `format` | `VkImageCreateInfo::format` | 37, `VK_FORMAT_R8G8B8A8_UNORM` |
+| `view_formats` | `VkImageFormatListCreateInfo::pViewFormats`, in order | 43 and 37: `VK_FORMAT_R8G8B8A8_SRGB`, then the image's own format |
+| `flags` | `VkImageCreateFlags` | 8, `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` |
+| `usage` | `VkImageUsageFlags` | 31: `TRANSFER_SRC`, `TRANSFER_DST`, `SAMPLED`, `STORAGE` and `COLOR_ATTACHMENT` |
+| `tiling` | `VkImageTiling` | 0, `VK_IMAGE_TILING_OPTIMAL` |
+| `layout` | `VkImageLayout` the image is in, and has to be in whenever rox samples it | 1, `VK_IMAGE_LAYOUT_GENERAL` |
+| `device_uuid`, `driver_uuid` | `VkPhysicalDeviceIDProperties::deviceUUID` and `driverUUID` | 32 lowercase hex digits each |
+
+The rest of the image is fixed: 2D, one mip level, one array layer, one sample,
+`VK_SHARING_MODE_EXCLUSIVE`, `initialLayout` `VK_IMAGE_LAYOUT_UNDEFINED`. Copy the numbers
+from `hello` rather than writing your own: an image that differs from rox's in any field
+is a different image, and importing memory into it is undefined
+(VUID-VkMemoryDedicatedAllocateInfo-image-01878).
+
+### Importing it
+
+In Vulkan terms, once, at start:
+
+1. Compare `device_uuid` and `driver_uuid` with `VkPhysicalDeviceIDProperties` of the
+   device you'd draw on (`vkGetPhysicalDeviceProperties2`). An opaque fd only means
+   something to the same driver on the same device, so on a mismatch draw into the slots.
+   On a machine with more than one GPU, choose the adapter whose UUIDs match.
+2. The device needs `VK_KHR_external_memory_fd`, and Vulkan 1.2 or
+   `VK_KHR_image_format_list` for the view format list.
+3. `vkCreateImage` with the create info above, chaining `VkExternalMemoryImageCreateInfo`
+   with `handleTypes` `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` and
+   `VkImageFormatListCreateInfo` with `view_formats`.
+4. `vkGetImageMemoryRequirements`. If `size` isn't `allocation_size`, or `memoryTypeBits`
+   doesn't have bit `memory_type` set, don't import: draw into the slots.
+5. `vkAllocateMemory` with `allocation_size` and `memory_type`, chaining
+   `VkImportMemoryFdInfoKHR` (the handle type and the fd) and `VkMemoryDedicatedAllocateInfo`
+   naming the image. A successful import takes the fd; a failed one leaves it yours to
+   close. Then `vkBindImageMemory` at offset 0.
+6. The image is in `GENERAL` and released to `VK_QUEUE_FAMILY_EXTERNAL` when you get it.
+
+wgpu has no import of its own, so a wgpu renderer does steps 1 to 5 in `ash` through
+wgpu-hal, on the Vulkan backend only. In wgpu 30.0.2: `Device::as_hal::<Vulkan>()` gives
+the raw device, physical device and instance, and wgpu-hal enables
+`VK_KHR_external_memory_fd` on any device that has it (`adapter.rs`). Use the `ash`
+wgpu-hal depends on, 0.38. Wrap the image with `texture_from_raw(image, &desc, None,
+TextureMemory::Dedicated(memory))` and `Device::create_texture_from_hal::<Vulkan>`, with
+format `Rgba8Unorm`, view formats `[Rgba8UnormSrgb]` and the usages matching the flags
+above (`COPY_SRC`, `COPY_DST`, `TEXTURE_BINDING`, `STORAGE_BINDING`, `RENDER_ATTACHMENT`).
+An `Rgba8UnormSrgb` view has to set `usage: Some(RENDER_ATTACHMENT)`, since a storage
+usage can't carry over to an sRGB view (VUID-VkImageViewCreateInfo-usage-02275). The
+ownership barriers below go on the raw command buffer from
+`CommandEncoder::as_hal_mut::<Vulkan>` (`raw_handle`), with your queue family from the hal
+device's `queue_family_index()`. Spike GF-S imported rox's texture this way in about 120
+lines and showed it pixel-exact, without the barriers.
+
+### Each frame
+
+1. Acquire: an image memory barrier from `VK_QUEUE_FAMILY_EXTERNAL` to your queue family,
+   `GENERAL` to `GENERAL`, before your first write.
+2. Write every pixel. Either store into the `Rgba8Unorm` image with the sRGB curve applied
+   in the shader, since a storage image can't be sRGB, or render through an
+   `R8G8B8A8_SRGB` view and let the hardware apply it. rox samples through an sRGB view
+   either way, and both were pixel-exact in the spike. Alpha is straight, as in a slot.
+3. Release: the barrier back to `VK_QUEUE_FAMILY_EXTERNAL`, leaving the image in
+   `GENERAL`. A render pass leaves it in `COLOR_ATTACHMENT_OPTIMAL`, so that's the
+   barrier's old layout then; wgpu leaves a storage write in `GENERAL`.
+4. Submit, and wait on your own fence for that submission.
+5. Write `t <n>\n` and flush.
+
+rox never waits on your fence and never looks at your queue: whenever it paints, it
+samples whatever the memory holds. Announcing only after the wait is what keeps a
+half-drawn frame off the screen. The pacing rule is the slots': announce at most once per
+display frame (see [How often to announce](#how-often-to-announce)), since a `t` line
+counts toward the flood rule like any other.
+
+What rox does with the image's ownership: at registration it takes the image out of
+`UNDEFINED` into `GENERAL` and releases it to `VK_QUEUE_FAMILY_EXTERNAL`, and waits on its
+own fence before the fd leaves, so your first acquire can't race it. It doesn't acquire
+the image back before it samples, or release it after, which the Vulkan spec asks of both
+sides of an ownership transfer. Doing that on every frame would need a hook in gpui's
+draw, and handing ownership back and forth would need rox to tell the renderer when its
+sampling finished, which means a wait or a new line. Both sides work in `GENERAL` on one
+device, and on the driver this was built and run on (RADV, Mesa 26.1.8, a Radeon RX 6800
+XT) the frames show pixel-exact without it. Other drivers haven't been tried. If one
+needed rox's acquire, the symptom would be wrong pixels in the target, since rox only
+ever samples the image.
+
+### Falling back
+
+Draw into the slots and announce `f`, as described above, whenever:
+
+- `hello` has no `texture`: not Linux, the manifest doesn't say `gpu`, the window couldn't
+  make one, or the canvas didn't paint in time;
+- the UUIDs differ;
+- the image's requirements don't match `allocation_size` and `memory_type`, or the import
+  fails;
+- a submit or a wait fails mid-session.
+
+A renderer can switch between the two in one session, both ways, and whichever was
+announced last is what the target shows (`Announced`, `target.rs`). A `t` from a session
+lent no texture is refused like a slot that lies, and 60 refusals in a row stop the
+renderer.
+
+### What rox trusts
+
+- rox allocates and exports, and never imports a renderer's memory. On RADV an import
+  with a lying shape crashed the importing process in the driver's own error path, so the
+  process that has to survive is the one that allocates.
+- rox shares no fence, semaphore or lock with a renderer and waits on nothing it controls.
+  The only wait in the path is rox's own fence at registration.
+- rox believes nothing a renderer says about the texture. A `t` line carries a number rox
+  doesn't read, and all the line can do is have the canvas paint rox's own texture again:
+  it can't move, resize or reformat it, or reach anything outside it.
+- What changes from the slots is that rox can't check a counter on GPU memory. A renderer
+  can change what its target shows whenever rox paints, announced or not, and a frame
+  written while rox samples can show half old and half new. It's only ever pixels, and
+  only its own target's. A renderer that forces a GPU reset can take rox's device with it
+  on either channel: rox restarts itself then (gpui patch c5), stopping every renderer
+  first.
+
+### When the texture goes
+
+| Case | What happens |
+|---|---|
+| A restart after an exit | The same texture, lent again |
+| A new resolution | The target is new: the old texture is released and a new one made |
+| Pop Out, Dock Back, or a move to another window | The texture stays with the window that made it. rox makes one in the new window and starts the renderer again with its fd, which doesn't count as an exit |
+| Switching the renderer off, Enable Plugins off, a changed package, the fifth exit | The session ends and the target gives its texture back. The next session gets a new one |
+| Deleting the item, closing the canvas, applying a workspace, quitting | Released with the item |
+| Paused, hidden, or a window not drawn | Kept, and not painted. The renderer gets `pause` as with slots |
+| A lost GPU device | rox stops every renderer and restarts itself. Its fds close at the exec |
+
+Each release frees rox's image (`release_user_texture`) and closes rox's fd. The memory
+itself goes once the renderer's import goes too, when it exits. The image holds nothing
+defined until a renderer writes it, so a target shows nothing on this path until its first
+`t`, and nothing again after a move until the new texture's first `t`. On RADV a texture
+announced without ever being written showed as transparent, which is the driver's doing
+and not a promise.
+
 ## Debugging
 
 A renderer's stderr is in rox's log: `<data>/logs/rox.log`, rox's own stderr, and the
@@ -760,6 +956,10 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | Line | Meaning |
 |---|---|
 | `renderer <id>: started at <w>x<h>` | The process runs and `hello` went |
+| `renderer <id>: started at <w>x<h>, lent a texture` | The same, with the GPU texture lent |
+| `render target <id>: no texture from the canvas, this session uses shared memory` | The canvas didn't make the texture within 2 s |
+| `canvas: no GPU texture at <w>x<h>, shared memory it is: <why>` | The window couldn't make one, for the target's life |
+| `render target <id>: moved window, starting again` | The target moved to another window and gets a texture made there |
 | `render target <id>: didn't start: <why>` | The spawn or `hello` failed, as an exit |
 | `render target <id>: not started: <why>` | The gate refused it |
 | `render target <id>: the renderer exited` | stdout closed |
@@ -768,14 +968,16 @@ Console window (F12). rox's own lines about a target name the renderer's id:
 | `render target <id>: stopped after repeated exits` | The fifth exit |
 | `render target <id>: stopped by rox` | A switch-off or a quit |
 | `renderer <id>: stopped, no longer switched on` | The gate closed on a running session |
-| `render target <id>: session ended, <n> frames copied, <n> torn, <n> refused (<n> unwritten, <n> wrong size), <n> lines read` | A session ended, for any reason, and what its frames came to |
+| `render target <id>: session ended, <n> frames copied, <n> texture frames, <n> torn, <n> refused (<n> unwritten, <n> wrong size, <n> texture frames with no texture), <n> lines read` | A session ended, for any reason, and what its frames came to |
 
 The inspector's Status row words the same states for the user, with the gate's reason
 when it refused. rox writes no line for a frame it drops, only a count in the line each
 session ends with (`log_tally`, `target.rs:1240`). Frames copied are whole frames read
 out of a slot. Torn ones had an odd counter, or one that moved during the copy.
 Unwritten ones were announced while the slot's counter was still 0, and wrong size ones
-had size words other than `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`. Lines read counts
+had size words other than `ROX_FRAMES_WIDTH` and `ROX_FRAMES_HEIGHT`. Texture frames are
+`t` lines rox showed, and texture frames with no texture are `t` lines from a session that
+wasn't lent one. Lines read counts
 every line rox read from the renderer's stdout while the session ran, announce or not.
 The line is written as the session ends and before the renderer's stop, so a new
 resolution's `started at` comes after it. Only 60 refusals in a
@@ -854,6 +1056,30 @@ at about 18.8 megapixels, read from nine runs at 18.7 (8.2 ms) and six at 19.4 (
 That's where the canvas's weight line starts warning (`TARGET_PIXELS` in
 `crates/rox/src/canvas/cost.rs`).
 
+The GPU texture was measured 2026-11-25 on the same machine (Linux 6.18.64, Ryzen 9
+5950X, Radeon RX 6800 XT, RADV from Mesa 26.1.8), in a release build with a 1920x1080
+headless compositor and design mode off, against the slots on the same day. Every target
+ran one test renderer at 60 frames a second, drawing the same frames either way: on the
+texture it copies a frame made up front from GPU memory into the texture, and on the
+slots it copies the same frame into a slot. The figure is `debug.frames` again, the mean
+of three runs of 3 s after 2 s to settle, with rox's CPU over the same runs. The one-minute
+load average was 0.7 to 2.1, with no other rox or renderer running.
+
+| Targets | Texture: mean | worst | frames a second | rox CPU | Slots: mean | worst | frames a second | rox CPU |
+|---|---|---|---|---|---|---|---|---|
+| 1 at 1920x1080 | 0.49 ms | 0.91 ms | 60 | 3.4% | 1.13 ms | 2.04 ms | 60 | 11% |
+| 1 at 3840x2160 | 0.49 ms | 0.87 ms | 60 | 3.3% | 2.69 ms | 5.02 ms | 60 | 30% |
+| 4 at 1920x1080 | 0.53 ms | 0.91 ms | 62 | 4.2% | 3.21 ms | 4.66 ms | 62 | 40% |
+| 4 at 3840x2160 | 0.50 ms | 0.93 ms | 62 | 4.2% | 23.7 ms | 56.4 ms | 41 | 267% |
+
+On the texture rox's cost doesn't follow the pixels: a frame costs it the paint of one
+quad per target. In the last row the slot renderers ran at 97 to 99% of a core each and
+fell short of 60 frames a second, so that row is partly their cost. Making the texture
+takes the UI thread 0.7 to 4 ms once per target, resolution and window (GF-2's figure),
+and a restart reuses it. The texture is the image's dedicated allocation in VRAM, 8.8 MB
+at 1920x1080 and 33 MB at 3840x2160 (`allocation_size`), and a renderer's import shares
+it rather than adding another.
+
 ## Reference
 
 The shared memory is `crates/rox-frames`: `layout.rs` (the offsets, `Spec`, the ranges),
@@ -866,14 +1092,17 @@ feature), `cover.rs` (the cover mapping: its layout, `fit`, `letterbox`, `Cover`
 The package side is `crates/rox-services/src/renderers.rs` (the listing, the gate,
 `asks`, `start`, `Session`, the exit count, `enforce`, and the wanted signals' matching)
 on top of `crates/rox-plugins`: `manifest.rs` (`capabilities.renderer`, `check_renderer`,
-`check_wanted`, the entry and the interpreter table), `process.rs` (the spawn, fd 3 and 4,
+`check_wanted`, the entry and the interpreter table), `process.rs` (the spawn, fd 3 and up,
 the Windows handles, stderr, `never_block`) and `host.rs` (`BACKOFF`, `CRASH_WINDOW`). The
 approval card's grants are `grants` in `crates/rox-services/src/plugins.rs`, with the
 re-approval diff in `changes`.
 
 The item is `crates/rox/src/canvas/target.rs` (the supervisor, the limits, the reader,
-the copy, every line sent, the cover's decode, the status), drawn through
-`crates/rox/src/canvas/texture.rs`. `crates/rox/src/panels/canvas.rs` places it, reads
+the copy, the texture's handoff in `Lend` and `Supervisor::texture`, every line sent, the
+cover's decode, the status), drawn through `crates/rox/src/canvas/texture.rs` (`Picture`,
+`Lender`, and the external texture's registration and paint). The texture itself is
+`Window::register_external_texture` in the vendored gpui (`patches/gpui/e5-external-user-textures.patch`)
+over blade's `export_texture` (`patches/blade-graphics/a0-shared-textures.patch`). `crates/rox/src/panels/canvas.rs` places it, reads
 the signals and the palette for it each frame, follows the playing track for its cover,
 sends it the pointer (`hit`, `point_at`, `button_name`, `scroll_lines`), adds it from the
 Add menu, and offers its wanted signals (`offer_signals`). The prompt and the inspector's

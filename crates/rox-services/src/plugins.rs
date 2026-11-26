@@ -3421,6 +3421,11 @@ mod tests {
                 json!({ "label": "B", "signals": [{ "kind": "sparkle" }] }),
                 vec![MusicSignals, Pointer],
             ),
+            // A texture to draw into reaches only the target's own pixels.
+            (
+                json!({ "label": "B", "gpu": true }),
+                vec![MusicSignals, Pointer],
+            ),
         ];
 
         for (renderer, want) in cases {
@@ -3461,6 +3466,11 @@ mod tests {
         );
         assert!(changes(&with_band, &bare).is_empty());
         assert!(changes(&with_band, &with_band).is_empty());
+
+        // Asking for the GPU path is no grant, and still a changed manifest.
+        let gpu = doc(json!({ "label": "B", "gpu": true }));
+        assert!(changes(&bare, &gpu).is_empty());
+        assert_eq!(since(&bare, "a", &gpu, "b"), Since::Manifest);
 
         // Still a changed manifest, which the card says when nothing it
         // declares moved.

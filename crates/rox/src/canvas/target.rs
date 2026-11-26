@@ -21,6 +21,15 @@
 //! supervisor also keeps the target's status and its last refusal for the
 //! inspector, and wakes the canvas only when one of them moves.
 //!
+//! A renderer whose manifest says `gpu` can also be lent a GPU texture the
+//! target owns, on Linux. Only the canvas can make one, inside its window,
+//! and only the supervisor can spawn, so the supervisor asks and waits a
+//! bounded time while the canvas registers it on its next paint, then lends
+//! it beside the mapping, which is always made and lent as the fallback. A
+//! `t` line copies nothing: it repaints that texture. rox never imports the
+//! renderer's memory, never waits on anything the renderer controls, and
+//! believes nothing the renderer says about the texture.
+//!
 //! Outward a renderer gets what its enable card names and nothing more: the
 //! signal pool's values with the playing position, read on frames the
 //! canvas already draws, and the pointer over its own surface. One whose
@@ -51,7 +60,7 @@ use rox_services::renderers::{self, Refused, Session};
 use rox_viz::signal::{Signal, SignalHub, Source as SignalSource};
 
 use crate::canvas::bbox;
-use crate::canvas::texture::{Frame, TextureView};
+use crate::canvas::texture::{Frame, Lender, Picture, TextureView};
 
 /// What a target's `owner` starts with: renderers are packages, named the
 /// way a plugin's panel names its plugin.
@@ -104,6 +113,10 @@ struct Limits {
     /// This many refused slots in a row stops the renderer: one that lies
     /// about its frames every time is broken.
     refused_run: u32,
+    /// How long a session waits for the canvas to make its GPU texture
+    /// before it starts with shared memory alone. The canvas makes it on its
+    /// next paint, which a window that isn't drawn never gets to.
+    texture_wait: Duration,
 }
 
 const LIMITS: Limits = Limits {
@@ -112,6 +125,7 @@ const LIMITS: Limits = Limits {
     flood_span: Duration::from_secs(1),
     flood_spans: 2,
     refused_run: 60,
+    texture_wait: Duration::from_secs(2),
 };
 
 /// One renderer session, as the supervisor holds it.
@@ -154,11 +168,25 @@ struct Started {
 struct Wants {
     palette: bool,
     cover: bool,
+    /// It was lent the GPU texture, so a `t` line is one to show.
+    texture: bool,
 }
 
 /// Where sessions come from: the renderer host, or a test's pipes.
 trait Host: Send + 'static {
-    fn start(&mut self, mapping: &Mapping) -> Result<Started, Refused>;
+    /// `texture` is the target's GPU texture, for a session to be lent
+    /// beside the mapping when the renderer asks for it.
+    fn start(
+        &mut self,
+        mapping: &Mapping,
+        texture: Option<&gpui::ExternalTexture>,
+    ) -> Result<Started, Refused>;
+
+    /// Whether a session should be offered the GPU texture: the renderer
+    /// asks, and this platform can make one.
+    fn wants_texture(&self) -> bool {
+        false
+    }
 
     /// When it may start again after an exit, None once it's stopped.
     fn due(&self) -> Option<Duration>;
@@ -186,7 +214,19 @@ struct Renderer {
 }
 
 impl Host for Renderer {
-    fn start(&mut self, mapping: &Mapping) -> Result<Started, Refused> {
+    fn wants_texture(&self) -> bool {
+        // gpui makes an external texture on Linux and FreeBSD alone. The
+        // start reads the manifest again through the gate and lends it only
+        // if that one asks too.
+        cfg!(any(target_os = "linux", target_os = "freebsd"))
+            && renderers::asks(&self.id).is_some_and(|asks| asks.gpu)
+    }
+
+    fn start(
+        &mut self,
+        mapping: &Mapping,
+        texture: Option<&gpui::ExternalTexture>,
+    ) -> Result<Started, Refused> {
         // Made only for a manifest that asks. The start reads the manifest
         // again through the gate and lends it only if that one asks too.
         let asks_cover = renderers::asks(&self.id).is_some_and(|asks| asks.cover);
@@ -202,6 +242,7 @@ impl Host for Renderer {
             &self.id,
             lent(mapping),
             cover.as_ref().map(lent_cover),
+            texture,
             self.width,
             self.height,
         )?;
@@ -209,6 +250,7 @@ impl Host for Renderer {
         let wants = Wants {
             palette: session.asks().palette,
             cover: session.asks().cover,
+            texture: session.asks().gpu,
         };
         let cover = cover.filter(|_| wants.cover);
 
@@ -446,19 +488,21 @@ struct Shared {
     copies: AtomicU64,
     /// Copies thrown away because the renderer wrote the slot under them.
     torn: AtomicU64,
+    /// Texture frames shown, for the tests.
+    textures: AtomicU64,
     /// Lines read off the renderer's stdout, every session's.
     lines: AtomicU64,
 }
 
 struct State {
     /// The newest frame, for the canvas to take.
-    frame: Option<Frame>,
+    frame: Option<Picture>,
     /// The canvas has the newest frame, so the next copy is worth making.
     taken: bool,
     /// When the newest frame was published.
     published_at: Instant,
-    /// The newest slot announced and not yet copied.
-    pending: Option<u32>,
+    /// The newest announce, not yet acted on.
+    pending: Option<Announced>,
     /// The canvas didn't draw the item.
     held: bool,
     /// A frame went untaken past the idle limit.
@@ -481,6 +525,36 @@ struct State {
     name: Option<String>,
     /// Lines from the canvas waiting for the renderer.
     out: Outbox,
+    /// The GPU texture, on its way from the canvas to the supervisor.
+    lend: Lend,
+    /// The item moved to another window, which can't paint the texture
+    /// the session was lent.
+    moved: bool,
+    /// The target stopped and let its texture go: the canvas frees its own.
+    released: bool,
+}
+
+/// What an announce line named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Announced {
+    /// `f`: a frame in this slot of the mapping, to copy and check.
+    Slot(u32),
+    /// `t`: a frame in the GPU texture, to show as the memory holds it.
+    Texture,
+}
+
+/// The GPU texture's handoff. The canvas can make one only inside its
+/// window, on a paint, and the supervisor lends it at spawn. One is made per
+/// target and lent to each of its sessions; it goes with the target.
+enum Lend {
+    /// None asked for yet, or the renderer doesn't ask.
+    Idle,
+    /// The supervisor waits for the canvas to make one at this size.
+    Asked { width: u32, height: u32 },
+    /// Made. The fd is rox's own copy, closed when the target goes.
+    Ready(Arc<gpui::ExternalTexture>),
+    /// The window couldn't make one: shared memory for the target's life.
+    Refused,
 }
 
 impl State {
@@ -526,6 +600,9 @@ enum Exit {
     Closed,
     Flood,
     Lies,
+    /// Its texture stayed with a window the item left: start again with one
+    /// made where it is now.
+    Moved,
 }
 
 impl Shared {
@@ -587,10 +664,14 @@ impl Source {
                 stop: false,
                 name: None,
                 out: Outbox::default(),
+                lend: Lend::Idle,
+                moved: false,
+                released: false,
             }),
             wake: Condvar::new(),
             copies: AtomicU64::new(0),
             torn: AtomicU64::new(0),
+            textures: AtomicU64::new(0),
             lines: AtomicU64::new(0),
         });
 
@@ -625,7 +706,7 @@ impl Source {
 
     /// The newest frame. Taking it is what says the target is drawn: it
     /// lets the next copy go and resumes a paused renderer.
-    fn take(&self) -> Option<Frame> {
+    fn take(&self) -> Option<Picture> {
         let mut state = self.shared.lock();
         let wanted = (!state.taken && state.pending.is_some()) || state.paused();
 
@@ -737,6 +818,53 @@ impl Drop for Source {
     }
 }
 
+// The canvas's side of the handoff, on the UI thread. Each call holds the
+// state's lock only to read or set the handoff, and never waits.
+impl Lender for Shared {
+    fn asked(&self) -> Option<(u32, u32)> {
+        match self.lock().lend {
+            Lend::Asked { width, height } => Some((width, height)),
+            _ => None,
+        }
+    }
+
+    fn lend(&self, made: Result<gpui::ExternalTexture, String>) {
+        let mut state = self.lock();
+
+        // One that comes when nothing asks is dropped, which closes its fd.
+        let Lend::Asked { width, height } = state.lend else {
+            return;
+        };
+        state.lend = match made {
+            Ok(texture) if (texture.width, texture.height) == (width, height) => {
+                Lend::Ready(Arc::new(texture))
+            }
+            _ => Lend::Refused,
+        };
+
+        drop(state);
+        self.wake.notify_all();
+    }
+
+    fn released(&self) -> bool {
+        std::mem::take(&mut self.lock().released)
+    }
+
+    fn lost(&self) {
+        {
+            let mut state = self.lock();
+            state.lend = Lend::Idle;
+            state.moved = true;
+
+            // The new window's texture holds nothing until the next `t`.
+            if let Some(Picture::External) = state.frame {
+                state.frame = None;
+            }
+        }
+        self.wake.notify_all();
+    }
+}
+
 /// The buffers frames are copied into. One is free when only the pool
 /// holds it.
 #[derive(Default)]
@@ -790,9 +918,13 @@ struct Supervisor {
 #[derive(Default)]
 struct Tally {
     copied: u64,
+    /// `t` lines shown.
+    texture: u64,
     torn: u64,
     empty: u64,
     size: u64,
+    /// `t` lines from a session lent no texture.
+    unlent: u64,
     /// The stdout line count when the session began.
     lines_from: u64,
 }
@@ -805,7 +937,7 @@ enum Job {
     Cover(CoverAsk),
     /// Finish what the pipe refused last time.
     Flush,
-    Copy(u32),
+    Copy(Announced),
 }
 
 impl Supervisor {
@@ -842,7 +974,14 @@ impl Supervisor {
                 }
             };
 
-            let started = self.host.start(&mapping);
+            // The frames are made and lent either way: they're the fallback.
+            let texture = self.texture();
+            if self.shared.lock().stop {
+                return;
+            }
+            let started = self.host.start(&mapping, texture.as_deref());
+            drop(texture);
+
             let Started {
                 mut run,
                 stdout,
@@ -896,7 +1035,7 @@ impl Supervisor {
                     .spawn(move || read(shared, session, stdout, limits))
             };
             let exit = match &reader {
-                Ok(_) => self.drive(run.as_mut(), &mapping, cover.as_mut()),
+                Ok(_) => self.drive(run.as_mut(), &mapping, cover.as_mut(), wants.texture),
                 Err(e) => {
                     log::warn!("render target {}: nothing reads it: {e}", self.tag);
                     Exit::Stop
@@ -917,6 +1056,11 @@ impl Supervisor {
 
             match exit {
                 Exit::Stop => return,
+
+                // rox's doing, so no exit is counted and nothing waits.
+                Exit::Moved => {
+                    log::info!("render target {}: moved window, starting again", self.tag);
+                }
 
                 // A switch-off or a quit. Only a poke after it starts it
                 // again, so a quit never restarts one.
@@ -951,6 +1095,51 @@ impl Supervisor {
                     }
                 }
             }
+        }
+    }
+
+    /// The GPU texture this session is lent, when the renderer asks for one
+    /// on a platform that makes them: the target's, made the first time and
+    /// lent again to every restart. The wait is on the canvas's next paint,
+    /// bounded, and never on the renderer. A session that outlasts it starts
+    /// on shared memory alone, and a texture the canvas makes later goes to
+    /// the next session.
+    fn texture(&self) -> Option<Arc<gpui::ExternalTexture>> {
+        if !self.host.wants_texture() {
+            return None;
+        }
+
+        let until = Instant::now() + self.limits.texture_wait;
+        let mut state = self.shared.lock();
+        if let Lend::Idle = state.lend {
+            state.lend = Lend::Asked {
+                width: self.spec.width(),
+                height: self.spec.height(),
+            };
+            drop(state);
+            (self.notify)();
+            state = self.shared.lock();
+        }
+
+        loop {
+            match &state.lend {
+                Lend::Ready(texture) => return Some(texture.clone()),
+                Lend::Refused => return None,
+                Lend::Idle | Lend::Asked { .. } => {}
+            }
+
+            let now = Instant::now();
+            if state.stop {
+                return None;
+            }
+            if now >= until {
+                log::info!(
+                    "render target {}: no texture from the canvas, this session uses shared memory",
+                    self.tag
+                );
+                return None;
+            }
+            state = self.shared.wait(state, Some(until - now));
         }
     }
 
@@ -1024,21 +1213,33 @@ impl Supervisor {
         }
     }
 
-    /// A stopped target draws empty.
+    /// A stopped target draws empty, and gives its texture back until it
+    /// starts again: a switched-off renderer's target holds no GPU memory.
     fn clear(&self) {
-        let had = self.shared.lock().frame.take().is_some();
+        let had = {
+            let mut state = self.shared.lock();
+            let lent = matches!(state.lend, Lend::Ready(_) | Lend::Asked { .. });
+            if lent {
+                state.lend = Lend::Idle;
+                state.released = true;
+            }
+            state.frame.take().is_some() || lent
+        };
+
         if had {
             (self.notify)();
         }
     }
 
     /// One session's life: copies on announce, pause lines on change, and
-    /// the canvas's lines while it runs unpaused.
+    /// the canvas's lines while it runs unpaused. `textured` is whether the
+    /// session was lent the GPU texture.
     fn drive(
         &mut self,
         run: &mut dyn Run,
         mapping: &Mapping,
         mut cover: Option<&mut Cover>,
+        textured: bool,
     ) -> Exit {
         let limits = self.limits;
         let mut told = false;
@@ -1059,6 +1260,9 @@ impl Supervisor {
                         Some(End::Closed) => return Exit::Closed,
                         Some(End::Flood) => return Exit::Flood,
                         None => {}
+                    }
+                    if std::mem::take(&mut state.moved) && textured {
+                        return Exit::Moved;
                     }
 
                     let now = Instant::now();
@@ -1097,10 +1301,18 @@ impl Supervisor {
                         }
                     }
 
+                    // A texture frame needs no buffer, so only a slot waits
+                    // on the pool.
                     let copy = !paused && state.taken && state.pending.is_some();
-                    if copy && self.pool.has_free() {
-                        let slot = state.pending.take().unwrap_or_default();
-                        break Job::Copy(slot);
+                    let free = match state.pending {
+                        Some(Announced::Slot(_)) => self.pool.has_free(),
+                        _ => true,
+                    };
+                    if copy
+                        && free
+                        && let Some(announced) = state.pending.take()
+                    {
+                        break Job::Copy(announced);
                     }
 
                     // Only what can come due needs a timeout. With nothing
@@ -1153,8 +1365,12 @@ impl Supervisor {
                     cover_line(pixels.is_some().then_some(seq))
                 }),
 
-                Job::Copy(slot) => {
-                    match self.copy(mapping, slot, &mut last_seq) {
+                Job::Copy(announced) => {
+                    let copied = match announced {
+                        Announced::Slot(slot) => self.copy(mapping, slot, &mut last_seq),
+                        Announced::Texture => self.show_texture(textured),
+                    };
+                    match copied {
                         Copied::Shown | Copied::Old => refused = 0,
                         Copied::Torn => {}
                         Copied::Refused => {
@@ -1220,36 +1436,58 @@ impl Supervisor {
         *last_seq = seq;
         self.published += 1;
 
-        let frame = Frame {
+        self.publish(Picture::Frame(Frame {
             width: self.spec.width(),
             height: self.spec.height(),
             rgba8: self.pool.buffers[ix].clone(),
             seq: self.published,
-        };
+        }));
+        Copied::Shown
+    }
+
+    /// A `t` line. The frame is in a texture rox allocated and owns, so
+    /// there's nothing to copy and nothing the renderer says to believe: all
+    /// the line can do is have the canvas paint that texture again. One from
+    /// a session lent no texture is refused like a slot that lies.
+    fn show_texture(&mut self, textured: bool) -> Copied {
+        if !textured {
+            self.tally.unlent += 1;
+            return Copied::Refused;
+        }
+
+        self.tally.texture += 1;
+        self.published += 1;
+        self.shared.textures.fetch_add(1, Ordering::Relaxed);
+        self.publish(Picture::External);
+        Copied::Shown
+    }
+
+    fn publish(&self, picture: Picture) {
         {
             let mut state = self.shared.lock();
-            state.frame = Some(frame);
+            state.frame = Some(picture);
             state.taken = false;
             state.published_at = Instant::now();
         }
         (self.notify)();
-
-        Copied::Shown
     }
 
     fn log_tally(&self) {
         let tally = &self.tally;
         let lines = self.shared.lines.load(Ordering::Relaxed) - tally.lines_from;
-        let refused = tally.empty + tally.size;
+        let refused = tally.empty + tally.size + tally.unlent;
 
         log::info!(
-            "render target {}: session ended, {} frames copied, {} torn, {refused} refused \
-             ({} unwritten, {} wrong size), {lines} lines read",
+            "render target {}: session ended, {} frames copied, {} texture frames, {} torn, \
+             {refused} refused ({} unwritten, {} wrong size, {} texture frames with no texture), \
+             {lines} lines read",
             self.tag,
             tally.copied,
+            tally.texture,
             tally.torn,
             tally.empty,
             tally.size,
+            tally.unlent,
         );
     }
 
@@ -1756,10 +1994,12 @@ fn read(shared: Arc<Shared>, session: u64, stdout: Box<dyn Read + Send>, limits:
             Ok(Line::End) | Err(_) => break End::Closed,
             Ok(Line::Clipped) => {}
             Ok(Line::Whole) => {
-                if line.len() < ANNOUNCE_MAX
-                    && let Some((_, slot)) = rox_frames::parse_announce(&line)
-                {
-                    newest = Some(slot);
+                if line.len() < ANNOUNCE_MAX {
+                    if let Some((_, slot)) = rox_frames::parse_announce(&line) {
+                        newest = Some(Announced::Slot(slot));
+                    } else if rox_frames::parse_texture_announce(&line).is_some() {
+                        newest = Some(Announced::Texture);
+                    }
                 }
             }
         }
@@ -1772,12 +2012,12 @@ fn read(shared: Arc<Shared>, session: u64, stdout: Box<dyn Read + Send>, limits:
         if reader.buffer().contains(&b'\n') {
             continue;
         }
-        if let Some(slot) = newest.take() {
+        if let Some(announced) = newest.take() {
             let mut state = shared.lock();
             if state.session != session {
                 break End::Closed;
             }
-            state.pending = Some(slot);
+            state.pending = Some(announced);
 
             // Until the canvas takes the last frame the supervisor has
             // nothing to do with it, and the take wakes it.
@@ -1897,8 +2137,23 @@ impl Target {
 
     /// The newest frame, if the renderer has drawn one. Call it only for a
     /// target that is drawn this frame.
-    pub(crate) fn take(&self) -> Option<Frame> {
+    pub(crate) fn take(&self) -> Option<Picture> {
         self.source.take()
+    }
+
+    /// The supervisor waits for the canvas to make the GPU texture.
+    fn texture_asked(&self) -> bool {
+        self.source.shared.asked().is_some()
+    }
+
+    /// The target stopped and let its texture go, and the view hasn't freed
+    /// its own yet.
+    fn texture_released(&self) -> bool {
+        self.source.shared.lock().released
+    }
+
+    fn lender(&self) -> Arc<dyn Lender> {
+        self.source.shared.clone()
     }
 
     /// The canvas skipped the item, so its renderer can pause.
@@ -2100,17 +2355,21 @@ impl Targets {
         }
     }
 
-    /// The item's element this frame: its newest frame on `face`, or in
-    /// design mode its box with the renderer's name while it has none.
-    /// None for a face off the stage, which counts as not drawn.
+    /// The item's elements this frame: its newest frame on `face`, or in
+    /// design mode its box with the renderer's name while it has none. None
+    /// for a face off the stage, which counts as not drawn. While its
+    /// supervisor waits for a GPU texture the view paints too, since only
+    /// its paint can make one.
     pub(crate) fn element<V: 'static>(
         &mut self,
         item: &CanvasItem,
         face: Option<Projected>,
         design: bool,
         cx: &mut Context<V>,
-    ) -> Option<AnyElement> {
-        let key = key_of(&item.content)?;
+    ) -> Vec<AnyElement> {
+        let Some(key) = key_of(&item.content) else {
+            return Vec::new();
+        };
 
         let fresh = || Shown {
             key: key.clone(),
@@ -2126,7 +2385,7 @@ impl Targets {
             if let Some(target) = &shown.target {
                 target.hold();
             }
-            return None;
+            return Vec::new();
         };
 
         if shown.target.is_none()
@@ -2135,39 +2394,53 @@ impl Targets {
             shown.target = Some(Target::new(id, key.width, key.height, cx));
         }
 
-        let frame = shown.target.as_ref().and_then(Target::take);
+        let picture = shown.target.as_ref().and_then(Target::take);
         if let (Some(target), Some(feed)) = (&shown.target, &self.feed) {
             target.feed(feed);
         }
 
-        let Some(frame) = frame else {
-            if !design {
-                return None;
+        // The view paints while a texture is to be made or freed, since only
+        // its paint has the window in hand.
+        let mut elements = Vec::new();
+        let busy = shown
+            .target
+            .as_ref()
+            .is_some_and(|target| target.texture_asked() || target.texture_released());
+
+        if (picture.is_some() || busy)
+            && let Some(target) = &shown.target
+        {
+            let view = match &shown.view {
+                Some(view) => view.clone(),
+                None => {
+                    let lender = target.lender();
+                    let view = cx.new(|cx| TextureView::lending(lender, cx));
+                    shown.view = Some(view.clone());
+                    view
+                }
+            };
+            let showing = picture.is_some();
+            view.update(cx, |view, _| {
+                view.show(picture);
+                view.place(Some(face));
+            });
+
+            elements.push(view.into_any_element());
+            if showing {
+                return elements;
             }
+        }
+
+        if design {
             let name = shown
                 .target
                 .as_ref()
                 .and_then(Target::name)
                 .or_else(|| renderer_id(&key.owner).map(str::to_string))
                 .unwrap_or_default();
-            return Some(empty_box(&face.corners, name));
-        };
-
-        let view = match &shown.view {
-            Some(view) => view.clone(),
-            None => {
-                let frame = frame.clone();
-                let view = cx.new(|cx| TextureView::new(frame, cx));
-                shown.view = Some(view.clone());
-                view
-            }
-        };
-        view.update(cx, |view, _| {
-            view.show(frame);
-            view.place(Some(face));
-        });
-
-        Some(view.into_any_element())
+            elements.push(empty_box(&face.corners, name));
+        }
+        elements
     }
 
     /// The status line for a target item. None when its owner names no
@@ -2267,6 +2540,8 @@ mod tests {
         stdout: Arc<Mutex<Option<PipeWriter>>>,
         /// Lines rox wrote to the renderer's stdin.
         stdin: mpsc::Receiver<String>,
+        /// It was lent the GPU texture.
+        textured: bool,
     }
 
     impl Fake {
@@ -2332,13 +2607,26 @@ mod tests {
         cover: Arc<Mutex<Option<Cover>>>,
         forgiven: Arc<AtomicUsize>,
         stuck: Arc<AtomicBool>,
+        /// Its manifest says `gpu`.
+        gpu: bool,
     }
 
     impl Host for FakeHost {
-        fn start(&mut self, mapping: &Mapping) -> Result<Started, Refused> {
+        fn wants_texture(&self) -> bool {
+            self.gpu
+        }
+
+        fn start(
+            &mut self,
+            mapping: &Mapping,
+            texture: Option<&gpui::ExternalTexture>,
+        ) -> Result<Started, Refused> {
             if let Some(refused) = self.refuse.lock().unwrap().clone() {
                 return Err(refused);
             }
+
+            // Lent only where the manifest asks, as `renderers::start` does.
+            let textured = texture.is_some() && self.gpu;
 
             // SAFETY: the only writer for this mapping.
             let writer = unsafe { Writer::open(mapping.child_handle(), *mapping.spec()) }.unwrap();
@@ -2351,6 +2639,7 @@ mod tests {
                     writer,
                     stdout: stdout.clone(),
                     stdin: lines_of(stdin_r),
+                    textured,
                 })
                 .unwrap();
 
@@ -2362,7 +2651,10 @@ mod tests {
             Ok(Started {
                 run: Box::new(run),
                 stdout: Box::new(stdout_r),
-                wants: self.wants,
+                wants: Wants {
+                    texture: textured,
+                    ..self.wants
+                },
                 cover: self.cover.lock().unwrap().take(),
             })
         }
@@ -2404,6 +2696,8 @@ mod tests {
         sessions: mpsc::Receiver<Fake>,
         /// The renderer's view of the cover mapping, when it's granted one.
         cover: Option<CoverReader>,
+        /// Wakes the supervisor gave the canvas.
+        wakes: Arc<AtomicUsize>,
     }
 
     impl Rig {
@@ -2415,7 +2709,16 @@ mod tests {
             Rig::granted(limits, refused, Wants::default())
         }
 
+        /// A renderer whose manifest says `gpu`.
+        fn gpu(limits: Limits) -> Rig {
+            Rig::made(limits, None, Wants::default(), true)
+        }
+
         fn granted(limits: Limits, refused: Option<Refused>, wants: Wants) -> Rig {
+            Rig::made(limits, refused, wants, false)
+        }
+
+        fn made(limits: Limits, refused: Option<Refused>, wants: Wants, gpu: bool) -> Rig {
             let (tx, sessions) = mpsc::channel();
             let cover = wants.cover.then(|| Cover::create().unwrap());
             let reader = cover
@@ -2430,14 +2733,19 @@ mod tests {
                 refuse: Arc::new(Mutex::new(refused)),
                 forgiven: Arc::default(),
                 stuck: Arc::default(),
+                gpu,
             };
             let spec = Spec::new(SIZE.0, SIZE.1).unwrap();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let counted = wakes.clone();
             let source = Source::spawn(
                 "test",
                 Box::new(host.clone()),
                 spec,
                 limits,
-                Box::new(|| {}),
+                Box::new(move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }),
             );
 
             Rig {
@@ -2445,7 +2753,32 @@ mod tests {
                 host,
                 sessions,
                 cover: reader,
+                wakes,
             }
+        }
+
+        fn wakes(&self) -> usize {
+            self.wakes.load(Ordering::SeqCst)
+        }
+
+        /// The size the supervisor asks the canvas for, once it asks.
+        fn asked(&self) -> (u32, u32) {
+            let mut asked = None;
+            until("the ask", || {
+                asked = self.source.shared.asked();
+                asked.is_some()
+            });
+            asked.unwrap_or_default()
+        }
+
+        /// Plays the canvas: answers the ask with a texture, or the window's
+        /// refusal.
+        fn lend(&self, made: Result<(), &str>) {
+            let (width, height) = self.asked();
+            self.source.shared.lend(
+                made.map(|()| texture(width, height))
+                    .map_err(str::to_string),
+            );
         }
 
         fn session(&self) -> Fake {
@@ -2464,13 +2797,46 @@ mod tests {
 
         /// The published frame, without taking it.
         fn peek(&self) -> Option<Frame> {
-            self.source.shared.lock().frame.clone()
+            match self.source.shared.lock().frame.clone()? {
+                Picture::Frame(frame) => Some(frame),
+                Picture::External => None,
+            }
+        }
+
+        /// How many texture frames were shown, while one is the published
+        /// frame.
+        fn peek_texture(&self) -> Option<u64> {
+            match self.source.shared.lock().frame.clone()? {
+                Picture::External => Some(self.source.shared.textures.load(Ordering::SeqCst)),
+                Picture::Frame(_) => None,
+            }
         }
 
         fn finish(mut self) {
             if let Some(thread) = self.source.stop() {
                 thread.join().unwrap();
             }
+        }
+    }
+
+    /// A texture as gpui hands one over. Its memory is never touched here,
+    /// so any fd stands in.
+    fn texture(width: u32, height: u32) -> gpui::ExternalTexture {
+        gpui::ExternalTexture {
+            #[cfg(unix)]
+            fd: std::fs::File::open("/dev/null").unwrap().into(),
+            width,
+            height,
+            allocation_size: u64::from(width * height * 4),
+            memory_type: 0,
+            format: 37,
+            view_formats: vec![43, 37],
+            flags: 8,
+            usage: 0x1f,
+            tiling: 0,
+            layout: 1,
+            device_uuid: [1; 16],
+            driver_uuid: [2; 16],
         }
     }
 
@@ -2533,7 +2899,9 @@ mod tests {
         assert_eq!(rig.copies(), 1, "nothing took the first, so no second copy");
         assert_eq!(rig.peek().map(|f| f.seq), Some(1));
 
-        let first = rig.source.take().unwrap();
+        let Some(Picture::Frame(first)) = rig.source.take() else {
+            panic!("a frame");
+        };
         assert_eq!(first.seq, 1);
 
         until("the second frame", || {
@@ -3202,6 +3570,11 @@ mod tests {
         let fake = rig.session();
         until("running", || rig.source.status() == Status::Running);
 
+        // No texture asked of the canvas, none lent, and a `t` shows nothing.
+        assert!(!fake.textured);
+        assert_eq!(rig.source.shared.asked(), None);
+        assert!(matches!(rig.source.shared.lock().lend, Lend::Idle));
+
         let ask = CoverAsk::new(Some("never-sent.flac".into()), None);
         rig.source.feed(&full_feed(
             r##"{"palette":{"accent":"#ff0000"}}"##,
@@ -3213,6 +3586,259 @@ mod tests {
         assert_eq!(fake.told().as_deref(), Some(r#"{"signals":[],"time":0.0}"#));
         settle();
         assert!(fake.stdin.try_recv().is_err(), "no palette, no cover");
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_texture_frame_is_shown_with_no_copy_and_one_wake() {
+        let rig = Rig::gpu(slow());
+        assert_eq!(rig.asked(), SIZE, "the target's own size");
+        rig.lend(Ok(()));
+        let fake = rig.session();
+        assert!(fake.textured);
+        until("running", || rig.source.status() == Status::Running);
+        settle();
+
+        for n in 0..3u64 {
+            let before = rig.wakes();
+            fake.announce(&rox_frames::texture_announce(n));
+            until("the texture frame", || rig.peek_texture() == Some(n + 1));
+            settle();
+
+            assert_eq!(rig.wakes(), before + 1, "one wake for announce {n}");
+            assert_eq!(rig.copies(), 0, "nothing copied");
+            assert!(rig.source.take().is_some());
+        }
+
+        rig.finish();
+    }
+
+    #[test]
+    fn whichever_was_announced_last_paints() {
+        let rig = Rig::gpu(slow());
+        rig.lend(Ok(()));
+        let mut fake = rig.session();
+
+        fake.writer.frame(0, pattern(3));
+        fake.announce("f 0 0\n");
+        until("the slot frame", || rig.peek().is_some_and(|f| f.seq == 1));
+        assert!(rig.source.take().is_some());
+
+        // Back on the texture, after a slot.
+        fake.announce("t 1\n");
+        until("the texture", || rig.peek_texture() == Some(1));
+        assert!(rig.source.take().is_some());
+
+        // A fallback mid-session: a slot after the texture paints the slot.
+        fake.writer.frame(1, pattern(4));
+        fake.announce("f 1 1\n");
+        until("the slot again", || rig.peek().is_some_and(|f| f.seq == 3));
+        assert!(rig.peek().unwrap().rgba8.iter().all(|&b| b == 4));
+        assert!(rig.source.take().is_some());
+
+        // Both waiting at once: the newer one wins, and it's the texture.
+        fake.announce("f 1 1\nt 2\n");
+        until("the texture again", || rig.peek_texture() == Some(2));
+        assert_eq!(
+            rig.copies(),
+            2,
+            "the slot behind the newer line got no copy"
+        );
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_texture_announce_from_a_renderer_lent_none_is_refused() {
+        let rig = Rig::new(Limits {
+            refused_run: 5,
+            ..slow()
+        });
+        let fake = rig.session();
+        assert!(!fake.textured);
+
+        for n in 0..5 {
+            fake.announce(&format!("t {n}\n"));
+            settle();
+        }
+
+        until("the exit", || rig.exits() == 1);
+        assert_eq!(rig.copies(), 0);
+        assert!(rig.source.shared.lock().frame.is_none(), "nothing shown");
+
+        let _again = rig.session();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_session_the_canvas_gives_no_texture_starts_on_shared_memory() {
+        let rig = Rig::gpu(Limits {
+            texture_wait: Duration::from_millis(100),
+            refused_run: 1,
+            ..slow()
+        });
+
+        // The canvas never paints in time: the session starts without it, and
+        // the frames still go through the slots.
+        let mut fake = rig.session();
+        assert!(!fake.textured);
+        fake.writer.frame(0, pattern(6));
+        fake.announce("f 0 0\n");
+        until("the slot frame", || rig.peek().is_some());
+
+        // The canvas paints late. This session's `t` is refused, and the
+        // next session gets the texture.
+        assert!(rig.source.take().is_some());
+        rig.lend(Ok(()));
+        fake.announce("t 1\n");
+        until("the exit", || rig.exits() == 1);
+        let again = rig.session();
+        assert!(again.textured, "made late, lent to the next session");
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_window_that_cant_make_one_leaves_it_on_shared_memory() {
+        let rig = Rig::gpu(slow());
+        rig.lend(Err("unsupported"));
+
+        let mut fake = rig.session();
+        assert!(!fake.textured);
+        fake.writer.frame(0, pattern(2));
+        fake.announce("f 0 0\n");
+        until("the slot frame", || rig.peek().is_some());
+
+        // Never asked again in the target's life.
+        fake.exit();
+        let again = rig.session();
+        assert!(!again.textured);
+        assert_eq!(rig.source.shared.asked(), None);
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_restart_is_lent_the_same_texture() {
+        let rig = Rig::gpu(slow());
+        rig.lend(Ok(()));
+
+        for _ in 0..3 {
+            let fake = rig.session();
+            assert!(fake.textured);
+            assert_eq!(rig.source.shared.asked(), None, "made once");
+            fake.exit();
+        }
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_stopped_target_gives_its_texture_back() {
+        let rig = Rig::gpu(slow());
+        *rig.host.due.lock().unwrap() = None;
+        rig.lend(Ok(()));
+        let fake = rig.session();
+        assert!(fake.textured);
+
+        // The fifth exit: stopped, empty, and holding no texture.
+        fake.exit();
+        until("stopped", || {
+            rig.source.status() == Status::Stopped(Some(Refused::Stopped))
+        });
+        assert!(matches!(rig.source.shared.lock().lend, Lend::Idle));
+        assert!(
+            rig.source.shared.released(),
+            "the canvas is told to free its own"
+        );
+        assert!(!rig.source.shared.released(), "once");
+
+        // Start Again asks the canvas for a new one.
+        rig.source.start_again();
+        rig.lend(Ok(()));
+        assert!(rig.session().textured);
+
+        rig.finish();
+    }
+
+    #[test]
+    fn a_move_to_another_window_starts_again_with_a_new_texture() {
+        let rig = Rig::gpu(slow());
+        rig.lend(Ok(()));
+        let fake = rig.session();
+        assert!(fake.textured);
+        fake.announce("t 0\n");
+        until("the texture frame", || rig.peek_texture().is_some());
+
+        // The canvas painted in another window than the texture's.
+        rig.source.shared.lost();
+        assert!(
+            rig.source.shared.lock().frame.is_none(),
+            "nothing to paint yet"
+        );
+        rig.lend(Ok(()));
+
+        let again = rig.session();
+        assert!(again.textured, "lent the one made in the new window");
+        assert!(
+            fake.stdout.lock().unwrap().is_none(),
+            "the old session stopped"
+        );
+        assert_eq!(rig.exits(), 0, "rox's doing, not the renderer's");
+
+        rig.finish();
+    }
+
+    #[test]
+    fn the_flood_rule_counts_texture_announces() {
+        let rig = Rig::gpu(Limits {
+            flood_lines: 20,
+            flood_span: Duration::from_millis(50),
+            ..slow()
+        });
+        rig.lend(Ok(()));
+        let fake = rig.session();
+
+        let stdout = fake.stdout.clone();
+        let flooding = std::thread::spawn(move || {
+            loop {
+                let mut out = stdout.lock().unwrap();
+                let Some(pipe) = out.as_mut() else { return };
+                if pipe.write_all(b"t 1\n").is_err() {
+                    return;
+                }
+            }
+        });
+
+        until("the exit", || rig.exits() == 1);
+        flooding.join().unwrap();
+
+        let _again = rig.session();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_paused_texture_target_shows_nothing_new() {
+        let rig = Rig::gpu(slow());
+        rig.lend(Ok(()));
+        let fake = rig.session();
+        until("running", || rig.source.status() == Status::Running);
+
+        rig.source.hold();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":true}"#));
+        fake.announce("t 0\n");
+        settle();
+        assert_eq!(
+            rig.peek_texture(),
+            None,
+            "a paused target shows nothing new"
+        );
+
+        // Drawn again: told to go on, and the waiting announce is read.
+        rig.source.take();
+        assert_eq!(fake.told().as_deref(), Some(r#"{"pause":false}"#));
+        until("the texture frame", || rig.peek_texture().is_some());
 
         rig.finish();
     }

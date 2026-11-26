@@ -5,9 +5,11 @@
 //!
 //! The texture belongs to one window's registry, so it's registered, fed and
 //! released from paint, and moves when the canvas pops out. Render targets
-//! feed it ([`crate::canvas::target`]). A debug build also proves it with a
-//! gradient item (`{"kind": "debug_texture"}`), which a release build keeps
-//! as saved like any kind it doesn't know.
+//! feed it ([`crate::canvas::target`]), with frames copied out of a slot or,
+//! on the GPU path, with a texture another process draws into that this
+//! body registers and paints and never uploads to. A debug build also proves
+//! it with a gradient item (`{"kind": "debug_texture"}`), which a release
+//! build keeps as saved like any kind it doesn't know.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -32,6 +34,33 @@ pub(crate) struct Frame {
     pub seq: u64,
 }
 
+/// What an item shows now.
+#[derive(Clone)]
+pub(crate) enum Picture {
+    /// Pixels to upload.
+    Frame(Frame),
+    /// The newest frame is in the external texture already.
+    External,
+}
+
+/// Where a view's external texture goes once it's registered: a render
+/// target's supervisor, which lends it to the renderer at spawn.
+pub(crate) trait Lender {
+    /// The size asked for, while one is.
+    fn asked(&self) -> Option<(u32, u32)>;
+
+    /// The registration's outcome. Never blocks.
+    fn lend(&self, made: Result<gpui::ExternalTexture, String>);
+
+    /// The texture stayed with the window it was made in, and the item now
+    /// paints in another. Never blocks.
+    fn lost(&self);
+
+    /// Whether the texture was let go, so the view frees its own. Answers
+    /// true once per letting go.
+    fn released(&self) -> bool;
+}
+
 struct Held {
     window: AnyWindowHandle,
     id: UserTextureId,
@@ -39,11 +68,18 @@ struct Held {
     seq: Option<u64>,
 }
 
-/// The texture one item draws from. Reallocated when the frame size moves,
-/// released when the item goes.
+/// A texture another process draws into, registered in one window.
+struct External {
+    window: AnyWindowHandle,
+    id: UserTextureId,
+}
+
+/// The textures one item draws from. The dynamic one is reallocated when
+/// the frame size moves; both are released when the item goes.
 #[derive(Default)]
 pub(crate) struct Texture {
     held: Option<Held>,
+    external: Option<External>,
 }
 
 impl Texture {
@@ -96,57 +132,143 @@ impl Texture {
             held.seq = Some(frame.seq);
         }
 
-        let source = Bounds {
-            origin: point(0., 0.),
-            size: size(1., 1.),
-        };
-        window
-            .paint_texture_quad(
-                corners,
-                source,
-                held.id,
-                [opacity; 4],
-                gpui::transparent_black(),
-            )
-            .ok();
+        quad(window, corners, held.id, opacity);
     }
 
-    /// Only the registry that made it can free it. From another window's
-    /// paint that one is updated in turn; if it's busy or gone the texture
-    /// lives until it closes, the way an unreleased one does.
-    pub(crate) fn release(&mut self, window: &mut Window, cx: &mut App) {
-        let Some(held) = self.held.take() else {
+    /// Makes a texture another process draws into, in this window, in place
+    /// of any this item held, and answers what that process needs to import
+    /// it. Blocks this thread for the GPU's handover, once per registration:
+    /// GF-2 measured 0.7 to 4 ms at 1920x1080 on RADV.
+    pub(crate) fn register_external(
+        &mut self,
+        width: u32,
+        height: u32,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<gpui::ExternalTexture, String> {
+        self.release_external(window, cx);
+
+        let (id, texture) = window.register_external_texture(width, height)?;
+        self.external = Some(External {
+            window: window.window_handle(),
+            id,
+        });
+
+        Ok(texture)
+    }
+
+    /// Whether this item holds an external texture made in a window other
+    /// than `window`, which can't paint it.
+    pub(crate) fn external_elsewhere(&self, window: &Window) -> bool {
+        self.external
+            .as_ref()
+            .is_some_and(|external| external.window != window.window_handle())
+    }
+
+    pub(crate) fn release_external(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(external) = self.external.take() {
+            free(external.window, external.id, window, cx);
+        }
+    }
+
+    /// Paints the external texture as the memory holds it now. Nothing is
+    /// ever uploaded to it, and nothing here waits on the process drawing
+    /// it: its pixels are a stranger's, and only ever pixels.
+    pub(crate) fn paint_external(
+        &self,
+        corners: [gpui::Point<gpui::Pixels>; 4],
+        opacity: f32,
+        window: &mut Window,
+    ) {
+        let Some(external) = &self.external else {
             return;
         };
-
-        if held.window == window.window_handle() {
-            window.release_user_texture(held.id);
-        } else {
-            held.window
-                .update(cx, |_, window, _| window.release_user_texture(held.id))
-                .ok();
+        if external.window != window.window_handle() {
+            return;
         }
+
+        quad(window, corners, external.id, opacity);
+    }
+
+    /// Only the registry that made a texture can free it. From another
+    /// window's paint that one is updated in turn; if it's busy or gone the
+    /// texture lives until it closes, the way an unreleased one does.
+    pub(crate) fn release(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(held) = self.held.take() {
+            free(held.window, held.id, window, cx);
+        }
+        self.release_external(window, cx);
     }
 
     fn release_away(&mut self, cx: &mut App) {
-        if let Some(held) = self.held.take() {
-            held.window
-                .update(cx, |_, window, _| window.release_user_texture(held.id))
+        let ids = [
+            self.held.take().map(|held| (held.window, held.id)),
+            self.external
+                .take()
+                .map(|external| (external.window, external.id)),
+        ];
+
+        for (window, id) in ids.into_iter().flatten() {
+            window
+                .update(cx, |_, window, _| window.release_user_texture(id))
                 .ok();
         }
     }
+}
+
+fn free(owner: AnyWindowHandle, id: UserTextureId, window: &mut Window, cx: &mut App) {
+    if owner == window.window_handle() {
+        window.release_user_texture(id);
+    } else {
+        owner
+            .update(cx, |_, window, _| window.release_user_texture(id))
+            .ok();
+    }
+}
+
+/// The whole texture on `corners`.
+fn quad(
+    window: &mut Window,
+    corners: [gpui::Point<gpui::Pixels>; 4],
+    id: UserTextureId,
+    opacity: f32,
+) {
+    let source = Bounds {
+        origin: point(0., 0.),
+        size: size(1., 1.),
+    };
+
+    window
+        .paint_texture_quad(corners, source, id, [opacity; 4], gpui::transparent_black())
+        .ok();
 }
 
 /// One texture item's view. A view of its own, so dropping it with its item
 /// frees the texture.
 pub(crate) struct TextureView {
     texture: Rc<RefCell<Texture>>,
-    frame: Frame,
+    picture: Option<Picture>,
     face: Option<Projected>,
+    /// A render target on the GPU path, whose texture this view registers
+    /// when it's asked for one.
+    lender: Option<Arc<dyn Lender>>,
 }
 
 impl TextureView {
     pub(crate) fn new(frame: Frame, cx: &mut Context<Self>) -> TextureView {
+        TextureView::with(Some(Picture::Frame(frame)), None, cx)
+    }
+
+    /// A render target's view, with nothing to show yet.
+    pub(crate) fn lending(lender: Arc<dyn Lender>, cx: &mut Context<Self>) -> TextureView {
+        TextureView::with(None, Some(lender), cx)
+    }
+
+    fn with(
+        picture: Option<Picture>,
+        lender: Option<Arc<dyn Lender>>,
+        cx: &mut Context<Self>,
+    ) -> TextureView {
         let texture = Rc::new(RefCell::new(Texture::default()));
 
         let held = texture.clone();
@@ -155,15 +277,16 @@ impl TextureView {
 
         TextureView {
             texture,
-            frame,
+            picture,
             face: None,
+            lender,
         }
     }
 
-    /// The frame it paints from now on. One it already shows costs no
-    /// upload.
-    pub(crate) fn show(&mut self, frame: Frame) {
-        self.frame = frame;
+    /// What it paints from now on. A frame it already shows costs no
+    /// upload, and None paints nothing.
+    pub(crate) fn show(&mut self, picture: Option<Picture>) {
+        self.picture = picture;
     }
 
     /// Where it paints this frame, panel-relative. None paints nothing.
@@ -184,11 +307,45 @@ impl Render for TextureView {
         };
 
         let texture = self.texture.clone();
-        let frame = self.frame.clone();
+        let picture = self.picture.clone();
+        let lender = self.lender.clone();
         on_box(face.corners, move |corners, window, cx| {
-            texture
-                .borrow_mut()
-                .paint(&frame, corners, face.opacity, window, cx);
+            let mut texture = texture.borrow_mut();
+
+            // The one place with the window in hand, so a render target's
+            // texture is made here and handed to its supervisor. A dock back
+            // moves the item without a teardown, and a texture belongs to the
+            // window that made it, so a move asks for another.
+            if let Some(lender) = &lender
+                && texture.external_elsewhere(window)
+            {
+                texture.release_external(window, cx);
+                lender.lost();
+            }
+            if let Some(lender) = &lender
+                && lender.released()
+            {
+                texture.release_external(window, cx);
+            }
+            if let Some(lender) = &lender
+                && let Some((width, height)) = lender.asked()
+            {
+                let made = texture.register_external(width, height, window, cx);
+                if let Err(e) = &made {
+                    log::info!(
+                        "canvas: no GPU texture at {width}x{height}, shared memory it is: {e}"
+                    );
+                }
+                lender.lend(made);
+            }
+
+            match &picture {
+                Some(Picture::Frame(frame)) => {
+                    texture.paint(frame, corners, face.opacity, window, cx)
+                }
+                Some(Picture::External) => texture.paint_external(corners, face.opacity, window),
+                None => {}
+            }
         })
     }
 }

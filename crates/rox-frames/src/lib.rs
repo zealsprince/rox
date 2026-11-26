@@ -14,7 +14,9 @@
 //!
 //! [`cover`] is the second mapping a renderer can be lent, with the trust
 //! direction reversed: rox writes the playing track's cover and the
-//! renderer only reads it.
+//! renderer only reads it. A renderer that was also lent a GPU texture
+//! announces a frame drawn there with `t` ([`parse_texture_announce`]); the
+//! texture itself is the render target's, not this crate's.
 
 pub mod cover;
 mod layout;
@@ -92,12 +94,7 @@ pub fn parse_announce(line: &[u8]) -> Option<(u64, u32)> {
     let rest = line.strip_prefix(b"f ")?;
     let space = rest.iter().position(|&b| b == b' ')?;
     let (frame, slot) = (&rest[..space], &rest[space + 1..]);
-
-    // `u64::from_str` takes a leading `+`, which isn't part of the line.
-    if frame.is_empty() || !frame.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let frame = std::str::from_utf8(frame).ok()?.parse::<u64>().ok()?;
+    let frame = frame_number(frame)?;
 
     let slot = match slot {
         b"0" => 0,
@@ -108,10 +105,40 @@ pub fn parse_announce(line: &[u8]) -> Option<(u64, u32)> {
     Some((frame, slot))
 }
 
+/// Reads a renderer's `t <frame>` line, which says frame `n` is in the GPU
+/// texture rox lent it, with or without its newline. None for anything
+/// longer than [`ANNOUNCE_MAX`] or any other shape. The line names no slot
+/// and carries nothing rox reads but the word: the frame number is the
+/// renderer's, and rox shows the texture on the line alone.
+pub fn parse_texture_announce(line: &[u8]) -> Option<u64> {
+    if line.len() > ANNOUNCE_MAX {
+        return None;
+    }
+
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    frame_number(line.strip_prefix(b"t ")?)
+}
+
+/// Decimal digits and nothing else, as a u64.
+fn frame_number(digits: &[u8]) -> Option<u64> {
+    // `u64::from_str` takes a leading `+`, which isn't part of the line.
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+
+    std::str::from_utf8(digits).ok()?.parse::<u64>().ok()
+}
+
 /// The line a renderer writes to announce frame `n` in `slot`, newline
 /// included.
 pub fn announce(n: u64, slot: u32) -> String {
     format!("f {n} {slot}\n")
+}
+
+/// The line a renderer writes to announce frame `n` in the texture rox lent
+/// it, newline included.
+pub fn texture_announce(n: u64) -> String {
+    format!("t {n}\n")
 }
 
 /// The clock a slot's `stamp_ns` is read against: `CLOCK_MONOTONIC` on
@@ -177,5 +204,50 @@ mod tests {
                 String::from_utf8_lossy(bad)
             );
         }
+    }
+
+    #[test]
+    fn a_texture_announce_parses_as_strictly_and_never_as_a_slot() {
+        assert_eq!(parse_texture_announce(b"t 12\n"), Some(12));
+        assert_eq!(parse_texture_announce(b"t 0"), Some(0));
+        assert_eq!(
+            parse_texture_announce(texture_announce(u64::MAX).as_bytes()),
+            Some(u64::MAX)
+        );
+
+        // The same cap, newline counted.
+        let longest = format!("t {}\n", "0".repeat(ANNOUNCE_MAX - 3));
+        assert_eq!(longest.len(), ANNOUNCE_MAX);
+        assert_eq!(parse_texture_announce(longest.as_bytes()), Some(0));
+        let long = format!("t {}\n", "0".repeat(ANNOUNCE_MAX - 2));
+        assert_eq!(parse_texture_announce(long.as_bytes()), None);
+
+        for bad in [
+            &b"t 12 0\n"[..],
+            b"t +12",
+            b"t -1",
+            b"t  12",
+            b"t 12 ",
+            b"t 1x",
+            b"t 18446744073709551616",
+            b"t 12\r\n",
+            b"T 12",
+            b"t",
+            b"t ",
+            b"",
+        ] {
+            assert_eq!(
+                parse_texture_announce(bad),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+
+        // The two words never read as each other, so a reader can try both.
+        for line in [&b"t 12\n"[..], b"t 12 0\n"] {
+            assert_eq!(parse_announce(line), None);
+        }
+        assert_eq!(parse_texture_announce(b"f 12 0\n"), None);
     }
 }

@@ -38,4 +38,5 @@ speculated ahead of the code. The set, one per domain:
   rows enter the library, and the approval switch
 - [11-renderers.md](11-renderers.md) - the renderer package and its process, the frame
   mapping byte for byte, the counter a renderer writes, the lines in both directions, the
-  limits that stop one, and the two examples
+  GPU texture a renderer can import on Linux, the limits that stop one, and the two
+  examples

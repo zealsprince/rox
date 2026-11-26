@@ -90,8 +90,9 @@ pub struct Capabilities {
     pub renderer: Option<RendererCap>,
 }
 
-/// Each field past the label is a grant: the enable card names it, and
-/// rox sends or offers it only to a renderer whose approved manifest asks.
+/// Each field past the label but `gpu` is a grant: the enable card names
+/// it, and rox sends or offers it only to a renderer whose approved
+/// manifest asks.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct RendererCap {
     /// What rox lists the renderer as.
@@ -106,6 +107,11 @@ pub struct RendererCap {
     /// Sent the playing track's cover as pixels.
     #[serde(default)]
     pub cover: bool,
+    /// Can draw into a GPU texture rox lends it beside the frame mapping.
+    /// Not a grant: it tells the renderer nothing and reaches only the
+    /// target's own pixels, which every renderer already draws.
+    #[serde(default)]
+    pub gpu: bool,
 }
 
 /// One signal a renderer asks for. Matched against the pool by kind and
@@ -1670,6 +1676,23 @@ mod tests {
 
         let err = renderer_asking(r#""cover": "yes""#).unwrap_err();
         assert!(err.contains("plugin.json"), "{err}");
+    }
+
+    #[test]
+    fn a_renderer_says_it_can_take_a_gpu_texture() {
+        let cap = renderer_asking(r#""gpu": true"#).unwrap();
+        assert!(cap.gpu && !cap.palette && !cap.cover && cap.signals.is_empty());
+
+        assert!(!renderer_asking(r#""gpu": false"#).unwrap().gpu);
+        assert!(
+            !renderer_asking(r#""palette": true"#).unwrap().gpu,
+            "off unless asked"
+        );
+
+        for bad in [r#""gpu": "yes""#, r#""gpu": 1"#, r#""gpu": null"#] {
+            let err = renderer_asking(bad).unwrap_err();
+            assert!(err.contains("plugin.json"), "{bad}: {err}");
+        }
     }
 
     #[test]

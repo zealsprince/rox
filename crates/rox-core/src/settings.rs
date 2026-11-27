@@ -889,7 +889,17 @@ pub fn theme() -> Theme {
 
 pub fn set_theme(theme: Theme, cx: &mut App) {
     *THEME.write().unwrap() = theme;
-    palette::set_mode(resolve_theme(theme), cx);
+    palette::set_mode(resolve_theme(theme), theme_switch_ease(), cx);
+}
+
+/// How long a theme switch eases: the look's pace, or a cut under Reduce
+/// Motion.
+fn theme_switch_ease() -> std::time::Duration {
+    if reduce_motion() {
+        std::time::Duration::ZERO
+    } else {
+        palette::theme_ease()
+    }
 }
 
 /// Swap the interface language and repaint every window, since the locale
@@ -940,7 +950,7 @@ pub fn seed_os_appearance(cx: &App) {
 pub fn note_os_appearance(appearance: WindowAppearance, cx: &mut App) {
     *OS_APPEARANCE.write().unwrap() = appearance;
     if theme() == Theme::System {
-        palette::set_mode(resolve_theme(Theme::System), cx);
+        palette::set_mode(resolve_theme(Theme::System), theme_switch_ease(), cx);
     }
 }
 
@@ -2983,6 +2993,10 @@ pub struct AppearanceBundle {
     pub art_theming: bool,
     /// Keep song theming from swapping between light and dark.
     pub keep_theme: bool,
+    /// How long a light and dark switch fades every window, in
+    /// milliseconds, up to 5000. Left out takes the app's 350.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme_ease: Option<u32>,
     /// The app-wide font family. None follows the platform default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_font: Option<String>,
@@ -3028,6 +3042,7 @@ impl Default for AppearanceBundle {
             seams: true,
             art_theming: false,
             keep_theme: false,
+            theme_ease: None,
             app_font: None,
             rating_style: RatingStyle::default(),
             rating_dots: false,
@@ -4236,6 +4251,26 @@ mod tests {
         );
         assert_eq!(look.layouts.len(), 1);
         assert_eq!(look.primary_layout.as_deref(), Some("one"));
+    }
+
+    #[test]
+    fn a_looks_theme_ease_round_trips_and_stays_out_of_older_files() {
+        let mut appearance = AppearanceBundle {
+            theme_ease: Some(600),
+            ..AppearanceBundle::default()
+        };
+        let json = serde_json::to_value(&appearance).unwrap();
+        assert_eq!(json["theme_ease"], serde_json::json!(600));
+        let back: AppearanceBundle = serde_json::from_value(json).unwrap();
+        assert_eq!(back.theme_ease, Some(600));
+
+        // A look saved without it writes nothing new.
+        appearance.theme_ease = None;
+        let bare = serde_json::to_value(&appearance).unwrap();
+        assert!(bare.get("theme_ease").is_none());
+
+        let older: AppearanceBundle = serde_json::from_str(r#"{"keep_theme":true}"#).unwrap();
+        assert_eq!(older.theme_ease, None);
     }
 
     #[test]

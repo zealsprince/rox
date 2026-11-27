@@ -1,6 +1,8 @@
 //! Eased case changes (ADR 33). When the state an item follows moves to
 //! another case, the item eases from the look it had to the new one over
-//! [`EASE`], or its own `ease` in milliseconds, where 0 keeps the cut.
+//! [`EASE`], or its own `ease` in milliseconds, where 0 keeps the cut. An
+//! item following the theme with no `ease` of its own takes the look's theme
+//! ease, the length the palette fades over.
 //! Opacity blends, a text color blends, and two images crossfade, each drawn
 //! with its own fit and nine-slice cut. A case that hides its item fades it
 //! out and lets go of the pointer as the fade starts; one that shows it takes
@@ -15,6 +17,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rox_canvas::{CanvasItem, Content};
+use rox_design::palette;
 
 use crate::canvas::states::Applied;
 
@@ -25,7 +28,12 @@ pub(crate) const EASE: Duration = Duration::from_millis(180);
 /// The longest an item's own `ease` runs, whatever a file says.
 pub(crate) const MAX_EASE_MS: u32 = 5000;
 
-/// How long `item`'s case changes take. Zero cuts.
+/// The state a theme switch moves.
+const THEME: &str = "app.theme";
+
+/// How long `item`'s case changes take. Zero cuts. An item following the
+/// theme takes the look's theme ease when it doesn't say, so it lands with
+/// the panels and the role-coloured text, which ease with the palette.
 pub(crate) fn length(item: &CanvasItem, still: bool) -> Duration {
     if still || matches!(item.content, Content::Shader { .. }) {
         return Duration::ZERO;
@@ -33,15 +41,22 @@ pub(crate) fn length(item: &CanvasItem, still: bool) -> Duration {
 
     match item.ease {
         Some(ms) => Duration::from_millis(u64::from(ms.min(MAX_EASE_MS))),
+        None if item.state == THEME => palette::theme_ease(),
         None => EASE,
     }
 }
 
 /// Weighted names: the images an item draws this frame, or the colors its
 /// text blends. None names the item's own. Rarely more than two.
+///
+/// Each part carries two weights. Its draw weight is the opacity a picture
+/// draws at under the crossfade rule, back to front. Its share is its part
+/// of a true mix, the shares summing to one, which a color blends by and a
+/// translucent picture's draw weights are worked out from ([`mix_draws`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Mix<'a> {
     parts: [(Option<&'a str>, f32); 4],
+    shares: [f32; 4],
     len: usize,
 }
 
@@ -49,12 +64,17 @@ impl<'a> Mix<'a> {
     pub(crate) fn one(name: Option<&'a str>) -> Mix<'a> {
         Mix {
             parts: [(name, 1.); 4],
+            shares: [1.; 4],
             len: 1,
         }
     }
 
     pub(crate) fn parts(&self) -> &[(Option<&'a str>, f32)] {
         &self.parts[..self.len]
+    }
+
+    pub(crate) fn shares(&self) -> &[f32] {
+        &self.shares[..self.len]
     }
 
     /// The name drawn on top, the one a settled ease lands on.
@@ -70,16 +90,19 @@ impl<'a> Mix<'a> {
     pub(crate) fn cross(&mut self, name: Option<&'a str>, weight: f32) {
         let outgoing = (2. * (1. - weight)).min(1.);
         let incoming = (2. * weight).min(1.);
-        self.push(name, outgoing, incoming);
+        self.push(name, [outgoing, incoming], [1. - weight, weight]);
     }
 
     /// Blends toward `name` at `weight`, the parts' weights summing to one.
     /// For colors.
     pub(crate) fn blend(&mut self, name: Option<&'a str>, weight: f32) {
-        self.push(name, 1. - weight, weight);
+        self.push(name, [1. - weight, weight], [1. - weight, weight]);
     }
 
-    fn push(&mut self, name: Option<&'a str>, keep: f32, weight: f32) {
+    /// `draw` and `share` each hold what the parts already there keep and
+    /// what the new one takes.
+    fn push(&mut self, name: Option<&'a str>, draw: [f32; 2], share: [f32; 2]) {
+        let [keep, weight] = draw;
         if weight <= 0. || (self.len == 1 && self.parts[0].0 == name) {
             return;
         }
@@ -89,8 +112,12 @@ impl<'a> Mix<'a> {
             return;
         }
 
-        for part in &mut self.parts[..self.len] {
+        for (part, held) in self.parts[..self.len]
+            .iter_mut()
+            .zip(&mut self.shares[..self.len])
+        {
             part.1 *= keep;
+            *held *= share[0];
         }
 
         // Full, the faintest part goes to make room.
@@ -99,12 +126,49 @@ impl<'a> Mix<'a> {
                 .min_by(|a, b| self.parts[*a].1.total_cmp(&self.parts[*b].1))
                 .unwrap_or(0);
             self.parts.copy_within(faintest + 1..self.len, faintest);
+            self.shares.copy_within(faintest + 1..self.len, faintest);
             self.len -= 1;
         }
 
         self.parts[self.len] = (name, weight);
+        self.shares[self.len] = share[1];
         self.len += 1;
     }
+}
+
+/// The opacity each picture of `mix` draws at, back to front, given each
+/// one's body alpha (None for an opaque picture or one not decoded yet).
+///
+/// Two source-over draws can't give a true mix of two translucent pictures
+/// per pixel: that needs the lower one drawn at (1 - t) / (1 - t * a) with
+/// `a` the upper one's alpha at that pixel. With one opacity per draw, a
+/// picture's coverage-weighted mean alpha stands in for `a`, which is exact
+/// for glass of an even alpha and close for most. An opaque incoming picture
+/// keeps the crossfade rule, since standing 1 in for `a` would hold the old
+/// picture whole until the end and cut it where the two shapes differ.
+pub(crate) fn mix_draws(mix: &Mix, bodies: &[Option<f32>]) -> Vec<f32> {
+    let parts = mix.parts();
+    let body = |ix: usize| bodies.get(ix).copied().flatten();
+    if parts.len() < 2 || body(parts.len() - 1).is_none() {
+        return parts.iter().map(|(_, weight)| *weight).collect();
+    }
+
+    // From the top down, each part drawn so that what reaches the screen of
+    // it, under the parts above, is its share.
+    let mut draws = vec![0.; parts.len()];
+    let mut through = 1.;
+    for ix in (0..parts.len()).rev() {
+        // Under an opaque part drawn whole nothing shows, so nothing draws.
+        let draw = if through > 0. {
+            (mix.shares()[ix] / through).min(1.)
+        } else {
+            0.
+        };
+        draws[ix] = draw;
+        through *= 1. - draw * body(ix).unwrap_or(1.);
+    }
+
+    draws
 }
 
 /// A case's look as a fade holds it.
@@ -434,5 +498,69 @@ mod tests {
         }
         assert_eq!(mix.parts().len(), 4);
         assert_eq!(mix.top(), Some("e"));
+        assert_eq!(mix.shares().len(), 4);
+    }
+
+    #[test]
+    fn a_theme_item_takes_the_theme_ease_unless_it_says() {
+        let mut item = CanvasItem {
+            state: THEME.to_string(),
+            ..CanvasItem::default()
+        };
+        assert_eq!(length(&item, false), palette::theme_ease());
+        assert_eq!(length(&item, true), Duration::ZERO, "Reduce Motion cuts");
+
+        item.ease = Some(120);
+        assert_eq!(length(&item, false), ms(120));
+
+        item.ease = None;
+        item.state = "player.playback".to_string();
+        assert_eq!(length(&item, false), EASE);
+    }
+
+    /// How much of the backdrop a stack of pictures of one even alpha hides,
+    /// drawn back to front at `draws`.
+    fn coverage(draws: &[f32], alpha: f32) -> f32 {
+        draws
+            .iter()
+            .fold(0., |under: f32, draw| under + draw * alpha * (1. - under))
+    }
+
+    #[test]
+    fn a_translucent_crossfade_holds_its_density_and_an_opaque_one_never_dips() {
+        let glass = 0.44;
+        for t in [0.1, 0.25, 0.5, 0.75, 0.9] {
+            let mut pictures = Mix::one(Some("day"));
+            pictures.cross(Some("night"), t);
+
+            // Two panes of one alpha mix to that alpha all the way through.
+            let mixed = mix_draws(&pictures, &[Some(glass), Some(glass)]);
+            assert!((coverage(&mixed, glass) - glass).abs() < 1e-5, "{t}");
+
+            // The crossfade rule thickens the glass mid-way.
+            let crossed = mix_draws(&pictures, &[Some(glass), None]);
+            assert!(coverage(&crossed, glass) > glass + 0.04, "{t}");
+
+            // An opaque incoming picture keeps the rule that never dips.
+            assert_eq!(crossed, [(2. * (1. - t)).min(1.), (2. * t).min(1.)]);
+        }
+    }
+
+    #[test]
+    fn a_change_mid_crossfade_still_mixes_to_the_glass() {
+        let glass = 0.5;
+        let mut pictures = Mix::one(Some("a"));
+        pictures.cross(Some("b"), 0.4);
+        pictures.cross(Some("c"), 0.3);
+        assert_eq!(pictures.parts().len(), 3);
+
+        let sum: f32 = pictures.shares().iter().sum();
+        assert!((sum - 1.).abs() < 1e-6);
+
+        let draws = mix_draws(&pictures, &[Some(glass); 3]);
+        assert!((coverage(&draws, glass) - glass).abs() < 1e-5);
+
+        // A settled picture draws whole.
+        assert_eq!(mix_draws(&Mix::one(Some("a")), &[Some(glass)]), [1.]);
     }
 }

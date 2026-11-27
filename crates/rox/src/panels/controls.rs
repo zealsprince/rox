@@ -218,12 +218,14 @@ fn icon_for(path: &str) -> &'static str {
         .unwrap_or(icons::SQUARE_DASHED)
 }
 
+/// The palette as it paints this frame, so a theme switch fades a named
+/// role with the rest of the panel.
 fn color_for(role: &str) -> Rgba {
     let Some(entry) = palette::ROLES.iter().find(|entry| entry.name == role) else {
         return palette::text();
     };
 
-    (entry.get)(&palette::resolved())
+    (entry.get)(&palette::eased())
 }
 
 pub(crate) fn state_spec(id: &str) -> Option<&'static StateSpec> {

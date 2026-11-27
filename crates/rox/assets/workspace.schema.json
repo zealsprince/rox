@@ -770,6 +770,15 @@
           "type": "boolean",
           "default": false
         },
+        "theme_ease": {
+          "description": "How long a light and dark switch fades every window, in\nmilliseconds, up to 5000. Left out takes the app's 350.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "app_font": {
           "description": "The app-wide font family. None follows the platform default.",
           "type": [

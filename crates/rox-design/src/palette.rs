@@ -1034,6 +1034,8 @@ pub struct Tint {
     from: Palette,
     target: Palette,
     eased_at: Instant,
+    /// Seconds the run takes. Zero lands at once.
+    length: f32,
 }
 
 impl Tint {
@@ -1043,12 +1045,17 @@ impl Tint {
             from: palette,
             target: palette,
             eased_at: Instant::now(),
+            length: EASE_SECS,
         }
     }
 
     /// Smoothstepped, so changes ease out instead of stopping dead.
     fn progress(&self) -> f32 {
-        let u = (self.eased_at.elapsed().as_secs_f32() / EASE_SECS).min(1.0);
+        if self.length <= 0.0 {
+            return 1.0;
+        }
+
+        let u = (self.eased_at.elapsed().as_secs_f32() / self.length).min(1.0);
         u * u * (3.0 - 2.0 * u)
     }
 
@@ -1071,12 +1078,46 @@ impl Tint {
     }
 
     /// Starts from wherever the run visibly is, so nothing snaps.
-    fn retarget(&mut self, base: &Base) {
+    fn retarget(&mut self, base: &Base, length: Duration) {
         self.from = self.snapshot();
         let seed = if base.art_theming { self.seed } else { None };
         self.target = derive(base, seed);
         self.eased_at = Instant::now();
+        self.length = length.as_secs_f32();
     }
+}
+
+/// What a window with no art tint of its own draws: the base palette, eased
+/// only across a theme switch, so every window fades together whether a
+/// cover tints it or not.
+static BASE_TINT: LazyLock<RwLock<Tint>> =
+    LazyLock::new(|| RwLock::new(Tint::settled(Palette::default())));
+
+fn base_tint() -> Tint {
+    *BASE_TINT.read().unwrap()
+}
+
+/// The longest a theme switch eases, whatever a look says.
+pub const THEME_EASE_MAX_MS: u32 = 5000;
+
+/// How long a theme switch takes when the look doesn't say: the one pace.
+pub const THEME_EASE_DEFAULT: Duration = Duration::from_millis((EASE_SECS * 1000.0) as u64);
+
+static THEME_EASE: RwLock<Duration> = RwLock::new(THEME_EASE_DEFAULT);
+
+/// A look's `theme_ease` in milliseconds, None for the default.
+pub fn set_theme_ease(ms: Option<u32>) {
+    let ease = match ms {
+        Some(ms) => Duration::from_millis(u64::from(ms.min(THEME_EASE_MAX_MS))),
+        None => THEME_EASE_DEFAULT,
+    };
+    *THEME_EASE.write().unwrap() = ease;
+}
+
+/// How long a theme switch eases, before Reduce Motion, which is the
+/// caller's to apply.
+pub fn theme_ease() -> Duration {
+    *THEME_EASE.read().unwrap()
 }
 
 /// A static rather than a gpui global so the accessors keep their plain
@@ -1117,7 +1158,16 @@ thread_local! {
 fn active_role(pick: impl Fn(&Palette) -> Rgba) -> Rgba {
     TINT_STACK.with(|stack| match stack.borrow().last() {
         Some(tint) => tint.role(&pick),
-        None => pick(BASE.read().unwrap().active()),
+        None => base_tint().role(&pick),
+    })
+}
+
+/// The palette as it paints this frame, mid-ease included: what the role
+/// accessors read, for a surface that looks a role up by name.
+pub fn eased() -> Palette {
+    TINT_STACK.with(|stack| match stack.borrow().last() {
+        Some(tint) => tint.snapshot(),
+        None => base_tint().snapshot(),
     })
 }
 
@@ -1164,12 +1214,20 @@ fn tone(bright: u32, deep: u32) -> Rgba {
 }
 
 /// The choke point for an app-wide change, so callers never replay seeds.
-fn retarget_all() {
+/// The art tints run over `tinted`, the base over `untinted`.
+fn retarget_all(tinted: Duration, untinted: Duration) {
     let base = *BASE.read().unwrap();
     let mut tints = TINTS.write().unwrap();
     for tint in tints.values_mut() {
-        tint.retarget(&base);
+        tint.retarget(&base, tinted);
     }
+    BASE_TINT.write().unwrap().retarget(&base, untinted);
+}
+
+/// A song or a palette edit eases an art tint at the one pace and lands the
+/// base at once.
+fn retarget_edit() {
+    retarget_all(Duration::from_secs_f32(EASE_SECS), Duration::ZERO);
 }
 
 /// The one setter every palette edit goes through.
@@ -1181,7 +1239,7 @@ pub fn set(palette: Palette, cx: &mut App) {
             Mode::Light => base.light = palette,
         }
     }
-    retarget_all();
+    retarget_edit();
     drive(cx);
 }
 
@@ -1193,12 +1251,14 @@ pub fn set_palettes(dark: Palette, light: Palette, cx: &mut App) {
         base.dark = dark;
         base.light = light;
     }
-    retarget_all();
+    retarget_edit();
     drive(cx);
 }
 
-/// A no-op resolution returns early instead of restarting every ease.
-pub fn set_mode(mode: Mode, cx: &mut App) {
+/// A no-op resolution returns early instead of restarting every ease. Every
+/// window eases over `ease`, a tinted one or not; before any window is open
+/// it lands at once, so the first frame is already the theme.
+pub fn set_mode(mode: Mode, ease: Duration, cx: &mut App) {
     {
         let mut base = BASE.write().unwrap();
         if base.mode == mode {
@@ -1206,7 +1266,12 @@ pub fn set_mode(mode: Mode, cx: &mut App) {
         }
         base.mode = mode;
     }
-    retarget_all();
+    let ease = if cx.windows().is_empty() {
+        Duration::ZERO
+    } else {
+        ease
+    };
+    retarget_all(ease, ease);
     drive(cx);
 }
 
@@ -1293,9 +1358,7 @@ pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
     let base = *BASE.read().unwrap();
     {
         let mut tints = TINTS.write().unwrap();
-        let tint = tints
-            .entry(player)
-            .or_insert_with(|| Tint::settled(*base.active()));
+        let tint = tints.entry(player).or_insert_with(base_tint);
         // Consecutive tracks off one album have identical art.
         let unchanged = match (&tint.seed, &seed) {
             (None, None) => true,
@@ -1310,7 +1373,7 @@ pub fn set_seed(player: EntityId, seed: Option<Seed>, cx: &mut App) {
         if !base.art_theming {
             return;
         }
-        tint.retarget(&base);
+        tint.retarget(&base, Duration::from_secs_f32(EASE_SECS));
     }
     drive(cx);
 }
@@ -1323,7 +1386,7 @@ pub fn set_art_theming(on: bool, cx: &mut App) {
         }
         base.art_theming = on;
     }
-    retarget_all();
+    retarget_edit();
     drive(cx);
 }
 
@@ -1339,7 +1402,7 @@ pub fn set_keep_theme(on: bool, cx: &mut App) {
         }
         base.keep_theme = on;
     }
-    retarget_all();
+    retarget_edit();
     drive(cx);
 }
 
@@ -1383,7 +1446,7 @@ pub fn theme_target() -> Palette {
 pub fn window_tint(player: EntityId) -> Tint {
     match TINTS.read().unwrap().get(&player) {
         Some(tint) => *tint,
-        None => Tint::settled(*BASE.read().unwrap().active()),
+        None => base_tint(),
     }
 }
 
@@ -1627,7 +1690,7 @@ fn derive(base: &Base, seed: Option<Seed>) -> Palette {
 static PUMP: AtomicU64 = AtomicU64::new(0);
 
 fn any_tint_easing() -> bool {
-    TINTS.read().unwrap().values().any(|t| t.progress() < 1.0)
+    base_tint().progress() < 1.0 || TINTS.read().unwrap().values().any(|t| t.progress() < 1.0)
 }
 
 fn drive(cx: &mut App) {
@@ -1672,7 +1735,7 @@ fn apply(cx: &mut App) {
     };
     let (palette, opacity) = match focused_tint {
         Some(tint) => (tint.snapshot(), base.surface_opacity),
-        None => (*base.active(), base.surface_opacity),
+        None => (base_tint().snapshot(), base.surface_opacity),
     };
     // Start from the stock baseline, chosen by the palette's own lightness
     // rather than the theme pick, so unprojected tokens read on it.
@@ -1749,6 +1812,49 @@ fn apply(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn base(mode: Mode) -> Base {
+        Base {
+            dark: Palette::default(),
+            light: Palette::light(),
+            mode,
+            art_theming: false,
+            keep_theme: false,
+            surface_opacity: 1.0,
+            backdrop_strength: 1.0,
+            backdrop_all_windows: true,
+            font_size: FONT_SIZE_DEFAULT,
+        }
+    }
+
+    #[test]
+    fn a_theme_switch_eases_over_its_length_and_a_zero_one_lands() {
+        let mut tint = Tint::settled(Palette::default());
+
+        tint.retarget(&base(Mode::Light), Duration::from_secs(60));
+        assert!(tint.progress() < 0.01, "a minute-long run has barely moved");
+        assert_eq!(tint.snapshot().bg_root, Palette::default().bg_root);
+        assert_eq!(tint.target.bg_root, Palette::light().bg_root);
+
+        // Turned back with no length, it lands at once.
+        tint.retarget(&base(Mode::Dark), Duration::ZERO);
+        assert_eq!(tint.progress(), 1.0);
+        assert_eq!(tint.snapshot().bg_root, Palette::default().bg_root);
+    }
+
+    #[test]
+    fn a_looks_theme_ease_is_held_in_range() {
+        set_theme_ease(Some(600));
+        assert_eq!(theme_ease(), Duration::from_millis(600));
+        set_theme_ease(Some(u32::MAX));
+        assert_eq!(
+            theme_ease(),
+            Duration::from_millis(u64::from(THEME_EASE_MAX_MS))
+        );
+        set_theme_ease(None);
+        assert_eq!(theme_ease(), THEME_EASE_DEFAULT);
+        assert_eq!(THEME_EASE_DEFAULT, Duration::from_millis(350));
+    }
 
     #[test]
     fn oklch_roundtrips() {

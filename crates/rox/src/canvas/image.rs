@@ -31,7 +31,7 @@ use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_design::palette;
 
-use crate::canvas::fades::Mix;
+use crate::canvas::fades::{self, Mix};
 use crate::canvas::slice::{self, Slices};
 use crate::canvas::{Placing, bbox, on_stage};
 use crate::panels::canvas::CanvasPanel;
@@ -57,6 +57,11 @@ const MAX_ANIMATION_BYTES: u64 = 128 << 20;
 const SHORT_FRAME: Duration = Duration::from_millis(20);
 const SHORT_FRAME_AS: Duration = Duration::from_millis(100);
 
+/// Below this share of fully opaque pixels among the ones that show, a
+/// picture crossfades as glass (`fades::mix_draws`). Aero's glass panes hold
+/// under 1%, its gels and glyphs 14 to 54%.
+const OPAQUE_SHARE: f32 = 0.1;
+
 enum Slot {
     /// Started against this store revision.
     Loading(u64),
@@ -77,6 +82,8 @@ pub(crate) enum Look {
 pub(crate) struct Images {
     rev: u64,
     slots: HashMap<String, Slot>,
+    /// Each translucent picture's body alpha, by asset id.
+    bodies: HashMap<String, f32>,
     /// By item id, so two items on one animation play apart.
     clocks: HashMap<String, Clock>,
     /// The earliest frame due among the animations placed this render.
@@ -153,6 +160,7 @@ impl Images {
     }
 
     pub(crate) fn clear(&mut self, window: &mut Window) {
+        self.bodies.clear();
         for (_, slot) in self.slots.drain() {
             if let Slot::Ready(image) = slot {
                 window.drop_image(image).ok();
@@ -217,6 +225,12 @@ impl Images {
         }
     }
 
+    /// The body alpha of a translucent picture that has landed. None for an
+    /// opaque one, and for one still decoding.
+    pub(crate) fn body(&self, id: &str) -> Option<f32> {
+        self.bodies.get(id).copied()
+    }
+
     /// A miss starts one decode and answers Pending until it lands.
     pub(crate) fn look(&mut self, id: &str, cx: &mut Context<CanvasPanel>) -> Look {
         match self.slots.get(id) {
@@ -240,7 +254,7 @@ impl Images {
                 .background_executor()
                 .spawn({
                     let id = id.clone();
-                    async move { load(&id) }
+                    async move { load(&id).map(|image| (body_alpha(&image), image)) }
                 })
                 .await;
 
@@ -257,13 +271,23 @@ impl Images {
     }
 
     /// False when the store moved while it decoded, so this one is stale.
-    fn land(&mut self, id: &str, rev: u64, decoded: Result<Arc<RenderImage>, String>) -> bool {
+    fn land(
+        &mut self,
+        id: &str,
+        rev: u64,
+        decoded: Result<(Option<f32>, Arc<RenderImage>), String>,
+    ) -> bool {
         if !matches!(self.slots.get(id), Some(Slot::Loading(started)) if *started == rev) {
             return false;
         }
 
         let slot = match decoded {
-            Ok(image) => Slot::Ready(image),
+            Ok((body, image)) => {
+                if let Some(body) = body {
+                    self.bodies.insert(id.to_string(), body);
+                }
+                Slot::Ready(image)
+            }
             Err(e) => {
                 log::warn!("canvas: image {id}: {e}");
                 Slot::Failed
@@ -273,6 +297,37 @@ impl Images {
 
         true
     }
+}
+
+/// The coverage-weighted mean alpha of frame 0, sum(a^2) / sum(a): of the
+/// stand-ins tried on Aero's glass pairs it came closest to a true mix. None
+/// for a picture opaque enough to crossfade as an opaque one, and for one
+/// with nothing in it.
+fn body_alpha(image: &RenderImage) -> Option<f32> {
+    let bytes = image.as_bytes(0)?;
+
+    let (mut showing, mut opaque) = (0u64, 0u64);
+    let (mut sum, mut squares) = (0f64, 0f64);
+    for pixel in bytes.as_chunks::<4>().0 {
+        let alpha = pixel[3];
+        if alpha == 0 {
+            continue;
+        }
+
+        showing += 1;
+        if alpha >= 250 {
+            opaque += 1;
+        }
+        let alpha = f64::from(alpha) / 255.;
+        sum += alpha;
+        squares += alpha * alpha;
+    }
+
+    if showing == 0 || opaque as f32 >= showing as f32 * OPAQUE_SHARE {
+        return None;
+    }
+
+    Some((squares / sum) as f32)
 }
 
 fn load(id: &str) -> Result<Arc<RenderImage>, String> {
@@ -574,11 +629,11 @@ fn along(at: f32, lines: &[f32; 4], texels: &[u32; 4]) -> f32 {
 }
 
 /// The image's elements, back to front: each of `pictures` that has landed
-/// with its weight on the item's opacity. `pictures` names the item's own
-/// with None, and a name the store doesn't hold draws the item's own, so a
-/// case or look naming a missing image falls back the way it always has.
-/// With `hit` the result also carries where each draws, for a hit against
-/// its picture.
+/// with its draw weight ([`fades::mix_draws`]) on the item's opacity.
+/// `pictures` names the item's own with None, and a name the store doesn't
+/// hold draws the item's own, so a case or look naming a missing image falls
+/// back the way it always has. With `hit` the result also carries where each
+/// draws, for a hit against its picture.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn element(
     item: &CanvasItem,
@@ -605,12 +660,17 @@ pub(crate) fn element(
         pictures: hit.then(Vec::new),
     };
     let layers = pictures.parts();
-    for (ix, (name, weight)) in layers.iter().enumerate() {
-        let asset = match name {
+    let assets: Vec<&str> = layers
+        .iter()
+        .map(|(name, _)| match name {
             Some(name) if !matches!(images.look(name, cx), Look::Missing) => name,
             _ => own.as_str(),
-        };
+        })
+        .collect();
+    let bodies: Vec<Option<f32>> = assets.iter().map(|asset| images.body(asset)).collect();
+    let draws = fades::mix_draws(pictures, &bodies);
 
+    for (ix, (asset, weight)) in assets.into_iter().zip(draws).enumerate() {
         // The top picture keeps the item's own clock, so an animation the
         // ease lands on plays on without a jump.
         let clock = if ix + 1 == layers.len() {
@@ -909,6 +969,19 @@ mod tests {
         let image = decode(&png(2, 1, [200, 10, 20, 255])).expect("decodes");
         let pixels = image.as_bytes(0).expect("frame 0");
         assert_eq!(&pixels[..4], &[20, 10, 200, 255]);
+    }
+
+    #[test]
+    fn glass_has_a_body_alpha_and_an_opaque_picture_has_none() {
+        let glass = decode(&png(4, 4, [200, 220, 240, 112])).expect("decodes");
+        let body = body_alpha(&glass).expect("translucent");
+        assert!((body - 112. / 255.).abs() < 1e-4, "{body}");
+
+        let solid = decode(&png(4, 4, [200, 220, 240, 255])).expect("decodes");
+        assert_eq!(body_alpha(&solid), None);
+
+        let clear = decode(&png(4, 4, [0, 0, 0, 0])).expect("decodes");
+        assert_eq!(body_alpha(&clear), None, "nothing shows");
     }
 
     #[test]

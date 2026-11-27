@@ -953,6 +953,7 @@ fn show_look(bundle: &WorkspaceBundle, cx: &mut App) {
     settings::set_seams(a.seams, cx);
     palette::set_keep_theme(a.keep_theme, cx);
     palette::set_art_theming(a.art_theming, cx);
+    palette::set_theme_ease(a.theme_ease);
     settings::set_app_font(a.app_font.clone(), cx);
     settings::set_rating_style(a.rating_style, cx);
     settings::set_rating_dots(a.rating_dots, cx);

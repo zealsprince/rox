@@ -242,6 +242,31 @@ shaders, appearance, files, and both kinds of preset wholesale and leaves machin
 account-bound state (library folders, Last.fm, window frames) untouched, so a bundle
 travels between installs without dragging along another machine's setup.
 
+A light and dark switch fades every window (`palette::set_mode`). Each window's art tint,
+and the base palette a window with no tint draws, eases from where it visibly is to the new
+theme, and the 16 ms palette pump projects the widget theme and refreshes every window
+until they land. So every panel fades together, docked in the window or inside a canvas
+grid, whether a cover tints it or not. The switch takes 350 ms, the app's one pace
+(`tokens::EASE_SECS`), unless the look's `theme_ease` names another length in
+milliseconds, held to 5000. A look that leaves it out writes nothing new:
+
+```json
+"appearance": { "keep_theme": true, "theme_ease": 600 }
+```
+
+Reduce Motion cuts the switch, and so does the one at launch, which lands before any window
+is open. A second switch mid-fade turns from where the palette visibly is. A song or a
+palette edit eases a tint over 350 ms and lands the base palette at once. Every step
+of the fade re-renders every view in every window, cached ones included, which is the cost
+to weigh against a long `theme_ease`. Measured 2026-11-27 in the release build in a
+headless sway at 1920x1080, design mode off, nothing playing, `theme_ease` 600,
+`debug.frames` over 1.5 s from 0.2 s before the switch, three switches each way, load under
+6: the shipped Default look drew 38 or 39 frames across a switch at 8.4 to 9.2 ms each
+(worst 12), where a switch that cut drew 2 at 9.2 to 10.1 ms. Aero drew 57 or 58 at 4.8
+to 5.3 ms (worst 9), against 31 at rest, its paced drift, and 56 to 58 at 1.7 to 2.5 ms
+when only its canvas items faded and the panels cut. Under Reduce Motion it drew 2 across a
+switch and none at rest.
+
 Saved workspaces are `.roxw` files under `workspaces/` in the data directory, which makes
 the folder the collection: drop a shared file in and it's in the list, delete it and it's
 gone. A `.roxw` is a zip holding `workspace.json`, the bundle, and one flat
@@ -684,8 +709,11 @@ item's own: an object exports it with the item, and placing rewrites it to the s
 A change of case eases (`crates/rox/src/canvas/fades.rs`). The canvas keeps each drawn
 item's last case, and when it moves the item eases from the look it showed to the new one
 over 180 ms with a smoothstep (`fades::EASE`), or over its own `ease` in milliseconds,
-held to 5000. `"ease": 0` keeps the cut, for an item where a hard switch is the point. An
-item that leaves it out writes nothing new:
+held to 5000. An item following the theme (`app.theme`) that leaves `ease` out takes the
+look's theme ease instead, 350 ms unless the look's `theme_ease` says otherwise (see
+Workspaces), so it lands with the panels and the role-coloured text. `"ease": 0` keeps the
+cut, for an item where a hard switch is the point. An item that leaves it out writes
+nothing new:
 
 ```json
 { "id": "play-body", "state": "player.playback", "ease": 250,
@@ -694,10 +722,24 @@ item that leaves it out writes nothing new:
 ```
 
 Opacity blends and a text color blends. Two images crossfade as two draws of the item,
-each with its own fit and nine-slice cut, since a case's image has its own size in texels:
-the incoming one comes in over the first half of the ease and the outgoing one goes over
-the second, so two opaque pictures never dip through each other (`Mix::cross`). The top
-picture keeps the item's animation clock. A case that hides the item fades it out, and the
+each with its own fit and nine-slice cut, since a case's image has its own size in texels.
+How the two draws weigh depends on the incoming picture, measured once as it decodes
+(`image::body_alpha`). An opaque one, where at least a tenth of the pixels that show are
+fully opaque, comes in over the first half of the ease while the outgoing one goes over the
+second, so two opaque pictures never dip through each other (`Mix::cross`). A translucent
+one, glass, comes in at the ease's weight `t` while the outgoing one draws at
+`(1 - t) / (1 - t * a)`, with `a` the incoming picture's coverage-weighted mean alpha
+(`fades::mix_draws`). For two panes of one even alpha that's the true mix, so the glass
+keeps its density through the fade, where the opaque rule had both whole at the middle:
+at alpha 0.44 that hides 69% of what's behind instead of 44%. It's one opacity per draw,
+not per pixel: where the incoming picture's alpha runs above its mean the pair shows a
+little less than the mix, and below it a little more. An exact mix would need the lower
+draw to follow the upper picture's alpha pixel by pixel, a quad that samples both images,
+which the image path doesn't have. Aero's left pane, crossfaded day to night over 5 s in
+the release build and sampled over the sky at five points, came within 2.2 RGB levels of
+the true mix at every point; under the opaque rule it was 48 levels off a quarter of the
+way in and 98 at the middle, already near the night pane. The top picture keeps the item's
+animation clock. A case that hides the item fades it out, and the
 item leaves the click walk as the fade starts: its shape passes the pointer, and a grid's
 panels sit under an occluding blocker for the length of the fade. A case that shows it
 takes the pointer at once and fades in. A change that lands mid-fade carries on from the
@@ -709,13 +751,18 @@ A grid and a render target ease only their opacity, since a case gives neither a
 and a grid can't crossfade two layouts. A shader item cuts, since its quad takes no
 opacity. Design mode, the inspector's previews and Reduce Motion cut as before. A fade asks
 for frames only while it runs, and every item one change moves starts its fade in the same
-render, so a theme switch is one burst of frames, not one per item. A text color named
-by a role reads the theme of the frame it draws in, so across a theme switch the blend
-runs between the two roles as the new theme paints them. Measured 2026-11-26 in a debug
-build in a headless sway at 1920x1080, design mode off, nothing playing, `debug.frames`
-over 1.5 s from 0.2 s before the switch, three switches each way: Aero drew 31 to 32
-frames across a switch before cases eased and 38 to 40 after, against 31 at rest in both,
-its paced drift. Under Reduce Motion it drew none at rest and 2 across a switch.
+render, so a theme switch is one burst of frames, not one per item.
+
+A theme switch eases the app's palette (see Workspaces), so the panels inside a grid fade
+with every other panel in the window, and a text color named by a role reads the palette
+as it paints that frame (`palette::eased`), so it fades with them. With the theme cases
+left on the look's theme ease, panes, rows, text and scenery move as one. A grid needs
+nothing of its own for this: its dock renders cached, and the palette's pump refreshes the
+window on every step, which re-renders cached views too, the last step included, so no
+grid keeps a frame of the old theme. What still lands at once: gpui-component's tokens rox
+doesn't project, which follow the stock light or dark baseline and flip at the middle of
+the ease, a waveform's role colors, and the colors a render target is sent, which are
+where the ease will land, sent once.
 
 An item a click command covers can also carry a `hover` look, for while the pointer is
 over it, and a `pressed` look, for while a left press that landed on it is held and the
@@ -926,7 +973,8 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 `crates/rox-panel-api/src/panel.rs` (`PanelChrome`, `AppState`, `pop_out`,
 `PopoutHost`), `crates/rox/src/panel_settings.rs` (the customize windows),
 `crates/rox-core/src/settings.rs` (`NamedLayout`, `WorkspaceBundle`, `Asset`,
-`ShaderAsset`), `crates/rox-design/src/palette.rs` (`PanelTheme`), and
+`ShaderAsset`), `crates/rox-design/src/palette.rs` (`PanelTheme`, the eased theme switch
+and `theme_ease`), and
 `crates/rox/src/workspaces.rs` (store, import, the stage before apply, `apply_look`,
 `presets_elsewhere`, the version 1 folder migration). Workspace files span
 `crates/rox-core/src/settings/roxw.rs` (the archive, `upgrade`, `read_v1`),
@@ -955,7 +1003,8 @@ arithmetic), `crates/rox/src/panels/canvas/set.rs` (the marquee and the set's ed
 `crates/rox/src/canvas/stack.rs` (a stacked child's room as its case fades),
 `patches/gpui/e7-image-patch-inner-edges.patch` (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
-`crates/rox/src/canvas/fades.rs` (eased case changes), `overlay/motion_rows.rs` (the
+`crates/rox/src/canvas/fades.rs` (eased case changes and the crossfade's draw weights),
+`overlay/motion_rows.rs` (the
 pointer and ease rows),
 `crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock, time routes at
 rest), `crates/rox/src/canvas/pace.rs` (frames for time-only motion),

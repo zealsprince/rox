@@ -3356,8 +3356,9 @@ pub(crate) const MENUS: &[Menu] = &[
             },
         ],
     },
-    // Only on the bar in design mode, beside its toggle: every row past the
-    // first puts a panel into the layout. See [`menu_shows`].
+    // Only on the bar in design mode, at the end of the row so nothing moves
+    // when it comes and goes: every row past the first puts a panel into the
+    // layout. See [`menu_shows`].
     Menu {
         label: "menu-panels",
         entries: &[
@@ -3408,8 +3409,7 @@ pub(crate) fn plugins_show() -> bool {
     !catalog::plugin_sections().is_empty()
 }
 
-/// The Panels menu's place in [`MENUS`]. The table keeps it last, the order
-/// the macOS bar shows, and the in-window bar draws it first.
+/// The Panels menu's place in [`MENUS`]: last, on every bar.
 pub(crate) const PANELS_MENU: usize = 5;
 
 /// Whether a top menu is on the in-window bar: the Panels menu only while
@@ -3419,13 +3419,10 @@ pub(crate) fn menu_shows(menu: usize) -> bool {
 }
 
 /// The top menus as the in-window bar and the menu panel draw them, by
-/// [`MENUS`] index: the Panels menu leads, right after the design mode
-/// toggle that brings it out, then the rest in table order.
+/// [`MENUS`] index, in table order. The Panels menu is last, so the menus
+/// ahead of it keep their places when design mode brings it out.
 pub(crate) fn bar_menus() -> Vec<usize> {
-    std::iter::once(PANELS_MENU)
-        .chain((0..MENUS.len()).filter(|&i| i != PANELS_MENU))
-        .filter(|&i| menu_shows(i))
-        .collect()
+    (0..MENUS.len()).filter(|&i| menu_shows(i)).collect()
 }
 
 /// One plugin entry as the hand-built flyouts list it. They go two levels

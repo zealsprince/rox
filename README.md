@@ -208,8 +208,8 @@ there. rox doesn't publish plugins for any service. It publishes
 the protocol in the [plugin guide](README_PLUGINS.md) and an example
 to copy in [`examples/plugins/tones`](examples/plugins/tones/). A renderer is packaged the
 same way and draws a Renderer panel or a render target on a canvas. It's switched on from
-the Renderers settings page, and
-[11-renderers.md](docs/03-implementation/11-renderers.md) says how to write one.
+the Renderers settings page, and the [renderer guide](README_RENDERERS.md) says how to
+install and write one.
 
 ## Catalog
 

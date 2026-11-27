@@ -35,7 +35,7 @@ The contract it follows is in [the renderers doc](../../../docs/03-implementatio
 3. Play something. Add signals under Application > Signals to get bars: each one in the
    pool is a bar.
 
-A canvas takes it too: with Panels > Design Mode on, right-click the empty stage, or
+A canvas takes it too: with Window > Design Mode on, right-click the empty stage, or
 press the plus in the canvas inspector's header, and pick Add Render Target > Bars.
 
 Python 3.7 or later has to be on PATH as `python3` or `python`, or as `py` on Windows.

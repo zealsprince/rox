@@ -411,9 +411,10 @@ an exit once a second while it's paused.
 An exit rox didn't ask for leaves the last frame showing, and rox starts the renderer
 again after 0, 1, 2 and 4 seconds for the first to fourth exit inside ten minutes. The
 fifth stops it (`BACKOFF` and `CRASH_WINDOW`, `rox-plugins/src/host.rs`; `due`
-and `note_exit`, `renderers.rs`). A stopped target draws empty, with a dashed
-box and the renderer's name in design mode, until the user presses Start Again under
-its Status, or switches the renderer off and on. A failed start, a flood of stdout
+and `note_exit`, `renderers.rs`). A stopped target draws a dashed box and the
+renderer's name in design mode. Outside it, the target shows its status in its box with
+the button its Status row has, until the user presses it or Start Again under its
+Status, or switches the renderer off and on. A failed start, a flood of stdout
 lines and a run of refused frames each count as an exit. A restarted renderer gets
 `hello` and the pool again, and its frame numbers can start again from 0.
 
@@ -536,6 +537,14 @@ The pointer over the picture goes to the renderer, mapped through the fit, as ov
 canvas target outside design mode. The right button is the panel's: its press opens the
 panel menu and never reaches the renderer. A pointer over the bands around a contained
 picture is off the surface, and the renderer gets `leave`.
+
+A canvas target with no picture says the same outside design mode, in a card centred in
+its box, or in the box around its corners when it's tilted (`prompt_for` and
+`prompt_box`, `target.rs`). The whole card is the button. With no renderer picked it
+lists the installed ones as the panel's picker does, and the pick is an undo step on the
+canvas. A pick that isn't switched on raises its enable card, and nothing else switches
+it on. A target meant to show nothing while empty turns this off with `"prompt": false`,
+the inspector's Explain When Empty.
 
 A panel behind another tab, or in a minimised window, isn't drawn, so its session pauses
 after the untaken frame's 500 ms, as a canvas target's does. Pop Out and Dock Back carry
@@ -1522,8 +1531,12 @@ anything holding or inside rox's data folder. An XDG folder set to home itself, 
 
 ### The tiers
 
-What a renderer runs as is its tier (`Tier`, `sandbox.rs`). Its card reads it out, the
-Renderers page marks it beside the version, and the approval records it.
+What a renderer runs as is its tier (`Tier`, `sandbox.rs`). Its card reads it out and
+the approval records it. The Renderers page says what every renderer runs as on this
+system in one line above the list (`sandbox_line`), and a row marks only a tier that
+differs: Unconfined, or what it asks for, as "Asks for the network, your library"
+(`tier_mark`, `rox/src/settings/window/plugins_page.rs`). A row whose files are the ones
+approved and whose tier moved reads "Off: the sandbox changed".
 
 | Tier | When | The card says |
 |---|---|---|

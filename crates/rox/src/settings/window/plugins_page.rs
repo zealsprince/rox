@@ -229,6 +229,9 @@ enum Standing {
     Missing,
     Failed(String),
     Changed,
+    /// A renderer's files are the ones approved, and what this system's
+    /// sandbox enforces for it isn't: its card asks again.
+    SandboxChanged,
     Stopped(String),
     Needs(Vec<String>),
     On,
@@ -341,14 +344,70 @@ fn standing(
     }
 }
 
-/// A renderer's tier on its row: one word, the card says the rest.
-fn tier_mark(tier: &rox_plugins::sandbox::Tier) -> SharedString {
-    use rox_plugins::sandbox::Tier;
+/// A renderer's tier on its row, only where it differs from the line over
+/// the list, which says what every renderer runs as on this system: one that
+/// asks to run unconfined, or for the network or folders, named. The card
+/// says the rest.
+fn tier_mark(tier: &rox_plugins::sandbox::Tier) -> Option<SharedString> {
+    use rox_plugins::sandbox::{Folder, Tier};
 
     match tier {
-        Tier::Sandboxed { .. } => rox_i18n::t!("settings-plugins-tier-sandboxed"),
-        Tier::Unconfined => rox_i18n::t!("settings-plugins-tier-unconfined"),
-        Tier::Permissions(_) => rox_i18n::t!("settings-plugins-tier-permissions"),
+        Tier::Sandboxed {
+            network, folders, ..
+        } => {
+            let asks: Vec<SharedString> = network
+                .then(|| rox_i18n::t!("settings-plugins-tier-network"))
+                .into_iter()
+                .chain(folders.iter().map(|folder| match folder {
+                    Folder::Library => rox_i18n::t!("settings-plugins-tier-library"),
+                    Folder::Music => rox_i18n::t!("settings-plugins-folder-music"),
+                    Folder::Pictures => rox_i18n::t!("settings-plugins-folder-pictures"),
+                    Folder::Videos => rox_i18n::t!("settings-plugins-folder-videos"),
+                    Folder::Documents => rox_i18n::t!("settings-plugins-folder-documents"),
+                    Folder::Downloads => rox_i18n::t!("settings-plugins-folder-downloads"),
+                }))
+                .collect();
+            if asks.is_empty() {
+                return None;
+            }
+
+            let what = asks.join(", ");
+            Some(rox_i18n::t!("settings-plugins-tier-asks", what = what))
+        }
+
+        Tier::Unconfined => Some(rox_i18n::t!("settings-plugins-tier-unconfined")),
+
+        // Every renderer runs so here, and the line over the list says why.
+        Tier::Permissions(_) => None,
+    }
+}
+
+/// The line over the renderer list: what every renderer runs as on this
+/// system, so a row only marks where it differs.
+pub(super) fn sandbox_line(support: &rox_plugins::sandbox::Support) -> SharedString {
+    use rox_plugins::sandbox::{Support, Unavailable};
+
+    match support {
+        Support::Sandbox { gaps, .. } if gaps.any() => {
+            rox_i18n::t!("settings-plugins-renderers-sandboxed-gaps")
+        }
+        Support::Sandbox { .. } => rox_i18n::t!("settings-plugins-renderers-sandboxed"),
+        Support::Unavailable(Unavailable::Platform) => {
+            rox_i18n::t!("settings-plugins-renderers-unsandboxed-platform")
+        }
+        Support::Unavailable(Unavailable::NoLandlock) => {
+            rox_i18n::t!("settings-plugins-renderers-unsandboxed-kernel")
+        }
+        Support::Unavailable(Unavailable::LandlockOff) => {
+            rox_i18n::t!("settings-plugins-renderers-unsandboxed-off")
+        }
+        Support::Unavailable(Unavailable::NoSeccomp) => {
+            rox_i18n::t!("settings-plugins-renderers-unsandboxed-seccomp")
+        }
+        Support::Unavailable(Unavailable::Failed(error)) => rox_i18n::t!(
+            "settings-plugins-renderers-unsandboxed-failed",
+            error = error.as_str()
+        ),
     }
 }
 
@@ -358,6 +417,7 @@ impl Standing {
             Standing::Missing => rox_i18n::t!("settings-plugins-standing-missing"),
             Standing::Failed(_) => rox_i18n::t!("settings-plugins-standing-failed"),
             Standing::Changed => rox_i18n::t!("settings-plugins-standing-changed"),
+            Standing::SandboxChanged => rox_i18n::t!("settings-plugins-standing-sandbox-changed"),
             Standing::Stopped(reason) if reason == STOPPED_AFTER_CRASHES => {
                 rox_i18n::t!("settings-plugins-standing-stopped")
             }
@@ -934,11 +994,19 @@ impl SettingsWindow {
                 id.to_string(),
             ),
         };
-        let approved = folder.is_some_and(|f| {
-            settings::plugin_approved(id, &f.hash)
-                && rox_services::renderers::sandbox_approved(f, record)
-        });
-        let standing = standing(folder, record, approved, host::status(id));
+        let files_approved = folder.is_some_and(|f| settings::plugin_approved(id, &f.hash));
+        let sandbox_holds =
+            folder.is_none_or(|f| rox_services::renderers::sandbox_approved(f, record));
+        let standing = match standing(
+            folder,
+            record,
+            files_approved && sandbox_holds,
+            host::status(id),
+        ) {
+            // The files didn't change, so "changed on disk" would be wrong.
+            Standing::Changed if files_approved => Standing::SandboxChanged,
+            standing => standing,
+        };
         let on = record.is_some_and(|r| r.enabled) && folder.is_some_and(Loaded::runs);
         // A renderer has no source, providers or config rows to unfold.
         let renderer = folder.is_some_and(is_renderer);
@@ -953,7 +1021,7 @@ impl SettingsWindow {
         // What a renderer runs as here, beside its version (ADR 38).
         let tier = folder.and_then(|f| {
             let cap = f.manifest.as_ref()?.capabilities.renderer.as_ref()?;
-            Some(tier_mark(&rox_services::renderers::tier(f, cap)))
+            tier_mark(&rox_services::renderers::tier(f, cap))
         });
 
         // Only a switched-on plugin has details to fold. The rest keep the
@@ -1709,5 +1777,64 @@ mod tests {
             standing(Some(&ok), Some(&record(false, "")), false, None),
             Standing::Off
         );
+    }
+
+    #[test]
+    fn a_renderer_row_marks_only_a_tier_off_the_default() {
+        use rox_plugins::sandbox::{Folder, Gaps, Tier, Unavailable};
+
+        let sandboxed = |network, folders| Tier::Sandboxed {
+            network,
+            folders,
+            interpreter: Vec::new(),
+            gaps: Gaps::default(),
+        };
+
+        // The line over the list says this much for every row.
+        assert_eq!(tier_mark(&sandboxed(false, Vec::new())), None);
+        assert_eq!(tier_mark(&Tier::Permissions(Unavailable::Platform)), None);
+
+        assert_eq!(
+            tier_mark(&Tier::Unconfined),
+            Some(rox_i18n::t!("settings-plugins-tier-unconfined"))
+        );
+
+        // What it asks for is named, the network first, in the folders' order.
+        let what = [
+            rox_i18n::t!("settings-plugins-tier-network"),
+            rox_i18n::t!("settings-plugins-tier-library"),
+            rox_i18n::t!("settings-plugins-folder-pictures"),
+        ]
+        .join(", ");
+        assert_eq!(
+            tier_mark(&sandboxed(true, vec![Folder::Library, Folder::Pictures])),
+            Some(rox_i18n::t!("settings-plugins-tier-asks", what = what))
+        );
+    }
+
+    #[test]
+    fn the_line_over_the_renderers_says_what_this_system_does() {
+        use rox_plugins::sandbox::{Gaps, Support, Unavailable};
+
+        let sandbox = |gaps| Support::Sandbox { abi: 6, gaps };
+        assert_eq!(
+            sandbox_line(&sandbox(Gaps::default())),
+            rox_i18n::t!("settings-plugins-renderers-sandboxed")
+        );
+        assert_eq!(
+            sandbox_line(&sandbox(Gaps {
+                signals: true,
+                truncate: false
+            })),
+            rox_i18n::t!("settings-plugins-renderers-sandboxed-gaps")
+        );
+        assert_eq!(
+            sandbox_line(&Support::Unavailable(Unavailable::NoLandlock)),
+            rox_i18n::t!("settings-plugins-renderers-unsandboxed-kernel")
+        );
+
+        // A failed apply names its reason.
+        let failed = sandbox_line(&Support::Unavailable(Unavailable::Failed("EPERM".into())));
+        assert!(failed.contains("EPERM"), "{failed}");
     }
 }

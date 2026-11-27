@@ -41,7 +41,9 @@ use rox_panel_kit::ui::{self as settings_ui, PageBody, Section};
 use rox_panel_kit::{choices_shared, picker, toggle};
 use serde::{Deserialize, Serialize};
 
-use crate::canvas::target::{self, CoverAsk, Fix, Key, Place, Pointer, Readiness, Reading, Shown};
+use crate::canvas::target::{
+    self, Ask, CoverAsk, Fix, Key, Place, Pointer, Readiness, Reading, Shown,
+};
 use crate::canvas::target_settings::{self, fit_choices, scale_choices};
 use crate::enable_card::EnableCard;
 use crate::panels::canvas::{RENDERERS_PAGE, button_name, scroll_lines, suggests_rest};
@@ -572,34 +574,9 @@ impl RendererPanel {
     /// The quiet line in place of a picture, with the button that fixes it.
     fn empty_state(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let status = self.status();
-
-        let (words, button): (SharedString, Option<AnyElement>) = match &status {
-            None if rox_services::renderers::all().is_empty() => (
-                rox_i18n::t!("canvas-target-panel-none"),
-                Some(target::fix_button(Fix::Settings, Self::fix, cx)),
-            ),
-            None => (
-                rox_i18n::t!("canvas-target-panel-empty"),
-                Some(
-                    settings_ui::small_button(
-                        rox_i18n::t!("canvas-target-panel-pick"),
-                        icons::MONITOR_PLAY,
-                        false,
-                        cx.listener(|this, _, window, cx| {
-                            let at = window.mouse_position();
-                            this.open_picker(at, window, cx)
-                        }),
-                    )
-                    .keyed("renderer-panel-pick")
-                    .into_any_element(),
-                ),
-            ),
-            Some(status @ (target::Status::Stopped(_) | target::Status::Starting(Some(_)))) => (
-                target::status_words(status),
-                target::status_fix(status).map(|fix| target::fix_button(fix, Self::fix, cx)),
-            ),
-            Some(_) => return None,
-        };
+        let installed = status.is_some() || !rox_services::renderers::all().is_empty();
+        let target::Prompt { words, ask } = target::prompt_for(status.as_ref(), installed)?;
+        let button = ask.map(|ask| target::ask_button(ask, Self::answer, cx));
 
         Some(
             div()
@@ -621,6 +598,16 @@ impl RendererPanel {
                 .children(button)
                 .into_any_element(),
         )
+    }
+
+    fn answer(&mut self, ask: Ask, window: &mut Window, cx: &mut Context<Self>) {
+        match ask {
+            Ask::Pick => {
+                let at = window.mouse_position();
+                self.open_picker(at, window, cx)
+            }
+            Ask::Fix(fix) => self.fix(fix, window, cx),
+        }
     }
 
     fn fix(&mut self, fix: Fix, window: &mut Window, cx: &mut Context<Self>) {

@@ -16,6 +16,10 @@ week, and you'll be credited in the fix unless you'd rather not be.
 
 ## Scope
 
-The latest release and main. Crashes without a security angle are regular bugs;
+The latest release and main. A plugin runs with your permissions, and its enable
+card says so. A renderer runs in a sandbox on Linux, so one that reaches more than its
+card names is in scope too.
+
+Crashes without a security angle are regular bugs;
 the [bug report form](https://github.com/zealsprince/rox/issues/new/choose) is
 the right door for those.

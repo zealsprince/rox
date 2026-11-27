@@ -18,7 +18,7 @@ A package can be a renderer instead: a program that draws the picture in a Rende
 or a render target on a canvas, fed the music's signals. It's packaged the way a plugin is
 and goes in the same folder, but it lists on the Renderers settings page with a switch of
 its own, Enable Plugins doesn't reach it, and it speaks a wire of its own.
-[The renderer guide](docs/03-implementation/11-renderers.md) covers it, and
+[README_RENDERERS.md](README_RENDERERS.md) covers installing and writing one, and
 [`examples/renderers`](examples/renderers/) has two to copy.
 
 This guide covers plugin API version 1, the only one the host supports.
@@ -54,7 +54,8 @@ either way.
 
 A plugin runs as a program on your computer with your permissions, its own network
 access and its own filesystem access. rox doesn't sandbox it, and the enable card says
-so.
+so. A renderer runs in a sandbox on Linux instead, which
+[README_RENDERERS.md](README_RENDERERS.md#the-sandbox) describes.
 
 Switching a plugin on approves exactly the files in it, by a SHA-256 hash over every
 file in its package or folder. A package hashes the same as the folder it was packed

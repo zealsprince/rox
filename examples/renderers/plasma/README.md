@@ -47,7 +47,7 @@ on one mounted `noexec` the start fails with "Permission denied".
    Plasma, then confirm its card. Or switch it on from the Renderers page.
 3. Play something with a few signals in the pool (Application > Signals).
 
-A canvas takes it too: with Panels > Design Mode on, right-click the empty stage, or
+A canvas takes it too: with Window > Design Mode on, right-click the empty stage, or
 press the plus in the canvas inspector's header, and pick Add Render Target > Plasma.
 
 Switched on, Developer mode on the renderer's row shows Pack, which writes the folder

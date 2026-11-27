@@ -1001,6 +1001,95 @@ impl CanvasPanel {
         self.targets.start_again(id);
     }
 
+    /// An empty target's prompt was pressed, outside design mode.
+    fn answer_target_prompt(
+        &mut self,
+        id: &str,
+        ask: target::Ask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = match self.config.canvas.find(id).map(|item| &item.content) {
+            Some(Content::Target { owner, .. }) => owner.clone(),
+            _ => return,
+        };
+
+        match ask {
+            target::Ask::Pick => self.open_target_picker(id, window, cx),
+            target::Ask::Fix(target::Fix::SwitchOn) => self.ask_enable(&owner, false, window, cx),
+            target::Ask::Fix(target::Fix::Settings) => {
+                panel_settings::open_app_page(RENDERERS_PAGE, window, cx)
+            }
+            target::Ask::Fix(target::Fix::StartAgain) => {
+                self.start_target_again(id);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The installed renderers, as the Renderer panel lists them, for the
+    /// target `id` to draw with.
+    fn open_target_picker(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let choices = target::renderer_choices(&rox_services::renderers::all());
+        let (me, id) = (cx.entity().downgrade(), id.to_string());
+
+        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
+            for choice in &choices {
+                let (me, id, picked) = (me.clone(), id.clone(), choice.owner.clone());
+                menu = menu.item(PopupMenuItem::new(choice.shown()).on_click(
+                    move |_, window, cx| {
+                        me.update(cx, |this, cx| {
+                            this.pick_target_renderer(&id, picked.clone(), window, cx)
+                        })
+                        .ok();
+                    },
+                ));
+            }
+            menu
+        });
+        self.open_menu(window.mouse_position(), menu, window, cx);
+    }
+
+    /// Names the renderer `owner` on the target `id`, in one undo step, as
+    /// the inspector's pick does. One that isn't switched on raises its card:
+    /// only the card's Switch On approves.
+    fn pick_target_renderer(
+        &mut self,
+        id: &str,
+        owner: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+
+        let (id, picked) = (id.to_string(), owner.clone());
+        self.change_keyed(
+            Some("target.owner"),
+            move |canvas| {
+                if let Some(CanvasItem {
+                    content:
+                        Content::Target {
+                            owner,
+                            config,
+                            aside,
+                            ..
+                        },
+                    ..
+                }) = canvas.find_mut(&id)
+                {
+                    crate::canvas::target_settings::switch(config, aside, owner, &picked);
+                    *owner = picked;
+                }
+            },
+            window,
+            cx,
+        );
+
+        if target::renderer_id(&owner).map(target::Readiness::of) == Some(target::Readiness::Off) {
+            self.ask_enable(&owner, true, window, cx);
+        }
+    }
+
     /// Ask the workspace for its debounced layout save. Only from the
     /// workspace's own window: a popped-out canvas isn't in its layout, and
     /// the save would record the pop-out's frame as the window's.
@@ -1823,9 +1912,14 @@ fn place(
                 };
                 let seen = canvas::on_stage(&projected.corners, at.viewport);
                 let rest = rox_canvas::rest_size(item, parent);
-                let element =
-                    draw.targets
-                        .element(item, seen.then_some(projected), rest, at.design, cx);
+                let element = draw.targets.element(
+                    item,
+                    seen.then_some(projected),
+                    rest,
+                    at.design,
+                    CanvasPanel::answer_target_prompt,
+                    cx,
+                );
 
                 layers.push(Layer {
                     depth: projected.depth,
@@ -2888,6 +2982,7 @@ impl CanvasPanel {
                     sizing: rox_canvas::TargetSize::Follow,
                     scale: 100,
                     fit: rox_canvas::ImageFit::Cover,
+                    prompt: true,
                 },
                 Some(TARGET_UNITS),
             ),

@@ -38,9 +38,9 @@ its Add Panel flyout, Save As Preset, Rename, Duplicate, Pop Out and Close, and 
 container hides the controls it floats over its slots.
 
 The menubar's Panels menu only shows while it's on, since every row in it but the first
-puts a panel into the layout. It sits right after the toggle and ahead of Application on
-the in-window bar and in the menu panel (`bar_menus` and `menu_shows` in
-`workspace.rs`), while `MENUS` keeps it last, the order the macOS bar uses. The macOS
+puts a panel into the layout. It comes last, after Workspace, on the in-window bar, in
+the menu panel and on the macOS bar (`MENUS`, `bar_menus` and `menu_shows` in
+`workspace.rs`), so the menus ahead of it don't move when it shows. The macOS
 bar can't add and drop a menu by state or grey a row, so there the Panels menu stays and,
 with design mode off, holds only Composition and a row that turns design mode on
 (`gated_items`, `workspace/native_menu.rs`). An empty window keeps its own panel list in

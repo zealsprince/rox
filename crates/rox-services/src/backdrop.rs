@@ -503,7 +503,10 @@ impl WindowBackdrop {
         self.fade_at = Instant::now();
     }
 
-    /// Paint it first, under every surface. None while there's nothing to show.
+    /// Paint it first, under every surface. With no cover and no shader it's
+    /// the solid floor: a look can make the surfaces see-through, and the
+    /// window under them is opaque to the compositor, so it has to paint
+    /// something.
     pub fn layer(
         &mut self,
         art: &Entity<NowPlayingArt>,
@@ -540,7 +543,13 @@ impl WindowBackdrop {
             .and_then(|shade| shade(window, cx));
         let baked = self.from.is_some() || self.to.is_some();
         if !baked && shade.is_none() {
-            return None;
+            return Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(palette::backdrop_floor())
+                    .into_any_element(),
+            );
         }
         let u = u * u * (3.0 - 2.0 * u);
         // The overscan only works under an overflow_hidden root.

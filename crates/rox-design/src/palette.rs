@@ -1341,6 +1341,15 @@ fn base_surface_opacity() -> f32 {
     BASE.read().unwrap().surface_opacity
 }
 
+/// The floor color, solid: what a window shows under see-through surfaces
+/// when it has no cover or shader to put there.
+pub fn backdrop_floor() -> Rgba {
+    Rgba {
+        a: 1.0,
+        ..active_role(|p| p.bg_elevated)
+    }
+}
+
 /// The floor color at the inverse of backdrop strength.
 pub fn backdrop_wash() -> Rgba {
     Rgba {

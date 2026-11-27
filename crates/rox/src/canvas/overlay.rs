@@ -2060,6 +2060,29 @@ fn target_rows(
         cx,
     );
 
+    let prompts = matches!(item.content, Content::Target { prompt: true, .. });
+    let prompt_id = item.id.clone();
+    let prompt = panel::toggle(
+        prompts,
+        move |this: &mut CanvasPanel, on, cx| {
+            let id = prompt_id.clone();
+            this.change_later(
+                "target.prompt",
+                move |canvas| {
+                    if let Some(CanvasItem {
+                        content: Content::Target { prompt, .. },
+                        ..
+                    }) = canvas.find_mut(&id)
+                    {
+                        *prompt = on;
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    );
+
     div()
         .flex()
         .flex_col()
@@ -2084,6 +2107,11 @@ fn target_rows(
             rox_i18n::t!("canvas-target-rests"),
             rox_i18n::try_translate("canvas-target-rests.description"),
             rest,
+        ))
+        .child(setting_row(
+            rox_i18n::t!("canvas-target-prompt"),
+            rox_i18n::try_translate("canvas-target-prompt.description"),
+            prompt,
         ))
         .children(target_status(panel, item, owner, cx))
         .children(target_signals(panel, owner, cx))

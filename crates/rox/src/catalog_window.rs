@@ -31,6 +31,7 @@ use rox_design::{palette, tokens};
 use rox_net::sources::catalog::{Index, Kind, Record, Summary, is_slug};
 use rox_panel_api::panel;
 use rox_panel_api::toast::Toast;
+use rox_services::backdrop::{NowPlayingArt, WindowBackdrop};
 use rox_services::plugins as host;
 
 use crate::catalog;
@@ -162,8 +163,8 @@ fn open_now(select: Option<String>, updates: bool, cx: &mut App) {
         }
     }
 
-    let player =
-        rox_panel_api::windows::front_workspace(cx).map(|(_, state)| state.player.entity_id());
+    let front = rox_panel_api::windows::front_workspace(cx)
+        .map(|(_, state)| (state.player.entity_id(), state.now_art));
     let bounds = Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx);
 
     panel::open_child_window(
@@ -171,7 +172,7 @@ fn open_now(select: Option<String>, updates: bool, cx: &mut App) {
         || rox_i18n::t!("catalog-window-title"),
         bounds,
         Some(MIN_SIZE),
-        move |window, cx| cx.new(|cx| CatalogWindow::new(player, select, updates, window, cx)),
+        move |window, cx| cx.new(|cx| CatalogWindow::new(front, select, updates, window, cx)),
     );
 }
 
@@ -549,6 +550,10 @@ enum Outcome {
 
 struct CatalogWindow {
     player: Option<EntityId>,
+    /// What paints under the surfaces, as in the Settings window: a look can
+    /// make every window's surfaces see-through.
+    art: Option<Entity<NowPlayingArt>>,
+    backdrop: WindowBackdrop,
     find: Entity<InputState>,
     listing: Option<Listing>,
     /// The listing came from this open's own refresh, not the saved copy.
@@ -575,11 +580,13 @@ struct CatalogWindow {
     polling: bool,
     focus: FocusHandle,
     _find_events: Subscription,
+    /// This window pumps its own frames, so the backdrop needs its own wake.
+    _art_changed: Option<Subscription>,
 }
 
 impl CatalogWindow {
     fn new(
-        player: Option<EntityId>,
+        front: Option<(EntityId, Entity<NowPlayingArt>)>,
         link: Option<String>,
         updates_wanted: bool,
         window: &mut Window,
@@ -600,6 +607,11 @@ impl CatalogWindow {
             },
         );
 
+        let (player, art) = front.unzip();
+        let _art_changed = art
+            .as_ref()
+            .map(|art| cx.observe(art, |_, _, cx| cx.notify()));
+
         let view = cx.weak_entity();
         cx.set_global(OpenCatalog {
             window: window.window_handle(),
@@ -608,6 +620,8 @@ impl CatalogWindow {
 
         let mut this = CatalogWindow {
             player,
+            art,
+            backdrop: WindowBackdrop::default(),
             find,
             listing: None,
             fresh: false,
@@ -630,6 +644,7 @@ impl CatalogWindow {
             polling: false,
             focus: cx.focus_handle(),
             _find_events,
+            _art_changed,
         };
 
         this.load_saved(window, cx);
@@ -1794,6 +1809,10 @@ impl Render for CatalogWindow {
 
         // Build inside the closure: anything built outside paints untinted.
         panel::window_body(player, || {
+            let backdrop = match &self.art {
+                Some(art) => self.backdrop.layer(art, window, cx),
+                None => None,
+            };
             let body: AnyElement = match &self.listing {
                 Some(listing) => div()
                     .flex_1()
@@ -1813,6 +1832,7 @@ impl Render for CatalogWindow {
                 .bg(palette::bg_elevated())
                 .text_color(palette::text())
                 .text_sm()
+                .children(backdrop)
                 .track_focus(&self.focus)
                 // The box passes an idle escape through, so this catches it anywhere.
                 .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {

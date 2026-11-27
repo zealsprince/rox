@@ -49,11 +49,12 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, BackgroundExecutor, Context, Entity, Rgba, SharedString, Task, Window, div,
-    prelude::*, px,
+    prelude::*, px, svg,
 };
 use rox_canvas::{CanvasItem, CanvasState, Content, ImageFit, Projected, TargetSize};
 use rox_design::assets::icons;
 use rox_design::palette::{self, Palette, Seed};
+use rox_design::tokens;
 use rox_frames::cover::{self, Cover};
 use rox_frames::{ANNOUNCE_MAX, Mapping, Refusal, Spec};
 use rox_plugins::process::{self, Line};
@@ -2771,14 +2772,9 @@ pub(crate) fn status_fix(status: &Status) -> Option<Fix> {
     }
 }
 
-/// The status line's button for `fix`. Switch On only raises the card: the
-/// card's own Switch On is what approves.
-pub(crate) fn fix_button<P: 'static>(
-    fix: Fix,
-    press: impl Fn(&mut P, Fix, &mut Window, &mut Context<P>) + 'static,
-    cx: &mut Context<P>,
-) -> AnyElement {
-    let (label, icon, key) = match fix {
+/// A fix's label, icon and element key.
+fn fix_words(fix: Fix) -> (SharedString, &'static str, &'static str) {
+    match fix {
         Fix::SwitchOn => (
             rox_i18n::t!("canvas-target-switch-on"),
             icons::POWER,
@@ -2794,7 +2790,17 @@ pub(crate) fn fix_button<P: 'static>(
             icons::REFRESH_CW,
             "canvas-target-start-again",
         ),
-    };
+    }
+}
+
+/// The status line's button for `fix`. Switch On only raises the card: the
+/// card's own Switch On is what approves.
+pub(crate) fn fix_button<P: 'static>(
+    fix: Fix,
+    press: impl Fn(&mut P, Fix, &mut Window, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> AnyElement {
+    let (label, icon, key) = fix_words(fix);
 
     rox_panel_kit::ui::small_button(
         label,
@@ -2804,6 +2810,173 @@ pub(crate) fn fix_button<P: 'static>(
     )
     .keyed(key)
     .into_any_element()
+}
+
+/// What an empty target offers: a renderer to pick, or the fix for what
+/// stopped the one it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ask {
+    Pick,
+    Fix(Fix),
+}
+
+/// The line a target with no picture shows in its place, and what it
+/// offers. The Renderer panel and a canvas target outside design mode say
+/// the same thing.
+#[derive(Clone, Debug)]
+pub(crate) struct Prompt {
+    pub(crate) words: SharedString,
+    pub(crate) ask: Option<Ask>,
+}
+
+/// None while it's starting, running or paused: its picture is on the way,
+/// or the last one holds.
+pub(crate) fn prompt_for(status: Option<&Status>, installed: bool) -> Option<Prompt> {
+    match status {
+        None if !installed => Some(Prompt {
+            words: rox_i18n::t!("canvas-target-panel-none"),
+            ask: Some(Ask::Fix(Fix::Settings)),
+        }),
+        None => Some(Prompt {
+            words: rox_i18n::t!("canvas-target-panel-empty"),
+            ask: Some(Ask::Pick),
+        }),
+        Some(status @ (Status::Stopped(_) | Status::Starting(Some(_)))) => Some(Prompt {
+            words: status_words(status),
+            ask: status_fix(status).map(Ask::Fix),
+        }),
+        Some(_) => None,
+    }
+}
+
+impl Ask {
+    /// What the prompt's press does, worded as its button.
+    fn words(self) -> (SharedString, &'static str, &'static str) {
+        match self {
+            Ask::Pick => (
+                rox_i18n::t!("canvas-target-panel-pick"),
+                icons::MONITOR_PLAY,
+                "canvas-target-pick",
+            ),
+            Ask::Fix(fix) => fix_words(fix),
+        }
+    }
+}
+
+/// The prompt's button for `ask`. Pick a Renderer opens the list, and every
+/// fix is [`fix_button`]'s: Switch On only raises the card.
+pub(crate) fn ask_button<P: 'static>(
+    ask: Ask,
+    press: impl Fn(&mut P, Ask, &mut Window, &mut Context<P>) + 'static,
+    cx: &mut Context<P>,
+) -> AnyElement {
+    let (label, icon, key) = ask.words();
+
+    rox_panel_kit::ui::small_button(
+        label,
+        icon,
+        false,
+        cx.listener(move |this, _, window, cx| press(this, ask, window, cx)),
+    )
+    .keyed(key)
+    .into_any_element()
+}
+
+/// Under this height the prompt drops its icon, so the line and the press
+/// still fit.
+const PROMPT_ICON_MIN: f32 = 140.;
+
+/// The prompt card's widest, so a line in a wide box stays a short one.
+const PROMPT_MAX_W: f32 = 320.;
+
+/// An empty target's prompt outside design mode, centred in the box its
+/// picture would fill. A tilted target gets the box around its projected
+/// corners: text can't be drawn in perspective. The whole card is the
+/// press, so a box too narrow for the button's words still takes one.
+fn prompt_box(
+    corners: &[[f32; 2]; 4],
+    prompt: Prompt,
+    press: Option<impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static>,
+) -> AnyElement {
+    let (origin, extent) = bbox(corners);
+    let action = prompt.ask.map(Ask::words);
+
+    // A card under the line, so it reads on glass as well as on a flat
+    // stage. The menu surface ignores the look's surface opacity.
+    let card = div()
+        .id("canvas-target-prompt")
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(tokens::SPACE_XS)
+        // A set width, so a long line wraps before the card's height is
+        // worked out rather than after.
+        .w(px((extent[0] - 16.).clamp(0., PROMPT_MAX_W)))
+        .px(tokens::SPACE_MD)
+        .py(tokens::SPACE_SM)
+        .rounded(tokens::RADIUS)
+        .bg(palette::alpha(palette::bg_menu_opaque(), 0xd8))
+        .border_1()
+        .border_color(palette::border())
+        .when(extent[1] >= PROMPT_ICON_MIN, |d| {
+            d.child(
+                svg()
+                    .path(icons::MONITOR_PLAY)
+                    .size(px(20.))
+                    .flex_none()
+                    .text_color(palette::text_muted()),
+            )
+        })
+        .child(
+            div()
+                .w_full()
+                .text_sm()
+                .text_center()
+                .text_color(palette::text_muted())
+                .child(prompt.words),
+        )
+        .when_some(action, |d, (label, icon, _)| {
+            d.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(tokens::SPACE_XS)
+                    .text_xs()
+                    .text_color(palette::accent())
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(12.))
+                            .flex_none()
+                            .text_color(palette::accent()),
+                    )
+                    .child(div().min_w_0().text_center().child(label)),
+            )
+        })
+        .when_some(press, |d, press| {
+            d.cursor_pointer()
+                .hover(|d| d.bg(palette::bg_menu_opaque()))
+                .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+                    cx.stop_propagation();
+                    press(event, window, cx);
+                })
+        });
+
+    div()
+        .absolute()
+        .left(px(origin[0]))
+        .top(px(origin[1]))
+        .w(px(extent[0]))
+        .h(px(extent[1]))
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(card)
+        .into_any_element()
 }
 
 /// The renderer an owner names, if it names one.
@@ -3394,6 +3567,9 @@ impl Reading {
 pub(crate) struct Targets {
     shown: HashMap<String, Shown>,
     reading: Reading,
+    /// Whether any renderer is installed, as of a plugin generation: the
+    /// list is read off disk, and an empty target's prompt asks every frame.
+    installed: Option<(u64, bool)>,
     /// The window the canvas left and the renderers its targets ran, until
     /// it's drawn again.
     left: Option<(gpui::WindowId, Vec<String>)>,
@@ -3466,31 +3642,54 @@ impl Targets {
         }
     }
 
-    /// The item's elements this frame: its newest frame on `face`, or in
-    /// design mode its box with the renderer's name while it has none. None
-    /// for a face off the stage, which counts as not drawn. While its
+    /// Whether any renderer is installed, read again only when the plugins
+    /// move.
+    fn any_installed(&mut self) -> bool {
+        let generation = rox_services::plugins::generation();
+        match self.installed {
+            Some((seen, installed)) if seen == generation => installed,
+            _ => {
+                let installed = !renderers::all().is_empty();
+                self.installed = Some((generation, installed));
+                installed
+            }
+        }
+    }
+
+    /// The item's elements this frame: its newest frame on `face`, or while
+    /// it has none, in design mode its box with the renderer's name, and
+    /// outside it the prompt that says why, unless the item turns that off.
+    /// None for a face off the stage, which counts as not drawn. While its
     /// supervisor waits for a GPU texture the view paints too, since only
     /// its paint can make one.
     ///
     /// `rest` is the item's size at rest in layout pixels, which a following
-    /// target draws at in device pixels.
+    /// target draws at in device pixels. `press` answers the prompt's button
+    /// for the item with this id.
     pub(crate) fn element<V: 'static>(
         &mut self,
         item: &CanvasItem,
         face: Option<Projected>,
         rest: [f32; 2],
         design: bool,
+        press: impl Fn(&mut V, &str, Ask, &mut Window, &mut Context<V>) + 'static,
         cx: &mut Context<V>,
     ) -> Vec<AnyElement> {
         let Some(key) = key_of(&item.content) else {
             return Vec::new();
         };
         let Content::Target {
-            rests, fit, config, ..
+            rests,
+            fit,
+            config,
+            prompt,
+            ..
         } = &item.content
         else {
             return Vec::new();
         };
+        let picked = renderer_id(&key.owner).is_some();
+        let installed = !design && *prompt && !picked && self.any_installed();
         let device = if self.device > 0. { self.device } else { 1. };
         let ceiling = match key.size {
             Sizing::Follow(percent) => ceiling(cx, device, percent),
@@ -3533,6 +3732,24 @@ impl Targets {
                 .or_else(|| renderer_id(&key.owner).map(str::to_string))
                 .unwrap_or_default();
             elements.push(empty_box(&face.corners, name));
+            return elements;
+        }
+
+        if !*prompt {
+            return elements;
+        }
+
+        // As the inspector reads it: a picked renderer with no session yet
+        // is paused until it's drawn.
+        let status = picked.then(|| shown.target.as_ref().map_or(Status::Paused, Target::status));
+        if let Some(prompt) = prompt_for(status.as_ref(), installed) {
+            let id = item.id.clone();
+            let press = prompt.ask.map(|ask| {
+                cx.listener(move |this: &mut V, _: &gpui::MouseDownEvent, window, cx| {
+                    press(this, &id, ask, window, cx)
+                })
+            });
+            elements.push(prompt_box(&face.corners, prompt, press));
         }
         elements
     }
@@ -5798,5 +6015,47 @@ mod tests {
         assert_eq!(renderer_id("plugin:"), None);
         assert_eq!(renderer_id("bars"), None);
         assert_eq!(renderer_id(""), None);
+    }
+
+    #[test]
+    fn an_empty_target_says_why_and_offers_the_fix() {
+        let none = prompt_for(None, false).expect("nothing installed says so");
+        assert_eq!(none.words, rox_i18n::t!("canvas-target-panel-none"));
+        assert_eq!(none.ask, Some(Ask::Fix(Fix::Settings)));
+
+        let unpicked = prompt_for(None, true).expect("nothing picked says so");
+        assert_eq!(unpicked.words, rox_i18n::t!("canvas-target-panel-empty"));
+        assert_eq!(unpicked.ask, Some(Ask::Pick));
+
+        // Switched off or never approved, it only raises the card.
+        for refused in [Refused::Off, Refused::NotApproved, Refused::Tier] {
+            let stopped = Status::Stopped(Some(refused));
+            let prompt = prompt_for(Some(&stopped), true).expect("a stopped one says so");
+            assert_eq!(prompt.words, status_words(&stopped));
+            assert_eq!(prompt.ask, Some(Ask::Fix(Fix::SwitchOn)));
+        }
+
+        let missing = Status::Stopped(Some(Refused::Missing));
+        let prompt = prompt_for(Some(&missing), true).expect("a missing one says so");
+        assert_eq!(prompt.ask, Some(Ask::Fix(Fix::Settings)));
+
+        let quit = Status::Stopped(Some(Refused::Stopped));
+        let prompt = prompt_for(Some(&quit), true).expect("one that quit says so");
+        assert_eq!(prompt.ask, Some(Ask::Fix(Fix::StartAgain)));
+
+        // Retrying on its own: the line, and nothing to press.
+        let retrying = Status::Starting(Some("no python3".into()));
+        let prompt = prompt_for(Some(&retrying), true).expect("a retry says why");
+        assert_eq!(prompt.ask, None);
+
+        // A picture on the way, or the last one held, isn't covered up.
+        for status in [
+            Status::Starting(None),
+            Status::Running,
+            Status::Paused,
+            Status::Resting,
+        ] {
+            assert!(prompt_for(Some(&status), true).is_none(), "{status:?}");
+        }
     }
 }

@@ -653,6 +653,12 @@ pub enum Content {
         /// reads as stretch, the way a target drew before the choice.
         #[serde(default = "stretch", skip_serializing_if = "is_stretch")]
         fit: ImageFit,
+        /// Outside design mode, while it has no picture, it says why in its
+        /// box and offers the fix: a renderer to pick, or a stopped one's
+        /// button. Off leaves a target that's meant to vanish when empty
+        /// blank. Left out reads as on.
+        #[serde(default = "prompts", skip_serializing_if = "is_prompting")]
+        prompt: bool,
     },
     /// A kind this build doesn't know, or a known kind whose body didn't
     /// parse. Serializes back to the value it was read from.
@@ -683,6 +689,14 @@ fn full_scale() -> u32 {
 
 fn is_full_scale(scale: &u32) -> bool {
     *scale == 100
+}
+
+fn prompts() -> bool {
+    true
+}
+
+fn is_prompting(prompt: &bool) -> bool {
+    *prompt
 }
 
 fn stretch() -> ImageFit {
@@ -1257,6 +1271,7 @@ mod tests {
                 sizing: TargetSize::Fixed,
                 scale: 100,
                 fit: ImageFit::Stretch,
+                prompt: true,
             },
             ..CanvasItem::default()
         }
@@ -1297,6 +1312,19 @@ mod tests {
         let written = serde_json::to_value(&calm).unwrap();
         assert_eq!(written["content"]["rests"], json!(true));
         assert_eq!(serde_json::from_value::<CanvasItem>(written).unwrap(), calm);
+
+        // The empty prompt is on unless written off, and only off is written.
+        assert!(!text.contains("prompt"), "{text}");
+        let mut blank = target("blank", "", 64, 32);
+        if let Content::Target { prompt, .. } = &mut blank.content {
+            *prompt = false;
+        }
+        let written = serde_json::to_value(&blank).unwrap();
+        assert_eq!(written["content"]["prompt"], json!(false));
+        assert_eq!(
+            serde_json::from_value::<CanvasItem>(written).unwrap(),
+            blank
+        );
     }
 
     #[test]

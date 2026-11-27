@@ -54,14 +54,48 @@ impl SettingsWindow {
             .text_color(palette::text_muted())
             .child(rox_i18n::t!("settings-plugins-renderers-intro"));
 
-        let table = div().flex().flex_col().children(rows).when(empty, |d| {
-            d.child(
-                div()
-                    .py(tokens::SPACE_XS)
-                    .text_color(palette::text_muted())
-                    .child(rox_i18n::t!("settings-plugins-renderers-empty")),
+        // What every renderer runs as here, said once over the list. The
+        // rows mark only what differs, and the card holds the full lines.
+        let support = rox_plugins::sandbox::support();
+        let lock = match support {
+            rox_plugins::sandbox::Support::Sandbox { .. } => icons::LOCK,
+            rox_plugins::sandbox::Support::Unavailable(_) => icons::LOCK_OPEN,
+        };
+        let sandbox = div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .gap(tokens::SPACE_SM)
+            .py(tokens::SPACE_XS)
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(
+                svg()
+                    .path(lock)
+                    .size(px(14.))
+                    .flex_none()
+                    .text_color(palette::text_muted()),
             )
-        });
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(plugins_page::sandbox_line(&support)),
+            );
+
+        let table = div()
+            .flex()
+            .flex_col()
+            .child(sandbox)
+            .children(rows)
+            .when(empty, |d| {
+                d.child(
+                    div()
+                        .py(tokens::SPACE_XS)
+                        .text_color(palette::text_muted())
+                        .child(rox_i18n::t!("settings-plugins-renderers-empty")),
+                )
+            });
 
         PageBody::new().section(Section::new(
             q,

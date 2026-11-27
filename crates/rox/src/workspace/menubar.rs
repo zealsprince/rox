@@ -844,7 +844,7 @@ impl Workspace {
     }
 
     /// Design mode's switch at the bar's start. Lit while on, which is also
-    /// when the Panels menu stands beside it.
+    /// when the Panels menu shows at the end of the row.
     fn design_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let on = settings::design_mode();
 
@@ -2549,17 +2549,22 @@ mod nav_tests {
     }
 
     #[test]
-    fn the_panels_menu_leads_the_bar_only_in_design_mode() {
+    fn the_panels_menu_ends_the_bar_only_in_design_mode() {
         assert_eq!(MENUS[PANELS_MENU].label, "menu-panels");
+        assert_eq!(PANELS_MENU, MENUS.len() - 1);
 
         let order = bar_menus();
         if settings::design_mode() {
-            assert_eq!(order.first(), Some(&PANELS_MENU));
+            assert_eq!(order.last(), Some(&PANELS_MENU));
             assert_eq!(order.len(), MENUS.len());
         } else {
             assert!(!order.contains(&PANELS_MENU));
             assert_eq!(order.len(), MENUS.len() - 1);
         }
+
+        // The menus ahead of it hold their places either way.
+        let rest: Vec<usize> = order.into_iter().filter(|&i| i != PANELS_MENU).collect();
+        assert_eq!(rest, (0..PANELS_MENU).collect::<Vec<_>>());
     }
 
     #[test]

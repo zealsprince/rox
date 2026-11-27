@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::place::{Position, no_limits};
+use crate::stack::Stack;
 
 pub const CANVAS_VERSION: u32 = 1;
 
@@ -157,6 +158,14 @@ pub struct CanvasItem {
     /// app's default, and 0 cuts at once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ease: Option<u32>,
+    /// On a group: its children laid out one after another along an axis.
+    /// Ignored on anything else. Lenient: one that doesn't parse reads as
+    /// none.
+    #[serde(
+        deserialize_with = "crate::stack::lenient_stack",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stack: Option<Stack>,
     pub content: Content,
 }
 
@@ -177,6 +186,7 @@ impl Default for CanvasItem {
             pressed: None,
             hit: Hit::Box,
             ease: None,
+            stack: None,
             content: Content::default(),
         }
     }
@@ -438,12 +448,19 @@ impl Sway {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Saved as `{"units": 48}`, `{"stage": 0.5}`, or both keys for a mixed
+/// length (see place.rs).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Length {
     Units(f32),
     /// A fraction of the parent's box: the stage, or the group.
     Stage(f32),
+    /// A fraction of the parent's box plus units that don't stretch with
+    /// it, such as a pane and its fixed shadow margin.
+    Mixed {
+        stage: f32,
+        units: f32,
+    },
 }
 
 impl Length {
@@ -452,6 +469,7 @@ impl Length {
         match self {
             Length::Units(n) => n,
             Length::Stage(f) => f * parent_axis,
+            Length::Mixed { stage, units } => stage * parent_axis + units,
         }
     }
 }

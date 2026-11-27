@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use rox_canvas::{
     Anchor, Camera, CanvasItem, CanvasState, Content, Frame, Length, Live, MAX_DEPTH, Mat4, Place,
-    Position, Viewport, child_frame, paint_order, project, unproject_delta,
+    Position, Stack, Viewport, child_frame, child_frames, paint_order, project, stack,
+    unproject_delta,
 };
 
 /// How far an edge or a center is pulled to a snap line, in pixels.
@@ -177,23 +178,48 @@ pub(crate) fn siblings<'a>(items: &'a [CanvasItem], id: &str) -> Option<&'a [Can
     })
 }
 
-/// The frame `id` is placed in: the stage's, or its group's.
+/// The frame `id` is placed in: the stage's, or its group's, with its cell
+/// when the group stacks.
 pub(crate) fn parent_frame(canvas: &CanvasState, id: &str, viewport: Viewport) -> Option<Frame> {
+    let (frames, ix) = sibling_frames(canvas, id, viewport)?;
+    frames.get(ix).copied()
+}
+
+/// The frame each item in the list holding `id` is placed in, and where
+/// `id` is in it. A stack lays its children out as the editor draws them:
+/// each takes its room unless it's switched off, whatever its case.
+pub(crate) fn sibling_frames(
+    canvas: &CanvasState,
+    id: &str,
+    viewport: Viewport,
+) -> Option<(Vec<Frame>, usize)> {
     let path = path_to(&canvas.items, id)?;
-    let mut frame = Frame::stage(&canvas.stage, viewport);
     let mut items = canvas.items.as_slice();
+    let mut frames = vec![Frame::stage(&canvas.stage, viewport); items.len()];
 
-    for group_id in &path[..path.len() - 1] {
-        let group = items.iter().find(|item| &item.id == group_id)?;
-        frame = child_frame(group, &frame, &Live::default());
+    for (step, step_id) in path.iter().enumerate() {
+        let ix = items.iter().position(|item| &item.id == step_id)?;
+        if step + 1 == path.len() {
+            return Some((frames, ix));
+        }
 
+        let group = &items[ix];
         let Content::Group { items: children } = &group.content else {
             return None;
         };
+        let frame = child_frame(group, &frames[ix], &Live::default());
+        frames = child_frames(group, &frame, children, stack::shown);
         items = children;
     }
 
-    Some(frame)
+    None
+}
+
+/// The stack laying out the list `id` is in, if its group has one.
+pub(crate) fn stack_of(canvas: &CanvasState, id: &str) -> Option<Stack> {
+    let mut path = path_to(&canvas.items, id)?;
+    path.pop();
+    canvas.find(path.last()?)?.stack
 }
 
 /// The frame a group hands its children.
@@ -299,7 +325,8 @@ impl Edges {
 /// A flat item's place after dragging `edges` of its screen box by `delta`.
 /// The sides not dragged stay where they were, so the center moves too. Each
 /// length keeps its unit, and the box never shrinks under `floor` pixels. A
-/// locked shape keeps its shape ([`locked_box`]).
+/// locked shape keeps its shape ([`locked_box`]). In a stack only the size
+/// changes: the stack moves the box to fit it, and the offset stays.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resized(
     item: &CanvasItem,
@@ -313,6 +340,9 @@ pub(crate) fn resized(
     flat: bool,
 ) -> Place {
     if let Some((next, target)) = locked_box(item, parent, start, edges, delta, floor) {
+        if parent.cell.is_some() {
+            return next.place;
+        }
         return centred(next, parent, camera, viewport, flat, target);
     }
 
@@ -353,16 +383,22 @@ pub(crate) fn resized(
             resized_length(item.place.size[axis], units[axis], parent.size[axis]);
     }
 
+    if parent.cell.is_some() {
+        return next.place;
+    }
+
     let target = [(left + right) / 2., (top + bottom) / 2.];
     centred(next, parent, camera, viewport, flat, target)
 }
 
 /// `units` long, a fraction where the side was one and the parent has a
-/// length to divide by.
+/// length to divide by. A mixed side keeps its fraction and its units take
+/// the change.
 fn resized_length(length: Length, units: f32, parent_axis: f32) -> Length {
     match length {
         Length::Stage(_) if parent_axis > 0. => Length::Stage(units / parent_axis),
-        _ => Length::Units(units),
+        Length::Mixed { .. } => length.with_units(units, parent_axis),
+        Length::Stage(_) | Length::Units(_) => Length::Units(units),
     }
 }
 
@@ -503,7 +539,8 @@ fn held_to_limits(place: &Place, axis: usize, dragged: [bool; 2], ends: [&mut f3
     }
 }
 
-/// The same place measured from another anchor, so the item stays put.
+/// The same place measured from another anchor, so the item stays put. In
+/// a stack the anchor doesn't place the box, so only it changes.
 pub(crate) fn with_anchor(item: &CanvasItem, parent: &Frame, anchor: Anchor) -> Place {
     let size = item.place.size_in(parent.size);
     let from = item.place.anchor.fraction();
@@ -513,21 +550,16 @@ pub(crate) fn with_anchor(item: &CanvasItem, parent: &Frame, anchor: Anchor) -> 
     // anchor's own offset into the box, which moves the other way.
     let mut place = item.place;
     place.anchor = anchor;
+    if parent.cell.is_some() {
+        return place;
+    }
+
     for axis in 0..2 {
         let by = (from[axis] - to[axis]) * (parent.size[axis] - size[axis]);
         place.position.xy[axis] = place.position.xy[axis].shifted(by, parent.size[axis]);
     }
 
     place
-}
-
-/// A length switched to the other unit at the same size.
-pub(crate) fn other_unit(length: Length, parent_axis: f32) -> Length {
-    match length {
-        Length::Units(n) if parent_axis > 0. => Length::Stage(n / parent_axis),
-        Length::Units(n) => Length::Units(n),
-        Length::Stage(f) => Length::Units(f * parent_axis),
-    }
 }
 
 // ── Turning ──
@@ -707,7 +739,9 @@ pub(crate) fn group_many(
         return group(canvas, first, levels_left);
     }
 
-    let parent = parent_frame(canvas, first, viewport)?;
+    let (frames, _) = sibling_frames(canvas, first, viewport)?;
+    let parent = frames.first()?.without_cell();
+    let parent_stacks = frames.first()?.cell.is_some();
     let group_id = canvas.fresh_id("group");
     let before = canvas.clone();
 
@@ -719,8 +753,9 @@ pub(crate) fn group_many(
 
     let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
     let mut z = f32::NEG_INFINITY;
-    for item in list.iter().filter(|item| picked(item)) {
-        let b = super::align::drawn_box(&item.place, parent.size, is_flat(&item.content));
+    for (item, frame) in list.iter().zip(&frames).filter(|(item, _)| picked(item)) {
+        let b =
+            super::align::drawn_box(&item.place, parent.size, frame.cell, is_flat(&item.content));
         lo = [lo[0].min(b[0]), lo[1].min(b[1])];
         hi = [hi[0].max(b[0] + b[2]), hi[1].max(b[1] + b[3])];
         z = z.max(item.place.position.z);
@@ -739,15 +774,22 @@ pub(crate) fn group_many(
     let inner = child_frame(&wrapper, &parent, &Live::default());
 
     let at = list.iter().position(picked)?;
-    let (children, mut kept): (Vec<CanvasItem>, Vec<CanvasItem>) =
-        std::mem::take(list).into_iter().partition(picked);
+    let placed: Vec<(CanvasItem, Frame)> = std::mem::take(list).into_iter().zip(frames).collect();
+    let (children, kept): (Vec<_>, Vec<_>) = placed.into_iter().partition(|(item, _)| picked(item));
     let children = children
         .into_iter()
-        .map(|mut child| {
-            child.place = reexpress(&child, &parent, &inner);
+        .map(|(mut child, from)| {
+            child.place = reexpress(&child, &from, &inner);
             child
         })
         .collect();
+    let mut kept: Vec<CanvasItem> = kept.into_iter().map(|(item, _)| item).collect();
+
+    // In a stack the new group takes the first one's slot, and the stack
+    // places it from there.
+    if parent_stacks {
+        zero_offsets(&mut wrapper.place);
+    }
     wrapper.content = Content::Group { items: children };
     kept.insert(at, wrapper);
     *list = kept;
@@ -769,6 +811,15 @@ pub(crate) fn ungroup(canvas: &mut CanvasState, id: &str, viewport: Viewport) ->
     let Some(inner) = group_frame(canvas, id, viewport) else {
         return false;
     };
+    let froms = match canvas.find(id) {
+        Some(
+            group @ CanvasItem {
+                content: Content::Group { items },
+                ..
+            },
+        ) => child_frames(group, &inner, items, stack::shown),
+        _ => return false,
+    };
 
     let Some((list, ix)) = siblings_mut(&mut canvas.items, id) else {
         return false;
@@ -779,8 +830,13 @@ pub(crate) fn ungroup(canvas: &mut CanvasState, id: &str, viewport: Viewport) ->
         return false;
     };
 
-    let lifted = items.into_iter().map(|mut child| {
-        child.place = reexpress(&child, &inner, &parent);
+    // Lifted into a stack, the stack places them.
+    let into_stack = parent.cell.is_some();
+    let lifted = items.into_iter().zip(froms).map(|(mut child, from)| {
+        child.place = reexpress(&child, &from, &parent.without_cell());
+        if into_stack {
+            zero_offsets(&mut child.place);
+        }
         child.opacity *= group.opacity;
         child.visible &= group.visible;
         child.locked |= group.locked;
@@ -820,11 +876,18 @@ pub(crate) fn move_into(
         None => Frame::stage(&canvas.stage, viewport),
     };
 
+    let into_stack = into
+        .and_then(|into| canvas.find(into))
+        .is_some_and(|group| group.stack.is_some());
+
     let before = canvas.clone();
     let Some(mut item) = remove(canvas, id) else {
         return false;
     };
     item.place = reexpress(&item, &from, &to);
+    if into_stack {
+        zero_offsets(&mut item.place);
+    }
 
     let list = match into {
         Some(into) => match canvas.find_mut(into).map(|group| &mut group.content) {
@@ -885,6 +948,7 @@ pub(crate) fn reexpress(item: &CanvasItem, from: &Frame, to: &Frame) -> Place {
     let length = |old: Length, units: f32, axis: usize| match old {
         Length::Stage(_) if to.size[axis] > 0. => Length::Stage(units / to.size[axis]),
         Length::Stage(_) => Length::Units(units),
+        Length::Mixed { .. } => old.with_units(units, to.size[axis]),
         Length::Units(_) => Length::Units(units),
     };
 
@@ -958,6 +1022,165 @@ fn invert(m: &Mat4) -> Option<Mat4> {
     Some(out)
 }
 
+// ── Stacks ──
+
+/// x and y back to zero in the unit each has, so the stack alone places the
+/// item. Depth stays.
+fn zero_offsets(place: &mut Place) {
+    for axis in &mut place.position.xy {
+        *axis = axis.zeroed();
+    }
+}
+
+/// Group `id` stacking its children by `stack`, or not for None. Switching
+/// a stack on lays the children out from their cells, their x and y back to
+/// zero. Switching it off keeps each one where the stack had put it. A
+/// change to a stack already on moves nothing by hand. False when `id`
+/// isn't a group.
+pub(crate) fn set_stack(
+    canvas: &mut CanvasState,
+    id: &str,
+    stack: Option<Stack>,
+    viewport: Viewport,
+) -> bool {
+    let inner = group_frame(canvas, id, viewport);
+    let Some(group) = canvas.find_mut(id) else {
+        return false;
+    };
+    let was = group.stack;
+    let Content::Group { items } = &group.content else {
+        return false;
+    };
+
+    match (was, stack, inner) {
+        (None, Some(_), _) => {
+            group.stack = stack;
+            if let Content::Group { items } = &mut group.content {
+                items
+                    .iter_mut()
+                    .for_each(|child| zero_offsets(&mut child.place));
+            }
+        }
+
+        (Some(_), None, Some(inner)) => {
+            let froms = child_frames(group, &inner, items, stack::shown);
+            let places: Vec<Place> = items
+                .iter()
+                .zip(&froms)
+                .map(|(child, from)| reexpress(child, from, &inner))
+                .collect();
+
+            group.stack = None;
+            if let Content::Group { items } = &mut group.content {
+                for (child, place) in items.iter_mut().zip(places) {
+                    child.place = place;
+                }
+            }
+        }
+
+        _ => group.stack = stack,
+    }
+
+    true
+}
+
+/// Where a stacked child dragged along the stack's axis goes in its list.
+/// `middles` are each sibling's middle along the axis as the drag started,
+/// None for one that takes no room, and `moved` is where the dragged one's
+/// middle is now. It goes just ahead of the first sibling with room it
+/// hasn't passed, and stays at `index` while it passes none it didn't
+/// already lead or trail, so a sibling with no room never trades places.
+pub(crate) fn stack_slot(middles: &[Option<f32>], index: usize, moved: f32) -> usize {
+    let roomed = |ix: usize| middles[ix].is_some();
+    let passed = (0..middles.len())
+        .filter(|&ix| ix != index && middles[ix].is_some_and(|middle| middle < moved))
+        .count();
+    if passed == (0..index).filter(|&ix| roomed(ix)).count() {
+        return index;
+    }
+
+    let others: Vec<usize> = (0..middles.len()).filter(|&ix| ix != index).collect();
+    let mut seen = 0;
+    for (k, &ix) in others.iter().enumerate() {
+        if !roomed(ix) {
+            continue;
+        }
+        if seen == passed {
+            return k;
+        }
+        seen += 1;
+    }
+
+    others.len()
+}
+
+/// A move on a stacked child, as it stood at the press.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StackDrag {
+    /// The axis the stack runs along, 0 for x.
+    pub along: usize,
+    /// Where the dragged one sits in its list, or None when it carries
+    /// others: a set doesn't reorder, it only moves across the axis.
+    pub index: Option<usize>,
+    /// Each sibling's middle along the axis, None for one with no room.
+    pub middles: Vec<Option<f32>>,
+}
+
+impl StackDrag {
+    /// The press on `id`, when the list it's in stacks.
+    pub(crate) fn at(
+        canvas: &CanvasState,
+        id: &str,
+        viewport: Viewport,
+        alone: bool,
+    ) -> Option<StackDrag> {
+        let along = stack_of(canvas, id)?.axis.along();
+        let (frames, index) = sibling_frames(canvas, id, viewport)?;
+        let siblings = siblings(&canvas.items, id)?;
+
+        let middles = siblings
+            .iter()
+            .zip(&frames)
+            .map(|(item, frame)| {
+                let cell = frame.cell?;
+                let size = item.place.size_in(frame.size);
+                let offset = item.place.position.xy[along].resolve(frame.size[along]);
+                (stack::shown(item) > 0.).then_some(cell[along] + offset + size[along] / 2.)
+            })
+            .collect();
+
+        Some(StackDrag {
+            along,
+            index: alone.then_some(index),
+            middles,
+        })
+    }
+
+    /// The list index a drag that carried the item's middle `by` units along
+    /// the axis asks for, or None for a set.
+    pub(crate) fn slot(&self, by: f32) -> Option<usize> {
+        let index = self.index?;
+        let start = self.middles.get(index).copied().flatten()?;
+        Some(stack_slot(&self.middles, index, start + by))
+    }
+}
+
+/// Moves `id` to `to` in the list holding it, the others keeping their
+/// order. False when it's already there or isn't found.
+pub(crate) fn reorder(canvas: &mut CanvasState, id: &str, to: usize) -> bool {
+    let Some((list, ix)) = siblings_mut(&mut canvas.items, id) else {
+        return false;
+    };
+    let to = to.min(list.len() - 1);
+    if to == ix {
+        return false;
+    }
+
+    let item = list.remove(ix);
+    list.insert(to, item);
+    true
+}
+
 /// How many more group levels a canvas `level` deep can hold.
 pub(crate) fn levels_left(level: usize) -> usize {
     MAX_DEPTH.saturating_sub(level)
@@ -966,7 +1189,7 @@ pub(crate) fn levels_left(level: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rox_canvas::{Projected, Stage};
+    use rox_canvas::{LengthKind, Projected, Stage};
     use serde_json::json;
 
     const VIEW: Viewport = Viewport {
@@ -1373,8 +1596,15 @@ mod tests {
         }
 
         let mut switched = item.clone();
-        switched.place.size[0] = other_unit(item.place.size[0], stage().size[0]);
+        switched.place.size[0] = item.place.size[0].with_kind(LengthKind::Stage, stage().size[0]);
         assert!(matches!(switched.place.size[0], Length::Stage(_)));
+        assert!(same_corners(&before, &put(&switched, &stage())));
+
+        switched.place.size[0] =
+            switched.place.size[0].with_kind(LengthKind::Mixed, stage().size[0]);
+        switched.place.position.xy[1] =
+            item.place.position.xy[1].with_kind(LengthKind::Mixed, stage().size[1]);
+        assert!(matches!(switched.place.size[0], Length::Mixed { .. }));
         assert!(same_corners(&before, &put(&switched, &stage())));
     }
 
@@ -1855,5 +2085,280 @@ mod tests {
 
         undo.record(at(0), at(9), None, now);
         assert!(!undo.can_redo());
+    }
+
+    // ── Mixed lengths and stacks ──
+
+    fn mixed(stage: f32, units: f32) -> Length {
+        Length::Mixed { stage, units }
+    }
+
+    #[test]
+    fn a_drag_on_a_mixed_axis_moves_its_units_and_keeps_its_fraction() {
+        let mut item = image("a", [0.; 3], [200., 100.]);
+        item.place.anchor = Anchor::TopLeft;
+        item.place.position.xy = [mixed(-0.25, -17.), Length::Units(40.)];
+        let before = center(&put(&item, &stage()));
+
+        let position = moved(
+            &item,
+            &stage(),
+            &camera(),
+            VIEW,
+            item.place.position,
+            [160., 30.],
+            false,
+        );
+
+        let Length::Mixed { stage: f, units } = position.xy[0] else {
+            panic!("still mixed: {position:?}");
+        };
+        assert_eq!(f, -0.25, "the fraction stays");
+        assert!(near(units, -17. + 160.), "{units}");
+
+        item.place.position = position;
+        let after = center(&put(&item, &stage()));
+        assert!(near(after[0] - before[0], 160.), "{before:?} {after:?}");
+
+        // A nudge lands on the units the same way.
+        let nudged = position.shifted([-10., 0.], stage().size);
+        assert!(
+            matches!(nudged.xy[0], Length::Mixed { stage: f, units: u } if f == -0.25 && near(u, units - 10.)),
+            "{nudged:?}"
+        );
+    }
+
+    #[test]
+    fn a_resize_on_a_mixed_side_moves_its_units() {
+        let mut item = grid("g", [0.; 3], [mixed(1., 48.), Length::Units(300.)]);
+        item.place.anchor = Anchor::TopLeft;
+        let shown = put(&item, &stage());
+        let (origin, extent) = super::super::bbox(&shown.corners);
+        let start = [
+            origin[0],
+            origin[1],
+            origin[0] + extent[0],
+            origin[1] + extent[1],
+        ];
+
+        let edges = Edges {
+            right: true,
+            ..Edges::default()
+        };
+        let place = resized(
+            &item,
+            &stage(),
+            &camera(),
+            VIEW,
+            start,
+            edges,
+            [-48., 0.],
+            [10., 10.],
+            true,
+        );
+        assert_eq!(place.size[0], mixed(1., 0.));
+        assert_eq!(place.size[1], Length::Units(300.));
+    }
+
+    /// A card stacking a square cover and two lines down its middle.
+    fn card() -> CanvasState {
+        let cover = {
+            let mut cover = image("cover", [0.; 3], [0., 0.]);
+            cover.place.size = [Length::Stage(1.), Length::Stage(0.6)];
+            cover.place.aspect = Some(1.);
+            cover
+        };
+        let line = |id: &str| image(id, [0.; 3], [300., 24.]);
+        let mut card = image("card", [0.; 3], [800., 600.]);
+        card.stack = Some(Stack {
+            gap: 20.,
+            align: rox_canvas::StackAlign::Center,
+            justify: rox_canvas::StackAlign::Center,
+            ..Stack::default()
+        });
+        card.content = Content::Group {
+            items: vec![cover, line("title"), line("artist")],
+        };
+
+        CanvasState {
+            items: vec![card],
+            ..CanvasState::default()
+        }
+    }
+
+    #[test]
+    fn the_editor_measures_a_stacked_child_from_its_cell() {
+        let canvas = card();
+
+        // 360 + 20 + 24 + 20 + 24 = 448 tall in 600 leaves 76 above.
+        let cover = parent_frame(&canvas, "cover", VIEW).unwrap();
+        assert_eq!(cover.cell, Some([220., 76.]));
+        let artist = parent_frame(&canvas, "artist", VIEW).unwrap();
+        assert_eq!(artist.cell, Some([250., 500.]));
+        assert_eq!(stack_of(&canvas, "artist").map(|s| s.gap), Some(20.));
+        assert!(stack_of(&canvas, "card").is_none());
+
+        // A child switched off gives its room up.
+        let mut hidden = canvas.clone();
+        hidden.find_mut("title").unwrap().visible = false;
+        let artist = parent_frame(&hidden, "artist", VIEW).unwrap();
+        assert_eq!(artist.cell, Some([250., 478.]));
+    }
+
+    #[test]
+    fn a_stacked_child_resizes_and_turns_anchor_without_its_offset_moving() {
+        let canvas = card();
+        let parent = parent_frame(&canvas, "title", VIEW).unwrap();
+        let title = canvas.find("title").unwrap();
+
+        let edges = Edges {
+            right: true,
+            ..Edges::default()
+        };
+        let place = resized(
+            title,
+            &parent,
+            &camera(),
+            VIEW,
+            [0., 0., 300., 24.],
+            edges,
+            [40., 0.],
+            [10., 10.],
+            false,
+        );
+        assert_eq!(place.size[0], Length::Units(340.));
+        assert_eq!(place.position, title.place.position);
+
+        let anchored = with_anchor(title, &parent, Anchor::BottomRight);
+        assert_eq!(anchored.anchor, Anchor::BottomRight);
+        assert_eq!(anchored.position, title.place.position);
+    }
+
+    #[test]
+    fn switching_a_stack_on_lays_out_and_off_keeps_everything_in_place() {
+        let mut canvas = card();
+        let stack = canvas.find("card").unwrap().stack;
+
+        // Off: nothing moves on screen.
+        let before: Vec<Projected> = ["cover", "title", "artist"]
+            .iter()
+            .map(|id| on_screen(&canvas, id))
+            .collect();
+        assert!(set_stack(&mut canvas, "card", None, VIEW));
+        assert!(canvas.find("card").unwrap().stack.is_none());
+        for (id, was) in ["cover", "title", "artist"].iter().zip(&before) {
+            assert!(same_corners(was, &on_screen(&canvas, id)), "{id}");
+        }
+
+        // On again: the offsets go back to zero and the stack places them.
+        canvas.find_mut("title").unwrap().place.position.xy[0] = mixed(0.1, 5.);
+        assert!(set_stack(&mut canvas, "card", stack, VIEW));
+        let title = canvas.find("title").unwrap();
+        assert_eq!(title.place.position.xy, [mixed(0., 0.), Length::Units(0.)]);
+        assert!(same_corners(&before[1], &on_screen(&canvas, "title")));
+
+        // A change while on moves nothing by hand.
+        canvas.find_mut("title").unwrap().place.position.xy[0] = Length::Units(7.);
+        let wider = Stack {
+            gap: 40.,
+            ..stack.unwrap()
+        };
+        assert!(set_stack(&mut canvas, "card", Some(wider), VIEW));
+        assert_eq!(
+            canvas.find("title").unwrap().place.position.xy[0],
+            Length::Units(7.)
+        );
+
+        assert!(!set_stack(&mut canvas, "cover", stack, VIEW), "not a group");
+    }
+
+    #[test]
+    fn moving_into_a_stack_lets_it_place_the_item_and_ungrouping_keeps_places() {
+        let mut canvas = card();
+        canvas
+            .items
+            .push(image("loose", [300., 200., 15.], [100., 50.]));
+
+        assert!(move_into(
+            &mut canvas,
+            "loose",
+            Some("card"),
+            VIEW,
+            MAX_DEPTH
+        ));
+        let loose = canvas.find("loose").unwrap();
+        assert_eq!(loose.place.position.xy, [Length::Units(0.); 2]);
+        assert!(parent_frame(&canvas, "loose", VIEW).unwrap().cell.is_some());
+
+        let before: Vec<Projected> = ["cover", "title", "artist", "loose"]
+            .iter()
+            .map(|id| on_screen(&canvas, id))
+            .collect();
+        assert!(ungroup(&mut canvas, "card", VIEW));
+        for (id, was) in ["cover", "title", "artist", "loose"].iter().zip(&before) {
+            assert!(same_corners(was, &on_screen(&canvas, id)), "{id}");
+        }
+    }
+
+    #[test]
+    fn grouping_stacked_siblings_makes_one_entry_at_the_first_ones_slot() {
+        let mut canvas = card();
+        let ids = vec!["title".to_string(), "artist".to_string()];
+
+        let made = group_many(&mut canvas, &ids, VIEW, MAX_DEPTH).expect("grouped");
+        let Some(Content::Group { items }) = canvas.find("card").map(|c| &c.content) else {
+            panic!("the card");
+        };
+        let order: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(order, ["cover", made.as_str()]);
+
+        let wrapper = canvas.find(&made).unwrap();
+        assert_eq!(wrapper.place.position.xy, [Length::Units(0.); 2]);
+        assert_eq!(wrapper.place.size_in([800., 600.]), [300., 68.]);
+    }
+
+    #[test]
+    fn a_drag_along_a_stack_picks_the_slot_its_middle_has_crossed() {
+        let canvas = card();
+        let drag = StackDrag::at(&canvas, "cover", VIEW, true).expect("in a stack");
+        assert_eq!(drag.along, 1);
+        assert_eq!(
+            drag.middles,
+            [Some(256.), Some(76. + 380. + 12.), Some(76. + 424. + 12.)]
+        );
+
+        // Short of the next middle it stays, past one it trades, past both
+        // it goes last.
+        assert_eq!(drag.slot(100.), Some(0));
+        assert_eq!(drag.slot(220.), Some(1));
+        assert_eq!(drag.slot(400.), Some(2));
+
+        // A set carried along doesn't reorder.
+        let set = StackDrag::at(&canvas, "cover", VIEW, false).unwrap();
+        assert_eq!(set.slot(400.), None);
+        assert!(
+            StackDrag::at(&canvas, "card", VIEW, true).is_none(),
+            "not stacked"
+        );
+
+        let mut moved = canvas.clone();
+        assert!(reorder(&mut moved, "cover", 2));
+        assert!(!reorder(&mut moved, "cover", 2), "already there");
+        let artist = parent_frame(&moved, "artist", VIEW).unwrap();
+        assert_eq!(artist.cell, Some([250., 120.]));
+    }
+
+    #[test]
+    fn a_slot_never_trades_places_with_a_sibling_that_takes_no_room() {
+        let middles = [Some(10.), None, Some(50.), Some(90.)];
+
+        // Over the hidden one and short of the next: where it was.
+        assert_eq!(stack_slot(&middles, 2, 40.), 2);
+        assert_eq!(stack_slot(&middles, 2, 20.), 2);
+        // Past the first: just ahead of it, ahead of the hidden one too.
+        assert_eq!(stack_slot(&middles, 2, 5.), 0);
+        // The first dragged past the third: after it.
+        assert_eq!(stack_slot(&middles, 0, 70.), 2);
+        assert_eq!(stack_slot(&middles, 0, 95.), 3);
     }
 }

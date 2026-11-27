@@ -36,7 +36,7 @@ use rox_panel_kit::ui as settings_ui;
 use rox_panel_kit::{PickRow, Tip, search_picker};
 
 use crate::canvas::shader::{self as shader_item, RowState};
-use crate::canvas::{cost, edit, looks, states, target, text};
+use crate::canvas::{cost, looks, states, target, text};
 use crate::keymap;
 use crate::objects::{self, Dialog};
 use crate::panels::canvas::{self, CanvasPanel};
@@ -46,6 +46,7 @@ mod motion_rows;
 mod place_rows;
 mod set_rows;
 mod slice_rows;
+mod stack_rows;
 mod target_rows;
 
 const WIDTH: f32 = 340.;
@@ -782,6 +783,9 @@ fn item_rows(
             rows = rows.child(sway_row(panel, &id, SwayAxis::Position(axis), item, cx));
         }
     }
+    if crate::canvas::edit::stack_of(&panel.config.canvas, &id).is_some() {
+        rows = rows.child(stack_rows::offset_note());
+    }
 
     for axis in 0..2 {
         rows = rows.child(length_row(panel, &id, axis, place.size[axis], viewport, cx));
@@ -1470,37 +1474,46 @@ fn arrange_rows(
             "canvas-align-tip-stage",
         ),
     };
-    let tip = |name: &str| rox_i18n::t!(tip_key, tool = rox_i18n::t!(name).to_string());
+    let stack = crate::canvas::edit::stack_of(&panel.config.canvas, &item.id);
+    let stacked = |arrange: Arrange| {
+        stack.is_some_and(|stack| !crate::canvas::align::free_in(arrange, stack))
+    };
+    let tip = |name: &str, arrange: Arrange| {
+        let tool = rox_i18n::t!(name).to_string();
+        match stacked(arrange) {
+            true => rox_i18n::t!("canvas-stack-align-off", tool = tool),
+            false => rox_i18n::t!(tip_key, tool = tool),
+        }
+    };
 
     let mut align_tools: Vec<gpui::Stateful<Div>> = Line::ALL
         .into_iter()
         .map(|line| {
             let (icon, name, key) = line_face(line);
+            let arrange = Arrange::Align(line);
             tool(
                 icon,
-                tip(name),
+                tip(name, arrange),
                 format!("canvas-align-{key}"),
-                locked,
-                Rc::new(move |this, window, cx| {
-                    this.arrange_selected(Arrange::Align(line), window, cx)
-                }),
+                locked || stacked(arrange),
+                Rc::new(move |this, window, cx| this.arrange_selected(arrange, window, cx)),
                 cx,
             )
         })
         .collect();
     align_tools.push(tool(
         icons::FILL,
-        tip("canvas-align-fill"),
+        tip("canvas-align-fill", Arrange::Fill),
         "canvas-align-fill".into(),
-        locked,
+        locked || stacked(Arrange::Fill),
         Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fill, window, cx)),
         cx,
     ));
     align_tools.push(tool(
         icons::RATIO,
-        tip("canvas-align-fit"),
+        tip("canvas-align-fit", Arrange::Fit),
         "canvas-align-fit".into(),
-        locked,
+        locked || stacked(Arrange::Fit),
         Rc::new(|this, window, cx| this.arrange_selected(Arrange::Fit, window, cx)),
         cx,
     ));
@@ -1616,6 +1629,7 @@ fn content_rows(
             height,
             ..
         } => target_rows(panel, item, owner, [*width, *height], cx),
+        Content::Group { .. } => stack_rows::rows(panel, item, panel.viewport(), cx),
         _ => div().into_any_element(),
     }
 }
@@ -2494,61 +2508,11 @@ fn length_row(
     } else {
         rox_i18n::t!("canvas-item-height")
     };
-    let (value, stage) = match length {
-        Length::Units(n) => (n, false),
-        Length::Stage(f) => (f * 100., true),
-    };
+    let side = place_rows::Axis::Size(axis);
+    let value = place_rows::length_value(panel, id, side, length, cx);
+    let unit = place_rows::length_unit(id, side, length, viewport, cx);
 
-    let setter_id = id.to_string();
-    let field = format!("size{axis}:{id}");
-    let value_field = number(
-        panel,
-        &field,
-        value,
-        false,
-        move |canvas, v| {
-            if let Some(item) = canvas.find_mut(&setter_id) {
-                item.place.size[axis] = match item.place.size[axis] {
-                    Length::Stage(_) => Length::Stage((v / 100.).max(0.)),
-                    Length::Units(_) => Length::Units(v.max(0.)),
-                };
-            }
-        },
-        cx,
-    );
-
-    let units = [
-        (rox_i18n::t!("canvas-length-units"), false),
-        (rox_i18n::t!("canvas-length-percent"), true),
-    ];
-    let unit_id = id.to_string();
-    let unit = panel::choices_shared(
-        &units,
-        stage,
-        move |this: &mut CanvasPanel, want: bool, cx| {
-            if want == stage {
-                return;
-            }
-
-            let id = unit_id.clone();
-            this.change_later(
-                "size.unit",
-                move |canvas| {
-                    let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
-                        return;
-                    };
-                    if let Some(item) = canvas.find_mut(&id) {
-                        item.place.size[axis] =
-                            edit::other_unit(item.place.size[axis], parent.size[axis]);
-                    }
-                },
-                cx,
-            )
-        },
-        cx,
-    );
-
-    setting_block(label, None, Some(unit.into_any_element()), value_field).into_any_element()
+    setting_block(label, None, Some(unit.into_any_element()), value).into_any_element()
 }
 
 /// A number that turns into a field on a press: Enter applies it, leaving

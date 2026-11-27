@@ -227,6 +227,9 @@ struct Gesture {
     kind: GestureKind,
     /// The rest of the selection, carried along by a move.
     riders: Vec<set::Rider>,
+    /// Set for a move in a stack: along its axis a drag reorders, and only
+    /// across it does the offset change.
+    stack: Option<edit::StackDrag>,
 }
 
 enum GestureKind {
@@ -559,6 +562,8 @@ pub struct CanvasPanel {
     looks: canvas::looks::Looks,
     /// Each item's last case, and the ease of any that just changed.
     fades: Fades,
+    /// How much room each stacked child takes, easing as its case hides it.
+    rooms: Fades,
     /// The export card or the place confirm, over the whole window.
     pub(crate) object_dialog: Option<objects::Dialog>,
     /// The playing track's marks, resolved only while an item follows the
@@ -716,6 +721,7 @@ impl CanvasPanel {
             hovered: None,
             looks: canvas::looks::Looks::default(),
             fades: Fades::default(),
+            rooms: Fades::default(),
             object_dialog: None,
             marks: MarkCache::default(),
             cases: Cases::new(),
@@ -1165,6 +1171,7 @@ impl CanvasPanel {
             ghost: false,
             through: false,
             fades: &mut self.fades,
+            rooms: &mut self.rooms,
             now: Instant::now(),
             still: still || design,
             images: &mut self.images,
@@ -1178,7 +1185,7 @@ impl CanvasPanel {
             place(
                 &self.config.canvas.items,
                 &self.bodies,
-                &stage,
+                &vec![stage; self.config.canvas.items.len()],
                 &[],
                 &mut draw,
                 cx,
@@ -1190,7 +1197,7 @@ impl CanvasPanel {
 
         // Every item a theme switch moves starts its fade in this render, so
         // they share one burst of frames.
-        if self.fades.settle() {
+        if self.fades.settle() | self.rooms.settle() {
             window.request_animation_frame();
         }
 
@@ -1426,6 +1433,7 @@ struct Draw<'a> {
     /// Inside a group that lets the pointer through.
     through: bool,
     fades: &'a mut Fades,
+    rooms: &'a mut Fades,
     now: Instant,
     /// Cases cut rather than ease: Reduce Motion, or design mode.
     still: bool,
@@ -1444,12 +1452,12 @@ struct Layer {
     shapes: Vec<Shape>,
 }
 
-/// Siblings back to front. A group takes one slot at its own depth and lays
-/// its children out inside it.
+/// Siblings back to front, each in its frame. A group takes one slot at its
+/// own depth and lays its children out inside it.
 fn place(
     items: &[CanvasItem],
     bodies: &[Body<Grid>],
-    parent: &Frame,
+    frames: &[Frame],
     groups: &[String],
     draw: &mut Draw,
     cx: &mut Context<CanvasPanel>,
@@ -1457,7 +1465,7 @@ fn place(
     let at = draw.at;
     let mut layers: Vec<Layer> = Vec::new();
 
-    for (item, body) in items.iter().zip(bodies) {
+    for ((item, body), parent) in items.iter().zip(bodies).zip(frames) {
         if !item.visible {
             draw.targets.hold(&item.id);
             continue;
@@ -1558,6 +1566,9 @@ fn place(
                 let frame = child_frame(item, parent, &live);
                 let center = [frame.size[0] / 2., frame.size[1] / 2., 0.];
                 let depth = frame.transform.point(center)[2];
+                let frames = canvas::stack::frames(
+                    item, &frame, items, draw.cases, at.design, draw.still, draw.rooms, draw.now,
+                );
 
                 let mut path = groups.to_vec();
                 path.push(item.id.clone());
@@ -1573,6 +1584,7 @@ fn place(
                     ghost,
                     through,
                     fades: &mut *draw.fades,
+                    rooms: &mut *draw.rooms,
                     now: draw.now,
                     still: draw.still,
                     images: &mut *draw.images,
@@ -1582,7 +1594,7 @@ fn place(
                     layers: Vec::new(),
                     shapes: Vec::new(),
                 };
-                place(items, children, &frame, &path, &mut inner, cx);
+                place(items, children, &frames, &path, &mut inner, cx);
                 let Draw {
                     layers: elements,
                     mut shapes,
@@ -2267,6 +2279,11 @@ impl CanvasPanel {
             }
         };
 
+        let stack = match begin {
+            Begin::Move => edit::StackDrag::at(canvas, id, viewport, riders.is_empty()),
+            _ => None,
+        };
+
         let flat = self.is_flat(&item, cx);
         self.gesture = Some(Gesture {
             id: id.to_string(),
@@ -2280,6 +2297,7 @@ impl CanvasPanel {
             flat,
             kind,
             riders,
+            stack,
         });
     }
 
@@ -2306,7 +2324,7 @@ impl CanvasPanel {
         let camera = self.config.canvas.camera;
         if let Some(projected) = project(
             &parent_box,
-            parent,
+            &parent.without_cell(),
             &camera,
             viewport,
             None,
@@ -2360,6 +2378,7 @@ impl CanvasPanel {
         let g = gesture;
         let mut place = g.item.place;
         let mut carried = Vec::new();
+        let mut slot = None;
 
         match &g.kind {
             GestureKind::Move([xs, ys]) => {
@@ -2370,7 +2389,10 @@ impl CanvasPanel {
                     b[2] + delta[0],
                     b[3] + delta[1],
                 ];
-                let pull = edit::snap(moved, xs, ys, edit::SNAP_REACH);
+                let mut pull = edit::snap(moved, xs, ys, edit::SNAP_REACH);
+                if let Some(stack) = &g.stack {
+                    pull[stack.along] = 0.;
+                }
                 let delta = [delta[0] + pull[0], delta[1] + pull[1]];
 
                 place.position = edit::moved(
@@ -2383,6 +2405,20 @@ impl CanvasPanel {
                     g.flat,
                 );
                 carried = set::carry(g, delta);
+
+                // Along a stack's axis the drag picks a new slot, and the
+                // offsets there stay as they were.
+                if let Some(stack) = &g.stack {
+                    let along = stack.along;
+                    let start = g.item.place.position.xy[along];
+                    let span = g.parent.size[along];
+                    slot = stack.slot(place.position.xy[along].resolve(span) - start.resolve(span));
+
+                    place.position.xy[along] = start;
+                    for ((_, position), rider) in carried.iter_mut().zip(&g.riders) {
+                        position.xy[along] = rider.item.place.position.xy[along];
+                    }
+                }
             }
 
             GestureKind::Resize { edges, floor } => {
@@ -2418,6 +2454,9 @@ impl CanvasPanel {
         let id = g.id.clone();
         if let Some(item) = self.config.canvas.find_mut(&id) {
             item.place = place;
+        }
+        if let Some(slot) = slot {
+            edit::reorder(&mut self.config.canvas, &id, slot);
         }
         for (id, position) in carried {
             if let Some(item) = self.config.canvas.find_mut(&id) {
@@ -3181,12 +3220,16 @@ impl CanvasPanel {
                 let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
                     return;
                 };
+                let stacked = edit::stack_of(canvas, &id);
                 let Some(item) = canvas.find_mut(&id) else {
                     return;
                 };
+                if stacked.is_some_and(|stack| !canvas::align::free_in(arrange, stack)) {
+                    return;
+                }
 
                 if let Some(place) =
-                    canvas::align::arranged(&item.place, parent.size, flat, arrange)
+                    canvas::align::arranged(&item.place, parent.size, parent.cell, flat, arrange)
                 {
                     item.place = place;
                 }

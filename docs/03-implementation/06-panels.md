@@ -493,6 +493,79 @@ and maximum under it, where an empty field clears the limit. A route on `x` or `
 its meaning on a fractional axis: its sway is units added on top of wherever the
 fraction puts the item.
 
+A length can also be a fraction plus units, saved with both keys: a frame that's its pane
+plus a fixed 48-unit shadow margin, a box that's its parent less a fixed strip, or a
+position a fraction of the way across with a fixed offset (`Length::Mixed`):
+
+```json
+"place": {
+  "position": [{ "stage": -0.44, "units": -17.0 }, 90.0, -60.0],
+  "size": [{ "stage": 1.0, "units": 48.0 }, { "stage": 1.0, "units": -214.0 }]
+}
+```
+
+It's a form of its own, kept even while its units are zero, so a drag through zero never
+turns it into a bare fraction, and a length saved as one key reads and writes the same
+bytes as before. Limits and the aspect lock work on what it resolves to, as on any size.
+Every edit that moves or resizes a mixed axis keeps its fraction and puts the change on
+its units: a drag, a nudge, a resize from a handle, the align, fill and fit tools, a
+change of anchor, and grouping or moving into a group. The item goes on following its
+parent the same way. The inspector's unit choice is Units, Percent or Both, and a switch
+keeps the length where it is: units or a fraction gaining the other term starts it at
+zero, and Both shows the percentage and the units as two numbers. Convert to Canvas
+doesn't write it, since a converted layout is fractions of the window and nothing more.
+
+A group can stack its children: `"stack"` on the group item lays them out one after
+another along `"axis"` (`"x"` or `"y"`), with `"gap"` units between neighbours,
+`"justify"` placing the run along the axis and `"align"` placing each child across it,
+each `"start"`, `"center"` or `"end"` (`crates/rox-canvas/src/stack.rs`). Fields left
+out take a column from the start with no gap, and a stack that doesn't parse reads as
+none. A cover locked square and two lines of text, centred as one block in whatever
+space the card has:
+
+```json
+{
+  "id": "card",
+  "place": { "anchor": "top", "size": [{ "stage": 1.0 }, { "stage": 1.0, "units": -214.0 }] },
+  "stack": { "axis": "y", "gap": 22.0, "align": "center", "justify": "center" },
+  "content": { "kind": "group", "items": [
+    { "id": "cover", "place": { "size": [{ "stage": 0.8 }, { "stage": 0.62 }], "max_size": [460.0, 460.0], "aspect": 1.0 }, "content": { "kind": "image", "asset": "cover" } },
+    { "id": "title", "place": { "size": [{ "stage": 0.9 }, { "units": 40.0 }] }, "content": { "kind": "text", "text": "%title%", "size": 30.0, "color": "text" } },
+    { "id": "artist", "place": { "size": [{ "stage": 0.9 }, { "units": 30.0 }] }, "content": { "kind": "text", "text": "%artist%", "size": 22.0, "color": "text" } }
+  ] }
+}
+```
+
+The stack only decides where each child's box goes. Every child keeps its own size,
+limits and aspect against the group's box, so a fraction along the axis is a fraction
+of the group and not of what's left. Nothing shrinks or grows to fit: a run longer than
+its group runs past it, and the group's inspector says by how many units. The box's
+top-left goes to the child's cell whatever its anchor, and the child's own x and y then
+move it from there, as do its routes and sway on `x` and `y`. Depth, turns and scale
+don't take room, so a pulse on a child's scale never shifts its neighbours, and z order
+and perspective are as for any group: the stack lays out the flat boxes before anything
+is projected (`project::child_frames`, the cell on `Frame`).
+
+A child switched off takes no room and no gap. Off design mode a child whose case hides
+it gives its room up over the same ease its fade takes, sitting in the middle of the
+share it has left, so its neighbours glide closed while it fades and open again as it
+comes back (`crates/rox/src/canvas/stack.rs`, a second set of fades kept for room). In
+design mode every child that's switched on keeps its room whatever its case, so a hidden
+one draws as a ghost in its own slot and the layout holds still while it's edited.
+
+In the editor a drag along a stack's axis reorders: the child takes the slot past every
+sibling whose middle its own has crossed, and its offset along the axis stays as it was.
+Across the axis the drag moves its offset, with snapping only across. A set dragged in a
+stack doesn't reorder and moves only across. Arrow keys nudge the offset on both axes. A
+resize changes only the size and leaves the stack to move the box, a change of anchor
+moves nothing, and the aligns along the axis, Fill and Fit are off with a tooltip saying
+why, as are the set's aligns and distribute along it. Switching a stack on puts every
+child's x and y back to zero so the stack alone places them, and switching it off
+re-places each child where the stack had it. An item moved into a stack, lifted into one
+by an ungroup, or a group made from stacked siblings starts with zero offsets in the
+first one's slot. The group's inspector carries the stack's switch and its rows, and a
+stacked child's x and y rows say they're offsets.
+
 The editor can hold several items at once. The selection is one ordered set on the panel
 (`Selection`, `crates/rox/src/canvas/selection.rs`), and the last item picked is its
 primary: the inspector's single-item rows, the handles and Step Out read the primary, so
@@ -867,8 +940,8 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 `crates/rox/src/preset_sources.rs` (the tiers gathered per kind),
 `crates/rox-panel-api/src/panel_settings.rs` (the Presets row, `PresetMarks`), and
 `crates/rox/src/composite.rs` (`Hosting`, `replace_hosted`, `hosted_docks`). Canvases span
-`crates/rox-canvas/src/` (the saved shape in `state.rs`, positions and size limits in
-`place.rs`, the projection in `project.rs`),
+`crates/rox-canvas/src/` (the saved shape in `state.rs`, lengths, positions and size
+limits in `place.rs`, the projection in `project.rs`, a stack's layout in `stack.rs`),
 `crates/rox/src/panels/canvas.rs` (`CanvasPanel`, `CanvasConfig`, `wrap_layout`,
 `split_layout`),
 `crates/rox/src/canvas/mod.rs` (the live bodies and the nesting cap),
@@ -877,9 +950,10 @@ mode toggle), `crates/rox/src/composition_window.rs` (the Composition view and w
 nine-slice cut), `crates/rox/src/canvas/edit.rs` and `align.rs` (the editor's
 arithmetic), `crates/rox/src/canvas/selection.rs` (the selection and the set tools'
 arithmetic), `crates/rox/src/panels/canvas/set.rs` (the marquee and the set's edits),
-`crates/rox/src/canvas/overlay.rs` with `overlay/place_rows.rs`, `overlay/slice_rows.rs`
-and `overlay/set_rows.rs` (the inspector), `patches/gpui/e7-image-patch-inner-edges.patch`
-(`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
+`crates/rox/src/canvas/overlay.rs` with `overlay/place_rows.rs`, `overlay/slice_rows.rs`,
+`overlay/set_rows.rs` and `overlay/stack_rows.rs` (the inspector),
+`crates/rox/src/canvas/stack.rs` (a stacked child's room as its case fades),
+`patches/gpui/e7-image-patch-inner-edges.patch` (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
 `crates/rox/src/canvas/fades.rs` (eased case changes), `overlay/motion_rows.rs` (the
 pointer and ease rows),

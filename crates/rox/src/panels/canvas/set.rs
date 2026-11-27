@@ -17,7 +17,7 @@ use crate::canvas::selection::{self, Member, Order, Selection};
 pub(super) struct Rider {
     pub(super) id: String,
     /// As it stood at the press.
-    item: CanvasItem,
+    pub(super) item: CanvasItem,
     flat: bool,
 }
 
@@ -373,8 +373,12 @@ impl CanvasPanel {
         );
     }
 
-    /// Aligns the set's unlocked items to one another's bounds.
+    /// Aligns the set's unlocked items to one another's bounds. In a stack
+    /// only across its axis.
     pub(super) fn align_set(&mut self, line: Line, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stacked_along(line.axis_and_end().0) {
+            return;
+        }
         self.arrange_set(window, cx, move |members, parent| {
             selection::aligned(members, parent, line)
         });
@@ -387,9 +391,20 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.stacked_along(axis) {
+            return;
+        }
         self.arrange_set(window, cx, move |members, parent| {
             selection::distributed(members, parent, axis)
         });
+    }
+
+    /// Whether the set sits in a stack that runs along `axis`.
+    fn stacked_along(&self, axis: usize) -> bool {
+        self.selected
+            .primary()
+            .and_then(|id| edit::stack_of(&self.config.canvas, id))
+            .is_some_and(|stack| stack.axis.along() == axis)
     }
 
     fn arrange_set(
@@ -425,7 +440,8 @@ impl CanvasPanel {
                     .zip(&flats)
                     .map(|(id, &flat)| {
                         let place = canvas.find(id)?.place;
-                        Some(Member { place, flat })
+                        let cell = edit::parent_frame(canvas, id, viewport)?.cell;
+                        Some(Member { place, cell, flat })
                     })
                     .collect();
                 let Some(places) = members.and_then(|members| arrange(&members, parent.size))

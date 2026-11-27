@@ -3,10 +3,13 @@
 //!
 //! Each of x and y is units from the anchor's point, or a fraction of the
 //! parent's box along that axis, which reads in JSON as a size does:
-//! `{"stage": 0.25}`. A position in units saves as a bare number, as every
-//! position did before fractions, so an old canvas reads and writes the
-//! same bytes. z is units only: the parent's box has no depth to take a
-//! fraction of.
+//! `{"stage": 0.25}`, or both at once: `{"stage": -0.44, "units": -17}`. A
+//! position in units saves as a bare number, as every position did before
+//! fractions, so an old canvas reads and writes the same bytes. z is units
+//! only: the parent's box has no depth to take a fraction of.
+//!
+//! A mixed length is its own form, kept even while its units are zero, so a
+//! drag through zero never turns it into a bare fraction.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -55,15 +58,28 @@ impl Position {
     }
 }
 
+/// Which of the three forms a [`Length`] takes, for the inspector's choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LengthKind {
+    Units,
+    Stage,
+    Mixed,
+}
+
 impl Length {
     /// `units` long against `parent_axis`, in this length's own unit. A
     /// fraction of a parent with no length has nothing to divide by and stays
-    /// as it was.
+    /// as it was. A mixed length keeps its fraction and its units take the
+    /// difference, so it goes on following the parent the same way.
     pub fn with_units(self, units: f32, parent_axis: f32) -> Length {
         match self {
             Length::Units(_) => Length::Units(units),
             Length::Stage(_) if parent_axis > 0. => Length::Stage(units / parent_axis),
             Length::Stage(f) => Length::Stage(f),
+            Length::Mixed { stage, .. } => Length::Mixed {
+                stage,
+                units: units - stage * parent_axis,
+            },
         }
     }
 
@@ -72,8 +88,112 @@ impl Length {
         self.with_units(self.resolve(parent_axis) + by, parent_axis)
     }
 
+    /// Zero in its own form: units or a fraction of none.
+    pub fn zeroed(self) -> Length {
+        match self {
+            Length::Units(_) => Length::Units(0.),
+            Length::Stage(_) => Length::Stage(0.),
+            Length::Mixed { .. } => Length::Mixed {
+                stage: 0.,
+                units: 0.,
+            },
+        }
+    }
+
+    /// Whether it grows with the parent: a fraction, alone or with units.
     pub fn is_fraction(self) -> bool {
-        matches!(self, Length::Stage(_))
+        matches!(self, Length::Stage(_) | Length::Mixed { .. })
+    }
+
+    pub fn kind(self) -> LengthKind {
+        match self {
+            Length::Units(_) => LengthKind::Units,
+            Length::Stage(_) => LengthKind::Stage,
+            Length::Mixed { .. } => LengthKind::Mixed,
+        }
+    }
+
+    /// The same length against `parent_axis` in another form. A fraction or
+    /// units gaining the other term starts it at zero, so nothing moves and
+    /// what it had stays as typed. A parent with no length has no fraction
+    /// to give, so a switch to a bare fraction there leaves it as it was.
+    pub fn with_kind(self, kind: LengthKind, parent_axis: f32) -> Length {
+        let resolved = self.resolve(parent_axis);
+
+        match (kind, self) {
+            (LengthKind::Units, _) => Length::Units(resolved),
+
+            (LengthKind::Stage, Length::Stage(_)) => self,
+            (LengthKind::Stage, _) if parent_axis > 0. => Length::Stage(resolved / parent_axis),
+            (LengthKind::Stage, _) => self,
+
+            (LengthKind::Mixed, Length::Units(units)) => Length::Mixed { stage: 0., units },
+            (LengthKind::Mixed, Length::Stage(stage)) => Length::Mixed { stage, units: 0. },
+            (LengthKind::Mixed, Length::Mixed { .. }) => self,
+        }
+    }
+}
+
+impl Serialize for Length {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let (stage, units) = match *self {
+            Length::Units(n) => (None, Some(n)),
+            Length::Stage(f) => (Some(f), None),
+            Length::Mixed { stage, units } => (Some(stage), Some(units)),
+        };
+
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(stage) = stage {
+            map.serialize_entry("stage", &stage)?;
+        }
+        if let Some(units) = units {
+            map.serialize_entry("units", &units)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Length {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(LengthVisitor)
+    }
+}
+
+struct LengthVisitor;
+
+impl<'de> serde::de::Visitor<'de> for LengthVisitor {
+    type Value = Length;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(r#"a length: {"units": n}, {"stage": f}, or both"#)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Length, A::Error> {
+        use serde::de::Error;
+
+        let (mut stage, mut units) = (None, None);
+        while let Some(key) = map.next_key::<String>()? {
+            let slot = match key.as_str() {
+                "stage" => &mut stage,
+                "units" => &mut units,
+                _ => return Err(A::Error::unknown_field(&key, &["stage", "units"])),
+            };
+            if slot.is_some() {
+                return Err(A::Error::custom(format!("`{key}` twice in one length")));
+            }
+            *slot = Some(map.next_value::<f32>()?);
+        }
+
+        match (stage, units) {
+            (Some(stage), Some(units)) => Ok(Length::Mixed { stage, units }),
+            (Some(stage), None) => Ok(Length::Stage(stage)),
+            (None, Some(units)) => Ok(Length::Units(units)),
+            (None, None) => Err(A::Error::custom(
+                "a length with neither `stage` nor `units`",
+            )),
+        }
     }
 }
 
@@ -350,6 +470,175 @@ mod tests {
         let saved = serde_json::to_value(locked).unwrap();
         assert_eq!(saved["aspect"], json!(1.5));
         assert_eq!(serde_json::from_value::<Place>(saved).unwrap(), locked);
+    }
+
+    #[test]
+    fn a_mixed_length_reads_and_writes_both_terms() {
+        let saved = r#"{"id":"frame","name":"","place":{"anchor":"center","position":[{"stage":-0.44,"units":-17.0},90.0,-60.0],"size":[{"stage":1.0,"units":48.0},{"stage":1.0,"units":-214.0}],"rotation":[0.0,0.0,0.0],"scale":1.0},"visible":true,"locked":false,"opacity":1.0,"content":{"kind":"image","asset":"x","fit":"stretch"}}"#;
+        let item: CanvasItem = serde_json::from_str(saved).unwrap();
+
+        assert_eq!(
+            item.place.position.xy[0],
+            Length::Mixed {
+                stage: -0.44,
+                units: -17.
+            }
+        );
+        assert_eq!(
+            item.place.size,
+            [
+                Length::Mixed {
+                    stage: 1.,
+                    units: 48.
+                },
+                Length::Mixed {
+                    stage: 1.,
+                    units: -214.
+                }
+            ]
+        );
+        assert_eq!(serde_json::to_string(&item).unwrap(), saved);
+
+        // Units first or bare integers read the same, and zero units stay.
+        let back: Length = serde_json::from_str(r#"{"units":0,"stage":1}"#).unwrap();
+        assert_eq!(
+            back,
+            Length::Mixed {
+                stage: 1.,
+                units: 0.
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&back).unwrap(),
+            r#"{"stage":1.0,"units":0.0}"#
+        );
+    }
+
+    #[test]
+    fn a_length_with_a_key_it_doesnt_know_or_none_doesnt_parse() {
+        for junk in [
+            json!({}),
+            json!({ "stage": 0.5, "pixels": 3 }),
+            json!({ "percent": 50 }),
+            json!({ "units": "wide" }),
+            json!(12),
+        ] {
+            assert!(
+                serde_json::from_value::<Length>(junk.clone()).is_err(),
+                "{junk}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mixed_length_follows_the_parent_by_its_fraction_and_keeps_its_units() {
+        let frame = Length::Mixed {
+            stage: 1.,
+            units: 48.,
+        };
+
+        // The margin past the parent holds at any size.
+        for parent in [1100., 1920., 900.] {
+            assert_eq!(frame.resolve(parent) - parent, 48.);
+        }
+
+        // A move lands on the units, so it goes on following the same way.
+        let moved = frame.shifted(-8., 1000.);
+        assert_eq!(
+            moved,
+            Length::Mixed {
+                stage: 1.,
+                units: 40.
+            }
+        );
+        assert_eq!(
+            frame.with_units(1000., 1000.),
+            Length::Mixed {
+                stage: 1.,
+                units: 0.
+            },
+            "zero units keep the form"
+        );
+
+        // A parent with no length: only the units can move.
+        assert_eq!(
+            frame.with_units(30., 0.),
+            Length::Mixed {
+                stage: 1.,
+                units: 30.
+            }
+        );
+        assert!(frame.is_fraction());
+    }
+
+    #[test]
+    fn switching_form_keeps_the_length() {
+        let parent = 800.;
+        let forms = [
+            Length::Units(200.),
+            Length::Stage(0.25),
+            Length::Mixed {
+                stage: 0.2,
+                units: 40.,
+            },
+        ];
+
+        for length in forms {
+            for kind in [LengthKind::Units, LengthKind::Stage, LengthKind::Mixed] {
+                let switched = length.with_kind(kind, parent);
+                assert_eq!(switched.kind(), kind, "{length:?} to {kind:?}");
+                assert!(
+                    (switched.resolve(parent) - 200.).abs() < 1e-3,
+                    "{length:?} to {kind:?}: {switched:?}"
+                );
+            }
+        }
+
+        // Gaining a term starts it at zero and keeps what was typed.
+        assert_eq!(
+            Length::Units(48.).with_kind(LengthKind::Mixed, parent),
+            Length::Mixed {
+                stage: 0.,
+                units: 48.
+            }
+        );
+        assert_eq!(
+            Length::Stage(1.).with_kind(LengthKind::Mixed, parent),
+            Length::Mixed {
+                stage: 1.,
+                units: 0.
+            }
+        );
+
+        // No length to divide by: a bare fraction can't be made.
+        assert_eq!(
+            Length::Units(5.).with_kind(LengthKind::Stage, 0.),
+            Length::Units(5.)
+        );
+    }
+
+    #[test]
+    fn limits_and_aspect_hold_a_mixed_size() {
+        let place = Place {
+            size: [
+                Length::Mixed {
+                    stage: 0.5,
+                    units: -20.,
+                },
+                Length::Mixed {
+                    stage: 1.,
+                    units: -100.,
+                },
+            ],
+            max_size: [Some(500.), None],
+            aspect: Some(1.),
+            ..Place::default()
+        };
+
+        assert_eq!(place.space_in([800., 600.]), [380., 500.]);
+        assert_eq!(place.size_in([800., 600.]), [380., 380.]);
+        assert_eq!(place.space_in([2000., 600.]), [500., 500.]);
+        assert_eq!(place.size_in([2000., 400.]), [300., 300.]);
     }
 
     #[test]

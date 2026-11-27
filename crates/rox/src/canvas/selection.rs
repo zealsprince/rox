@@ -242,6 +242,8 @@ pub(crate) fn rect_between(a: [f32; 2], b: [f32; 2]) -> [f32; 4] {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Member {
     pub place: Place,
+    /// Where its stack puts it, if it's in one.
+    pub cell: Option<[f32; 2]>,
     /// A flat item draws without its scale.
     pub flat: bool,
 }
@@ -316,7 +318,7 @@ fn boxes(members: &[Member], parent: [f32; 2]) -> Option<Vec<[f32; 4]>> {
     members
         .iter()
         .map(|member| {
-            let b = align::drawn_box(&member.place, parent, member.flat);
+            let b = align::drawn_box(&member.place, parent, member.cell, member.flat);
             area(b[2], b[3]).then_some(b)
         })
         .collect()
@@ -594,6 +596,7 @@ mod tests {
                 size: [Length::Units(size[0]), Length::Units(size[1])],
                 ..Place::default()
             },
+            cell: None,
             flat: true,
         }
     }
@@ -601,7 +604,7 @@ mod tests {
     fn lefts(places: &[Place], flat: bool) -> Vec<f32> {
         places
             .iter()
-            .map(|place| align::drawn_box(place, PARENT, flat)[0])
+            .map(|place| align::drawn_box(place, PARENT, None, flat)[0])
             .collect()
     }
 
@@ -639,7 +642,7 @@ mod tests {
         let top = aligned(&set, PARENT, Line::Top).unwrap();
         let tops: Vec<f32> = top
             .iter()
-            .map(|place| align::drawn_box(place, PARENT, true)[1])
+            .map(|place| align::drawn_box(place, PARENT, None, true)[1])
             .collect();
         assert!(close(&tops, &[0., 0., 0.]), "{tops:?}");
     }
@@ -653,7 +656,10 @@ mod tests {
 
         // It draws 200 wide about its middle, from 250.
         let out = aligned(&[big, small], PARENT, Line::Left).unwrap();
-        assert!(close(&[align::drawn_box(&out[0], PARENT, false)[0]], &[0.]));
+        assert!(close(
+            &[align::drawn_box(&out[0], PARENT, None, false)[0]],
+            &[0.]
+        ));
         assert!(close(&lefts(&out[1..], true), &[0.]));
     }
 
@@ -671,7 +677,7 @@ mod tests {
         let out = distributed(&set, PARENT, 0).unwrap();
         let boxes: Vec<[f32; 4]> = out
             .iter()
-            .map(|place| align::drawn_box(place, PARENT, true))
+            .map(|place| align::drawn_box(place, PARENT, None, true))
             .collect();
 
         // In order of their middles: 0, 2, 3, 4, then 900.

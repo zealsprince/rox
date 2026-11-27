@@ -1,12 +1,13 @@
 //! The inspector's rows for an axis that can be a fraction of the parent:
-//! the unit beside a position's x or y, and the limits under a fractional
-//! size. A fraction reads as a percentage, as a size's does. The aspect lock
-//! under the sizes lives here too.
+//! the unit beside a position's x or y or a size's side, and the limits
+//! under a fractional size. A fraction reads as a percentage, and a fraction
+//! plus units as both numbers. The aspect lock under the sizes lives here
+//! too.
 
 use std::rc::Rc;
 
 use gpui::{AnyElement, Context, Div, MouseButton, SharedString, div, prelude::*, px};
-use rox_canvas::{CanvasItem, CanvasState, Content, Length, Viewport};
+use rox_canvas::{CanvasItem, CanvasState, Content, Length, LengthKind, Viewport};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel;
@@ -15,16 +16,182 @@ use super::{begin_typing, number, trimmed, typing_field, typing_input};
 use crate::canvas::edit;
 use crate::panels::canvas::CanvasPanel;
 
-/// The value a length shows: units as they are, a fraction as a percentage.
-fn shown(length: Length) -> f32 {
-    match length {
-        Length::Units(n) => n,
-        Length::Stage(f) => f * 100.,
+/// One of the lengths these rows edit: x or y of the position, or a side
+/// of the size.
+#[derive(Clone, Copy)]
+pub(super) enum Axis {
+    Position(usize),
+    Size(usize),
+}
+
+impl Axis {
+    fn of(self, item: &mut CanvasItem) -> &mut Length {
+        match self {
+            Axis::Position(axis) => &mut item.place.position.xy[axis],
+            Axis::Size(axis) => &mut item.place.size[axis],
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Axis::Position(axis) | Axis::Size(axis) => axis,
+        }
+    }
+
+    /// The field name the number is typed under.
+    fn field(self, id: &str) -> String {
+        match self {
+            Axis::Position(axis) => format!("{}:{id}", ["x", "y"][axis]),
+            Axis::Size(axis) => format!("size{axis}:{id}"),
+        }
+    }
+
+    fn unit_key(self) -> &'static str {
+        match self {
+            Axis::Position(_) => "position.unit",
+            Axis::Size(_) => "size.unit",
+        }
+    }
+
+    /// A size can't take a negative fraction. Its units can go under zero,
+    /// for a box that's its parent less a fixed strip.
+    fn held(self, stage: f32) -> f32 {
+        match self {
+            Axis::Position(_) => stage,
+            Axis::Size(_) => stage.max(0.),
+        }
     }
 }
 
-/// A position's x or y: its unit and its number, side by side, for the
-/// bindable row the axis sits in.
+/// A length's number, or both its numbers for a fraction plus units: the
+/// fraction as a percentage, then the units after a plus.
+pub(super) fn length_value(
+    panel: &CanvasPanel,
+    id: &str,
+    axis: Axis,
+    length: Length,
+    cx: &mut Context<CanvasPanel>,
+) -> Div {
+    let field = axis.field(id);
+    let set = move |id: String, change: fn(Length, f32, Axis) -> Length| {
+        move |canvas: &mut CanvasState, v: f32| {
+            if let Some(item) = canvas.find_mut(&id) {
+                let length = axis.of(item);
+                *length = change(*length, v, axis);
+            }
+        }
+    };
+
+    let row = div().flex().flex_row().items_center().gap(tokens::SPACE_XS);
+    match length {
+        Length::Units(n) => row.child(number(
+            panel,
+            &field,
+            n,
+            false,
+            set(id.to_string(), |_, v, axis| match axis {
+                Axis::Size(_) => Length::Units(v.max(0.)),
+                Axis::Position(_) => Length::Units(v),
+            }),
+            cx,
+        )),
+
+        Length::Stage(f) => row.child(number(
+            panel,
+            &field,
+            f * 100.,
+            false,
+            set(id.to_string(), |_, v, axis| {
+                Length::Stage(axis.held(v / 100.))
+            }),
+            cx,
+        )),
+
+        Length::Mixed { stage, units } => row
+            .child(number(
+                panel,
+                &field,
+                stage * 100.,
+                false,
+                set(id.to_string(), |length, v, axis| match length {
+                    Length::Mixed { units, .. } => Length::Mixed {
+                        stage: axis.held(v / 100.),
+                        units,
+                    },
+                    other => other,
+                }),
+                cx,
+            ))
+            .child(muted("% +"))
+            .child(number(
+                panel,
+                &format!("{field}+units"),
+                units,
+                false,
+                set(id.to_string(), |length, v, _| match length {
+                    Length::Mixed { stage, .. } => Length::Mixed { stage, units: v },
+                    other => other,
+                }),
+                cx,
+            )),
+    }
+}
+
+fn muted(text: &'static str) -> Div {
+    div()
+        .text_xs()
+        .text_color(palette::text_muted())
+        .whitespace_nowrap()
+        .child(text)
+}
+
+/// Units, Percent, or Both. Picking another one re-expresses the length at
+/// the same place, as one undo step: a fraction or units gaining the other
+/// term starts it at zero.
+pub(super) fn length_unit(
+    id: &str,
+    axis: Axis,
+    length: Length,
+    viewport: Viewport,
+    cx: &mut Context<CanvasPanel>,
+) -> Div {
+    let kinds = [
+        (rox_i18n::t!("canvas-length-units"), LengthKind::Units),
+        (rox_i18n::t!("canvas-length-percent"), LengthKind::Stage),
+        (rox_i18n::t!("canvas-length-both"), LengthKind::Mixed),
+    ];
+    let current = length.kind();
+    let id = id.to_string();
+
+    panel::choices_shared(
+        &kinds,
+        current,
+        move |this: &mut CanvasPanel, want: LengthKind, cx| {
+            if want == current {
+                return;
+            }
+
+            let id = id.clone();
+            this.change_later(
+                axis.unit_key(),
+                move |canvas| {
+                    let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
+                        return;
+                    };
+                    if let Some(item) = canvas.find_mut(&id) {
+                        let length = axis.of(item);
+                        *length = length.with_kind(want, parent.size[axis.index()]);
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    )
+}
+
+/// A position's x or y: its unit and its number, for the bindable row the
+/// axis sits in.
 pub(super) fn position_control(
     panel: &CanvasPanel,
     id: &str,
@@ -33,68 +200,17 @@ pub(super) fn position_control(
     viewport: Viewport,
     cx: &mut Context<CanvasPanel>,
 ) -> Div {
-    let property = ["x", "y"][axis];
-    let setter = id.to_string();
-    let value = number(
-        panel,
-        &format!("{property}:{id}"),
-        shown(length),
-        false,
-        move |canvas, v| {
-            if let Some(item) = canvas.find_mut(&setter) {
-                item.place.position.xy[axis] = match item.place.position.xy[axis] {
-                    Length::Stage(_) => Length::Stage(v / 100.),
-                    Length::Units(_) => Length::Units(v),
-                };
-            }
-        },
-        cx,
-    );
-
-    let unit_id = id.to_string();
-    let unit = unit_toggle(length.is_fraction(), "position.unit", cx, move |canvas| {
-        let Some(parent) = edit::parent_frame(canvas, &unit_id, viewport) else {
-            return;
-        };
-        if let Some(item) = canvas.find_mut(&unit_id) {
-            item.place.position.xy[axis] =
-                edit::other_unit(item.place.position.xy[axis], parent.size[axis]);
-        }
-    });
+    let axis = Axis::Position(axis);
 
     div()
         .flex()
         .flex_row()
+        .flex_wrap()
+        .justify_end()
         .items_center()
         .gap(tokens::SPACE_XS)
-        .child(unit)
-        .child(value)
-}
-
-/// Units or Percent. Picking the other one re-expresses the axis at the same
-/// place, as one undo step under `key`.
-fn unit_toggle(
-    fraction: bool,
-    key: &'static str,
-    cx: &mut Context<CanvasPanel>,
-    switch: impl Fn(&mut CanvasState) + Clone + 'static,
-) -> Div {
-    let units = [
-        (rox_i18n::t!("canvas-length-units"), false),
-        (rox_i18n::t!("canvas-length-percent"), true),
-    ];
-
-    panel::choices_shared(
-        &units,
-        fraction,
-        move |this: &mut CanvasPanel, want: bool, cx| {
-            if want != fraction {
-                let switch = switch.clone();
-                this.change_later(key, move |canvas| switch(canvas), cx);
-            }
-        },
-        cx,
-    )
+        .child(length_unit(id, axis, length, viewport, cx))
+        .child(length_value(panel, id, axis, length, cx))
 }
 
 /// Under a fractional width or height: the least and the most it resolves

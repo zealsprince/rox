@@ -22,6 +22,7 @@ pub(crate) mod selection;
 pub(crate) mod shader;
 pub(crate) mod slice;
 pub(crate) mod spectrum;
+pub(crate) mod stack;
 pub(crate) mod states;
 pub(crate) mod target;
 pub(crate) mod target_settings;

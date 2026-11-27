@@ -32,6 +32,10 @@ pub struct Frame {
     /// Pixels per unit at rest: `k` times the own scale of each group the
     /// frame is inside, which a render target's rest size counts.
     pub rest: f32,
+    /// Set by a stacking group on the frame for one of its children: where
+    /// that child's box goes, its top-left in the group's units, before its
+    /// own x and y. None places a child by its anchor.
+    pub cell: Option<[f32; 2]>,
 }
 
 impl Frame {
@@ -42,6 +46,7 @@ impl Frame {
             opacity: 1.,
             k: 1.,
             rest: 1.,
+            cell: None,
         };
 
         // A stage with no area has nothing to scale by, so it lays out as
@@ -69,7 +74,22 @@ impl Frame {
             opacity: 1.,
             k,
             rest: k,
+            cell: None,
         }
+    }
+
+    /// This frame for a child the stack puts at `cell`.
+    pub fn at_cell(self, cell: [f32; 2]) -> Frame {
+        Frame {
+            cell: Some(cell),
+            ..self
+        }
+    }
+
+    /// This frame as its parent hands it to every child, with no child's
+    /// cell: the box snapping and aligning measure against.
+    pub fn without_cell(self) -> Frame {
+        Frame { cell: None, ..self }
     }
 }
 
@@ -166,7 +186,26 @@ pub fn child_frame(item: &CanvasItem, parent: &Frame, live: &Live) -> Frame {
         opacity: parent.opacity * item.opacity * live.opacity,
         k: parent.k,
         rest: parent.rest * item.place.scale,
+        cell: None,
     }
+}
+
+/// The frame each child of `group` is placed in, given the frame the group
+/// hands them all: that one again, or for a stacking group each child's own
+/// with its cell. `presence` is how much room each child takes.
+pub fn child_frames(
+    group: &CanvasItem,
+    frame: &Frame,
+    children: &[CanvasItem],
+    presence: impl FnMut(&CanvasItem) -> f32,
+) -> Vec<Frame> {
+    let Some(stack) = &group.stack else {
+        return vec![*frame; children.len()];
+    };
+
+    let entries = crate::stack::entries(children, frame.size, presence);
+    let (cells, _) = crate::stack::cells(stack, frame.size, &entries);
+    cells.into_iter().map(|cell| frame.at_cell(cell)).collect()
 }
 
 /// Points on a frame's own box, in its units from its top-left, to pixels:
@@ -464,15 +503,21 @@ fn center_offset(item: &CanvasItem, size: [f32; 2]) -> [f32; 3] {
 
 /// Translate to the anchor's point plus the position, then rotate x then y
 /// then z and scale about the item's centre. The anchor only places an item:
-/// a corner-anchored one still turns about its middle. A flat item stops
-/// after the translation.
+/// a corner-anchored one still turns about its middle. In a stack's cell
+/// the box's top-left goes to the cell, whatever the anchor. A flat item
+/// stops after the translation.
 fn local(item: &CanvasItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
     let place = &item.place;
     let [fx, fy] = place.anchor.fraction();
+    let size = item_size(item, parent);
+    let point = match parent.cell {
+        Some(cell) => [cell[0] + fx * size[0], cell[1] + fy * size[1]],
+        None => [fx * parent.size[0], fy * parent.size[1]],
+    };
     let offset = place.offset_in(parent.size);
     let at = [
-        fx * parent.size[0] + offset[0] + live.position[0],
-        fy * parent.size[1] + offset[1] + live.position[1],
+        point[0] + offset[0] + live.position[0],
+        point[1] + offset[1] + live.position[1],
         offset[2] + live.position[2],
     ];
     let moved = Mat4::translate(at);
@@ -481,7 +526,7 @@ fn local(item: &CanvasItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
         return moved;
     }
 
-    let pivot = center_offset(item, item_size(item, parent));
+    let pivot = center_offset(item, size);
     let back = [-pivot[0], -pivot[1], -pivot[2]];
 
     let turn = |axis: usize| place.rotation[axis] + live.rotation[axis];
@@ -1163,6 +1208,7 @@ mod tests {
         let stage = Frame {
             k: 0.5,
             rest: 0.5,
+            cell: None,
             ..stage_frame()
         };
         let frame = child_frame(&group, &stage, &Live::default());
@@ -1219,5 +1265,49 @@ mod tests {
         );
         check(&tilted, &turned, false);
         check(&tilted, &turned, true);
+    }
+
+    #[test]
+    fn a_stacked_child_puts_its_box_at_its_cell_whatever_its_anchor() {
+        let mut stacked = group([0., 0., 0.], [0.; 3], [400., 300.]);
+        stacked.place.anchor = Anchor::TopLeft;
+        stacked.stack = Some(crate::Stack {
+            gap: 10.,
+            align: crate::StackAlign::Center,
+            justify: crate::StackAlign::Center,
+            ..crate::Stack::default()
+        });
+        let children = vec![
+            item(Anchor::BottomRight, [0., 0., 0.], [100., 40.]),
+            item(Anchor::Center, [5., -2., 0.], [200., 20.]),
+        ];
+
+        let frame = child_frame(&stacked, &stage_frame(), &Live::default());
+        let frames = child_frames(&stacked, &frame, &children, crate::stack::shown);
+        assert_eq!(frames[0].cell, Some([150., 115.]));
+        assert_eq!(frames[1].cell, Some([100., 165.]));
+
+        // The first sits in its cell, the second there plus its own x and y.
+        let first = put(&children[0], &frames[0], &ORTHO, false);
+        assert!(
+            same(first.corners, rect(150., 115., 250., 155.)),
+            "{first:?}"
+        );
+        let second = put(&children[1], &frames[1], &ORTHO, true);
+        assert!(
+            same(second.corners, rect(105., 163., 305., 183.)),
+            "{second:?}"
+        );
+
+        // Its children's own frame takes no cell from it.
+        assert_eq!(
+            child_frame(&children[0], &frames[0], &Live::default()).cell,
+            None
+        );
+
+        // A group that doesn't stack hands every child the same frame.
+        stacked.stack = None;
+        let plain = child_frames(&stacked, &frame, &children, crate::stack::shown);
+        assert!(plain.iter().all(|f| *f == frame));
     }
 }

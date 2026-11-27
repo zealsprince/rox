@@ -20,7 +20,7 @@ use gpui::{
     Window,
 };
 use gpui_component::input::InputState;
-use rox_canvas::{Anchor, CanvasItem, CanvasState, Content, Length};
+use rox_canvas::{Anchor, CanvasItem, CanvasState, Content};
 use rox_core::settings::roxo::{self, ObjectBundle};
 use rox_core::settings::{
     self, Asset, NamedLayout, NamedShader, WorkspaceBundle, WorkspaceMeta, assets,
@@ -592,10 +592,7 @@ pub(crate) fn place(
     );
     item.place.anchor = Anchor::Center;
     for axis in &mut item.place.position.xy {
-        *axis = match axis {
-            Length::Units(_) => Length::Units(0.),
-            Length::Stage(_) => Length::Stage(0.),
-        };
+        *axis = axis.zeroed();
     }
 
     let id = item.id.clone();

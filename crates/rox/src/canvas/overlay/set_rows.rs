@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use gpui::{AnyElement, Context, Div, IntoElement, ParentElement, Styled, div};
-use rox_canvas::{Anchor, CanvasItem, Content};
+use rox_canvas::{Anchor, CanvasItem, Content, Stack};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, setting_block, setting_row};
@@ -16,6 +16,7 @@ use rox_panel_kit::ui as settings_ui;
 
 use super::{ToolPress, anchor_picker, line_face, order_tools, tool, tool_row};
 use crate::canvas::align::{Arrange, Line};
+use crate::canvas::edit;
 use crate::panels::canvas::CanvasPanel;
 
 pub(super) fn rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyElement {
@@ -36,7 +37,14 @@ pub(super) fn rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyEle
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(heading)
-        .child(arrange(items.len(), cx))
+        .child(arrange(
+            items.len(),
+            panel
+                .selected
+                .primary()
+                .and_then(|id| edit::stack_of(&panel.config.canvas, id)),
+            cx,
+        ))
         .child(setting_block(
             rox_i18n::t!("canvas-order"),
             None,
@@ -49,27 +57,31 @@ pub(super) fn rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyEle
 }
 
 /// The aligns to the set's bounds, and with three or more, the
-/// distributes. Locked items stay where they are.
-fn arrange(count: usize, cx: &mut Context<CanvasPanel>) -> AnyElement {
-    let tip = |name: &str| {
-        rox_i18n::t!(
-            "canvas-align-tip-selection",
-            tool = rox_i18n::t!(name).to_string()
-        )
+/// distributes. Locked items stay where they are. In a stack the ones that
+/// would move along its axis are off.
+fn arrange(count: usize, stack: Option<Stack>, cx: &mut Context<CanvasPanel>) -> AnyElement {
+    let along = |axis: usize| stack.is_some_and(|stack| stack.axis.along() == axis);
+    let tip = |name: &str, off: bool| {
+        let tool = rox_i18n::t!(name).to_string();
+        match off {
+            true => rox_i18n::t!("canvas-stack-align-off", tool = tool),
+            false => rox_i18n::t!("canvas-align-tip-selection", tool = tool),
+        }
     };
 
     let mut tools: Vec<gpui::Stateful<Div>> = Line::ALL
         .into_iter()
         .map(|line| {
             let (icon, name, key) = line_face(line);
+            let off = along(line.axis_and_end().0);
             let press: ToolPress = Rc::new(move |this, window, cx| {
                 this.arrange_selected(Arrange::Align(line), window, cx)
             });
             tool(
                 icon,
-                tip(name),
+                tip(name, off),
                 format!("canvas-align-{key}"),
-                false,
+                off,
                 press,
                 cx,
             )
@@ -84,11 +96,16 @@ fn arrange(count: usize, cx: &mut Context<CanvasPanel>) -> AnyElement {
         for (icon, name, key, axis) in spread {
             let press: ToolPress =
                 Rc::new(move |this, window, cx| this.distribute_set(axis, window, cx));
+            let off = along(axis);
+            let tip = match off {
+                true => tip(name, true),
+                false => rox_i18n::t!(name),
+            };
             tools.push(tool(
                 icon,
-                rox_i18n::t!(name),
+                tip,
                 format!("canvas-distribute-{key}"),
-                false,
+                off,
                 press,
                 cx,
             ));

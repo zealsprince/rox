@@ -79,9 +79,26 @@ impl Length {
 
 impl Place {
     /// The size against a parent box of `parent`, each side held to its
-    /// limits. A minimum over its maximum wins, the way CSS settles it.
+    /// limits. A minimum over its maximum wins, the way CSS settles it. With
+    /// an aspect the box is then the largest of that shape inside it.
     pub fn size_in(&self, parent: [f32; 2]) -> [f32; 2] {
+        let space = self.space_in(parent);
+        match self.aspect() {
+            Some(aspect) => fitted(space, aspect),
+            None => space,
+        }
+    }
+
+    /// The box the sizes and limits give, before any aspect: the space a
+    /// locked shape fits inside.
+    pub fn space_in(&self, parent: [f32; 2]) -> [f32; 2] {
         [0, 1].map(|axis| self.limited(axis, self.size[axis].resolve(parent[axis])))
+    }
+
+    /// The locked width over height, if there's one that can be drawn. A
+    /// hand-edited zero, a negative or a NaN reads as no lock.
+    pub fn aspect(&self) -> Option<f32> {
+        self.aspect.filter(|a| a.is_finite() && *a > 0.)
     }
 
     /// `units` held to side `axis`'s limits.
@@ -99,6 +116,23 @@ impl Place {
     /// Units from the anchor's point against a parent box of `parent`.
     pub fn offset_in(&self, parent: [f32; 2]) -> [f32; 3] {
         self.position.resolve(parent)
+    }
+}
+
+/// The largest box `aspect` wide over high that fits inside `space`. Since
+/// the anchor places a box by its own matching point, the fitted box sits at
+/// the anchor's spot inside the space: a corner anchor keeps that corner, a
+/// centred one centres it. A space with no area stays as it is.
+pub fn fitted(space: [f32; 2], aspect: f32) -> [f32; 2] {
+    let [width, height] = space;
+    if !(width > 0. && height > 0.) {
+        return space;
+    }
+
+    if width / height > aspect {
+        [height * aspect, height]
+    } else {
+        [width, width / aspect]
     }
 }
 
@@ -249,6 +283,73 @@ mod tests {
         assert_eq!(saved["min_size"], json!([120.0, null]));
         assert!(saved.get("max_size").is_none());
         assert_eq!(serde_json::from_value::<Place>(saved).unwrap(), limited);
+    }
+
+    #[test]
+    fn a_locked_box_is_the_largest_of_its_shape_inside_the_sizes() {
+        let place = Place {
+            size: [Length::Stage(0.5), Length::Stage(0.5)],
+            aspect: Some(1.),
+            ..Place::default()
+        };
+
+        // Wide, square and tall windows: always square, as big as fits.
+        assert_eq!(place.size_in([1600., 900.]), [450., 450.]);
+        assert_eq!(place.size_in([1000., 1000.]), [500., 500.]);
+        assert_eq!(place.size_in([600., 1200.]), [300., 300.]);
+        assert_eq!(place.space_in([600., 1200.]), [300., 600.]);
+
+        // Wider than high.
+        assert_eq!(fitted([400., 400.], 2.), [400., 200.]);
+        assert_eq!(fitted([1000., 100.], 2.), [200., 100.]);
+
+        // No area to fit inside stays as it is.
+        assert_eq!(fitted([0., 300.], 1.), [0., 300.]);
+    }
+
+    #[test]
+    fn the_limits_bound_the_space_and_the_shape_fits_inside_them() {
+        let place = Place {
+            size: [Length::Stage(0.5), Length::Stage(0.9)],
+            max_size: [None, Some(460.)],
+            min_size: [Some(300.), None],
+            aspect: Some(1.),
+            ..Place::default()
+        };
+
+        // The height's maximum holds the space to 460 high.
+        assert_eq!(place.size_in([2000., 1000.]), [460., 460.]);
+
+        // A minimum widens the space, and the square fits the narrower side,
+        // so the minimum bounds the space, not the drawn side.
+        assert_eq!(place.space_in([400., 200.]), [300., 180.]);
+        assert_eq!(place.size_in([400., 200.]), [180., 180.]);
+    }
+
+    #[test]
+    fn an_aspect_that_cant_be_drawn_reads_as_no_lock() {
+        for junk in [0., -1., f32::NAN, f32::INFINITY] {
+            let place = Place {
+                aspect: Some(junk),
+                ..Place::default()
+            };
+            assert_eq!(place.aspect(), None);
+            assert_eq!(place.size_in([800., 600.]), [480., 320.]);
+        }
+    }
+
+    #[test]
+    fn a_locked_place_saves_its_aspect_and_an_unlocked_one_doesnt() {
+        let saved = serde_json::to_value(Place::default()).unwrap();
+        assert!(saved.get("aspect").is_none(), "{saved}");
+
+        let locked = Place {
+            aspect: Some(1.5),
+            ..Place::default()
+        };
+        let saved = serde_json::to_value(locked).unwrap();
+        assert_eq!(saved["aspect"], json!(1.5));
+        assert_eq!(serde_json::from_value::<Place>(saved).unwrap(), locked);
     }
 
     #[test]

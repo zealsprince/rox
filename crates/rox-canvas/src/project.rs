@@ -788,6 +788,36 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_box_sits_at_its_anchor_inside_the_space_its_sizes_give() {
+        let locked = |anchor: Anchor| {
+            let mut item = item(anchor, [0.; 3], [0., 0.]);
+            item.place.size = [Length::Stage(0.5), Length::Stage(1.)];
+            item.place.aspect = Some(1.);
+            item
+        };
+
+        // The sizes give 400 by 600 on the 800 by 600 stage.
+        let middle = put(&locked(Anchor::Center), &stage_frame(), &ORTHO, false);
+        assert!(same(middle.corners, rect(200., 100., 600., 500.)));
+        let corner = put(&locked(Anchor::TopLeft), &stage_frame(), &ORTHO, false);
+        assert!(same(corner.corners, rect(0., 0., 400., 400.)));
+        let far = put(&locked(Anchor::BottomRight), &stage_frame(), &ORTHO, false);
+        assert!(same(far.corners, rect(400., 200., 800., 600.)));
+
+        // A render target that follows its box takes the locked one.
+        assert_eq!(
+            rest_size(&locked(Anchor::Center), &stage_frame()),
+            [400., 400.]
+        );
+
+        // And a locked group hands its children the locked box.
+        let mut boxed = locked(Anchor::Center);
+        boxed.content = Content::Group { items: Vec::new() };
+        let frame = child_frame(&boxed, &stage_frame(), &Live::default());
+        assert_eq!(frame.size, [400., 400.]);
+    }
+
+    #[test]
     fn projected_points_land_where_the_item_draws() {
         let mut tilted = item(Anchor::Center, [30., -20., 40.], [300., 200.]);
         tilted.place.rotation = [15., 30., 5.];

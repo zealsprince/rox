@@ -1,11 +1,13 @@
 //! The inspector's rows for an axis that can be a fraction of the parent:
 //! the unit beside a position's x or y, and the limits under a fractional
-//! size. A fraction reads as a percentage, as a size's does.
+//! size. A fraction reads as a percentage, as a size's does. The aspect lock
+//! under the sizes lives here too.
 
 use std::rc::Rc;
 
 use gpui::{AnyElement, Context, Div, MouseButton, SharedString, div, prelude::*, px};
-use rox_canvas::{CanvasState, Length, Viewport};
+use rox_canvas::{CanvasItem, CanvasState, Content, Length, Viewport};
+use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel;
 
@@ -130,6 +132,112 @@ pub(super) fn limit_rows(
             fields,
         ))
         .into_any_element()
+}
+
+/// Under the width and height: the switch that keeps the box one shape, the
+/// width over height it keeps while on, and for a decoded image a press that
+/// takes the picture's own. Switching it on keeps the shape the box has in
+/// this window, so nothing moves until the window does.
+pub(super) fn aspect_row(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    viewport: Viewport,
+    cx: &mut Context<CanvasPanel>,
+) -> AnyElement {
+    let id = item.id.clone();
+    let locked = item.place.aspect();
+
+    let lock_id = id.clone();
+    let lock = panel::toggle(
+        locked.is_some(),
+        move |this: &mut CanvasPanel, on, cx| {
+            let id = lock_id.clone();
+            this.change_later(
+                "place.aspect",
+                move |canvas| {
+                    let Some(parent) = edit::parent_frame(canvas, &id, viewport) else {
+                        return;
+                    };
+                    if let Some(item) = canvas.find_mut(&id) {
+                        item.place.aspect = on.then(|| shape_of(item.place.space_in(parent.size)));
+                    }
+                },
+                cx,
+            )
+        },
+        cx,
+    );
+
+    let mut control = div().flex().flex_row().items_center().gap(tokens::SPACE_XS);
+
+    if let Some(aspect) = locked {
+        let setter = id.clone();
+        control = control.child(number(
+            panel,
+            &format!("aspect:{id}"),
+            aspect,
+            false,
+            move |canvas, v| {
+                if let Some(item) = canvas.find_mut(&setter)
+                    && v.is_finite()
+                    && v > 0.
+                {
+                    item.place.aspect = Some(v);
+                }
+            },
+            cx,
+        ));
+    }
+
+    if let Some(picture) = picture_shape(panel, item) {
+        let setter = id.clone();
+        control = control.child(rox_panel_kit::ui::small_button(
+            rox_i18n::t!("canvas-place-aspect-picture"),
+            icons::IMAGE,
+            false,
+            cx.listener(move |this: &mut CanvasPanel, _, _, cx| {
+                let id = setter.clone();
+                this.change_later(
+                    "place.aspect",
+                    move |canvas| {
+                        if let Some(item) = canvas.find_mut(&id) {
+                            item.place.aspect = Some(picture);
+                        }
+                    },
+                    cx,
+                )
+            }),
+        ));
+    }
+
+    div()
+        .id(SharedString::from(format!("canvas-aspect:{id}")))
+        .child(panel::setting_row_wrap(
+            rox_i18n::t!("canvas-place-aspect"),
+            Some(rox_i18n::t!("canvas-place-aspect.description")),
+            control.child(lock),
+        ))
+        .into_any_element()
+}
+
+/// Width over height, a square for a box with no area.
+fn shape_of([width, height]: [f32; 2]) -> f32 {
+    if width > 0. && height > 0. {
+        width / height
+    } else {
+        1.
+    }
+}
+
+/// An image item's picture as width over height, once it has decoded.
+fn picture_shape(panel: &CanvasPanel, item: &CanvasItem) -> Option<f32> {
+    let Content::Image { asset, .. } = &item.content else {
+        return None;
+    };
+
+    let pixels = panel.images().ready(asset)?.size(0);
+    let (width, height) = (pixels.width.0 as f32, pixels.height.0 as f32);
+    (width > 0. && height > 0.).then(|| width / height)
 }
 
 /// One limit as a number that turns into a field on a press. An empty field

@@ -678,6 +678,9 @@ pub fn slot_label(labels: &[Option<String>], slot: usize) -> String {
 pub struct SlotTargets {
     pub slots: [f32; SLOTS],
     labels: Vec<Option<String>>,
+    /// The slots a route has written this pass. The first route on a slot
+    /// replaces its hand-set value; the rest add to it.
+    routed: [bool; SLOTS],
 }
 
 impl Default for SlotTargets {
@@ -685,6 +688,7 @@ impl Default for SlotTargets {
         SlotTargets {
             slots: [0.0; SLOTS],
             labels: vec![None; SLOTS],
+            routed: [false; SLOTS],
         }
     }
 }
@@ -692,8 +696,8 @@ impl Default for SlotTargets {
 impl SlotTargets {
     pub fn labelled(source: &str) -> Self {
         SlotTargets {
-            slots: [0.0; SLOTS],
             labels: slot_labels(source),
+            ..SlotTargets::default()
         }
     }
 }
@@ -735,9 +739,18 @@ impl RouteTargets for SlotTargets {
             .collect()
     }
 
+    /// A slot reads 0 up, so a span below zero holds at zero.
     fn apply(&mut self, id: &str, value: f32) {
-        if let Some(slot) = target_slot(id) {
+        let Some(slot) = target_slot(id) else {
+            return;
+        };
+
+        let value = value.max(0.0);
+        if self.routed[slot] {
+            self.slots[slot] += value;
+        } else {
             self.slots[slot] = value;
+            self.routed[slot] = true;
         }
     }
 }
@@ -1324,6 +1337,20 @@ mod tests {
         assert_eq!(target_slot("slot16"), None);
         assert_eq!(target_slot("bass"), None);
         assert_eq!(target_slot(""), None);
+    }
+
+    #[test]
+    fn routes_on_one_slot_add_over_its_hand_set_value_and_stay_at_zero_up() {
+        let mut targets = SlotTargets::default();
+        seed_manual(&mut targets, &[(2, 0.9), (5, 0.4)]);
+
+        targets.apply(&slot_target(2), 0.25);
+        targets.apply(&slot_target(2), 0.5);
+        assert_eq!(targets.slots[2], 0.75, "the first replaces, the rest add");
+        assert_eq!(targets.slots[5], 0.4, "an unrouted slot keeps its own");
+
+        targets.apply(&slot_target(7), -0.5);
+        assert_eq!(targets.slots[7], 0.0);
     }
 
     #[test]

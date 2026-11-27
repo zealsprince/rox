@@ -92,7 +92,7 @@ fn ride_summary(route: &Route, pool: &[Signal]) -> String {
 }
 
 /// The lowest slot no route fills yet, where a fresh route starts.
-/// Duplicates stay legal through the slot picker; the last resolved wins.
+/// Duplicates stay legal through the slot picker, and add up.
 pub fn next_free_slot(routes: &[Route]) -> Option<usize> {
     let taken: Vec<usize> = routes
         .iter()

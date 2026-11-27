@@ -3825,6 +3825,10 @@ impl RouteHost for CanvasPanel {
     fn has_clock(&self) -> bool {
         true
     }
+
+    fn signed(&self, target: &str) -> bool {
+        routes::sways(target)
+    }
 }
 
 impl EventEmitter<PanelEvent> for CanvasPanel {}

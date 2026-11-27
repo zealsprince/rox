@@ -3,6 +3,8 @@
 //! `<item id>.<property>`. Opacity and scale take a share of the item's own
 //! setting, the way every route knob does. Position and rotation take a
 //! share of the item's sway, so a sway of zero leaves that axis still.
+//! Every route on a target counts: sway shares add and setting shares
+//! multiply.
 //!
 //! Nothing here touches the saved items. The offsets live in one [`Live`]
 //! per routed item, built fresh each frame and handed to the projection.
@@ -124,6 +126,10 @@ impl RouteTargets for Lives<'_> {
         targets
     }
 
+    /// Every route on a field counts. A sway's shares add, so a time route
+    /// and a music route on one axis move it by both. Opacity and scale
+    /// shares multiply, the way a case's opacity composes with a route's,
+    /// and hold at zero, since a share below it has no meaning there.
     fn apply(&mut self, id: &str, value: f32) {
         let Some((item_id, property)) = split(id) else {
             return;
@@ -134,19 +140,32 @@ impl RouteTargets for Lives<'_> {
 
         let live = self.live.entry(item_id.to_string()).or_default();
         match property {
-            // Past full the item can't get more opaque, so the share stops
-            // where the product reaches one.
-            Property::Opacity if item.opacity > 0. => live.opacity = value.min(1. / item.opacity),
-            Property::Opacity => live.opacity = value,
-            Property::Scale => live.scale = value,
-            Property::Position(axis) => live.position[axis] = value * item.sway.position[axis],
-            Property::Rotation(axis) => live.rotation[axis] = value * item.sway.rotation[axis],
+            Property::Opacity => live.opacity *= value.max(0.),
+            Property::Scale => live.scale *= value.max(0.),
+            Property::Position(axis) => live.position[axis] += value * item.sway.position[axis],
+            Property::Rotation(axis) => live.rotation[axis] += value * item.sway.rotation[axis],
+        }
+    }
+}
+
+impl Lives<'_> {
+    /// Past full an item can't get more opaque, so its opacity share stops
+    /// where the product reaches one. Run once every route has applied, so
+    /// the order the routes are listed in doesn't change the picture.
+    pub(crate) fn finish(&mut self) {
+        for (id, live) in self.live.iter_mut() {
+            if let Some(item) = self.canvas.find(id)
+                && item.opacity > 0.
+            {
+                live.opacity = live.opacity.min(1. / item.opacity);
+            }
         }
     }
 }
 
 /// Whether a target's span is a share of its item's sway: a position or
-/// rotation axis.
+/// rotation axis. Its span is signed, so a sway can swing both ways round
+/// home.
 pub(crate) fn sways(target: &str) -> bool {
     split(target).is_some_and(|(_, property)| {
         matches!(property, Property::Position(_) | Property::Rotation(_))
@@ -180,6 +199,7 @@ fn lives_from(
     for (target, factor) in factors {
         lives.apply(target, *factor);
     }
+    lives.finish();
 
     if weight < 1. {
         for live in lives.live.values_mut() {
@@ -407,9 +427,10 @@ impl Motion {
 }
 
 /// `pose` with every time route applied at `seconds`, at full weight
-/// whatever playback does. On a target a music route also drives, the time
-/// route wins. One switched on keeps the frames coming. No `seconds` holds
-/// them at rest and asks for no frames.
+/// whatever playback does. On a field a music route also drives, the time
+/// route composes with the music's eased offsets as any two routes do. One
+/// switched on keeps the frames coming. No `seconds` holds them at rest and
+/// asks for no frames.
 fn over_time(canvas: &CanvasState, routes: &[Route], seconds: Option<f64>, pose: Pose) -> Pose {
     if !signal_ui::timed(routes) {
         return pose;
@@ -421,6 +442,7 @@ fn over_time(canvas: &CanvasState, routes: &[Route], seconds: Option<f64>, pose:
         Some(seconds) => signal_ui::apply_time_routes(routes, seconds, &mut lives),
         None => at_rest(routes, &mut lives),
     }
+    lives.finish();
 
     Pose {
         lives: lives.live,
@@ -551,10 +573,13 @@ mod tests {
         let mut lives = Lives::new(&canvas);
 
         lives.apply("logo.opacity", 0.5);
+        lives.finish();
         assert_eq!(lives.live["logo"].opacity, 0.5);
 
         // Overshoot stops where the item is fully opaque.
+        let mut lives = Lives::new(&canvas);
         lives.apply("logo.opacity", 3.);
+        lives.finish();
         assert_eq!(lives.live["logo"].opacity, 1.25);
     }
 
@@ -599,13 +624,59 @@ mod tests {
     }
 
     #[test]
-    fn a_later_route_to_the_same_target_wins() {
-        let canvas = canvas(vec![item("logo")]);
+    fn routes_on_one_field_add_their_sways_and_multiply_their_shares() {
+        let canvas = canvas(vec![CanvasItem {
+            opacity: 0.5,
+            sway: Sway {
+                position: [0., 40., 0.],
+                rotation: [0., 0., 30.],
+            },
+            ..item("logo")
+        }]);
         let mut lives = Lives::new(&canvas);
 
-        lives.apply("logo.scale", 0.3);
-        lives.apply("logo.scale", 0.7);
-        assert_eq!(lives.live["logo"].scale, 0.7);
+        lives.apply("logo.scale", 0.5);
+        lives.apply("logo.scale", 1.5);
+        lives.apply("logo.y", 0.5);
+        lives.apply("logo.y", -0.25);
+        lives.apply("logo.rz", 1.);
+        lives.apply("logo.rz", 1.);
+        lives.apply("logo.opacity", 4.);
+        lives.apply("logo.opacity", 0.25);
+        lives.finish();
+
+        let live = lives.live["logo"];
+        assert_eq!(live.scale, 0.75);
+        assert_eq!(live.position[1], 10.);
+        assert_eq!(live.rotation[2], 60.);
+        assert_eq!(live.opacity, 1., "the product is capped, not each share");
+
+        // Listed the other way round, the picture is the same.
+        let mut lives = Lives::new(&canvas);
+        lives.apply("logo.opacity", 0.25);
+        lives.apply("logo.opacity", 4.);
+        lives.finish();
+        assert_eq!(lives.live["logo"].opacity, 1.);
+    }
+
+    #[test]
+    fn a_share_below_zero_holds_opacity_and_scale_at_zero_and_swings_a_sway() {
+        let canvas = canvas(vec![CanvasItem {
+            sway: Sway {
+                position: [40., 0., 0.],
+                ..Sway::default()
+            },
+            ..item("logo")
+        }]);
+        let mut lives = Lives::new(&canvas);
+
+        lives.apply("logo.opacity", -0.5);
+        lives.apply("logo.scale", -2.);
+        lives.apply("logo.x", -1.);
+        let live = lives.live["logo"];
+        assert_eq!(live.opacity, 0.);
+        assert_eq!(live.scale, 0.);
+        assert_eq!(live.position[0], -40.);
     }
 
     #[test]
@@ -893,6 +964,71 @@ mod tests {
         routes[0].curve = Curve::EaseIn;
         let bent = over_time(&canvas, &routes, Some(1.), still());
         assert_eq!(bent.lives["logo"].position[1], 10.);
+    }
+
+    #[test]
+    fn a_time_route_adds_to_a_music_route_on_the_same_field() {
+        let (canvas, routes) = drifting(true);
+        let music = || Pose {
+            lives: HashMap::from([(
+                "logo".to_string(),
+                Live {
+                    position: [0., 8., 0.],
+                    opacity: 0.5,
+                    ..Live::default()
+                },
+            )]),
+            more: true,
+            drifts: false,
+        };
+
+        // A saw a quarter in, 10 of the 40 unit sway, on top of the music's 8.
+        let both = over_time(&canvas, &routes, Some(0.5), music());
+        assert_eq!(both.lives["logo"].position[1], 18.);
+        assert_eq!(both.lives["logo"].opacity, 0.5, "the time route leaves it");
+        assert!(
+            both.more && both.drifts,
+            "music asks every frame, time paces"
+        );
+
+        // Held still, the time route rests at its phase and the music's
+        // offset is still there under it.
+        let rested = over_time(&canvas, &routes, None, music());
+        assert_eq!(rested.lives["logo"].position[1], 8.);
+        assert!(rested.more && !rested.drifts);
+
+        // A fade multiplies the music's share.
+        let fade = Route {
+            from: 0.5,
+            time: Some(Wave {
+                period: 2.,
+                shape: Shape::Saw,
+                phase: 0.,
+            }),
+            ..route("logo.opacity")
+        };
+        let faded = over_time(&canvas, &[fade], Some(1.), music());
+        assert!((faded.lives["logo"].opacity - 0.375).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_span_from_minus_one_swings_round_home() {
+        let (canvas, mut routes) = drifting(true);
+        routes[0].from = -1.;
+        routes[0].time = Some(Wave {
+            period: 4.,
+            shape: Shape::Sine,
+            phase: 0.,
+        });
+
+        // A sine over a 40 unit sway: -40 at the start, home a quarter in,
+        // 40 halfway, home again three quarters in.
+        let at = |seconds: f64| over_time(&canvas, &routes, Some(seconds), still()).lives["logo"];
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(near(at(0.).position[1], -40.));
+        assert!(near(at(1.).position[1], 0.));
+        assert!(near(at(2.).position[1], 40.));
+        assert!(near(at(3.).position[1], 0.));
     }
 
     #[test]

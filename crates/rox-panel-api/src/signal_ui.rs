@@ -51,15 +51,17 @@ pub trait RouteTargets {
     /// Every bindable target as `(id, label)`, in display order.
     fn targets(&self) -> Vec<(String, String)>;
 
-    /// Unknown ids must do nothing, so a stale config goes quiet rather
-    /// than misfiring.
+    /// One route's contribution. Every route on a target counts, so a host
+    /// composes this with what earlier routes left there: a share of a
+    /// setting multiplies, an offset or a reading adds. Unknown ids must do
+    /// nothing, so a stale config goes quiet rather than misfiring.
     fn apply(&mut self, id: &str, value: f32);
 }
 
 /// Resolve routes against the hub's live signals into the host's targets.
-/// Later routes to the same target win; routes whose signal is gone
-/// contribute nothing. Time routes are left out: only a host with a clock
-/// reads them, through [`apply_time_routes`].
+/// Every route on a target contributes, in list order; routes whose signal
+/// is gone contribute nothing. Time routes are left out: only a host with a
+/// clock reads them, through [`apply_time_routes`].
 pub fn apply_routes(routes: &[Route], hub: &SignalHub, targets: &mut impl RouteTargets) {
     for route in routes {
         if !route.enabled || route.time.is_some() {
@@ -84,11 +86,13 @@ pub fn apply_time_routes(routes: &[Route], seconds: f64, targets: &mut impl Rout
     }
 }
 
-/// A share of the knob's own setting. Overshoot past 100% is allowed; the
-/// knob's accessor clamps it.
+/// The route's output for a reading: a share of the knob's own setting, or
+/// of a sway. Signed, so a sway can swing both ways round its home; a host
+/// whose knob has no meaning below zero holds it there itself. Overshoot
+/// past 100% is allowed; the knob's accessor clamps it.
 pub fn span(route: &Route, reading: f32) -> f32 {
     let x = route.curve.bend(reading);
-    (route.from + (route.to - route.from) * x).max(0.0)
+    route.from + (route.to - route.from) * x
 }
 
 /// Whether any switched-on route follows time.
@@ -124,6 +128,12 @@ pub trait RouteHost: SignalHost {
     /// Whether the host reads time routes through [`apply_time_routes`].
     /// Only then does a route row offer Time.
     fn has_clock(&self) -> bool {
+        false
+    }
+
+    /// Whether `target` is a signed offset, where a span below zero pushes
+    /// the other way. Its Quiet and Loud sliders then centre on zero.
+    fn signed(&self, _target: &str) -> bool {
         false
     }
 }
@@ -459,17 +469,15 @@ pub fn scope_chip<P: 'static>(
         .child(label)
 }
 
-/// Repoints an existing route rather than stacking a second.
+/// Adds a route from `signal` to the ones already on `target`, since routes
+/// on one target add up. One that already reads it is opened instead of
+/// stacking a copy; a route's own chips repoint it.
 fn attach_signal<P: RouteHost>(host: &mut P, target: String, signal: u64, cx: &mut Context<P>) {
-    if let Some(route) = host
-        .routes_mut()
-        .iter_mut()
-        .rev()
-        .find(|r| r.target == target)
-    {
-        route.signal = signal;
-        route.time = None;
-    } else {
+    let known = host
+        .routes()
+        .iter()
+        .any(|r| r.target == target && r.time.is_none() && r.signal == signal);
+    if !known {
         host.routes_mut().push(Route {
             signal,
             target: target.clone(),
@@ -480,18 +488,18 @@ fn attach_signal<P: RouteHost>(host: &mut P, target: String, signal: u64, cx: &m
     cx.notify();
 }
 
-/// A time route on `target`, made or repointed as [`attach_signal`] does.
+/// A time route on `target`, added as [`attach_signal`] adds one. On a
+/// signed target it swings the whole sway both ways round home.
 fn attach_time<P: RouteHost>(host: &mut P, target: String, cx: &mut Context<P>) {
-    if let Some(route) = host
-        .routes_mut()
-        .iter_mut()
-        .rev()
-        .find(|r| r.target == target)
-    {
-        route.time.get_or_insert_with(Wave::default);
-    } else {
+    let known = host
+        .routes()
+        .iter()
+        .any(|r| r.target == target && r.time.is_some());
+    if !known {
+        let from = if host.signed(&target) { -1.0 } else { 0.0 };
         host.routes_mut().push(Route {
             target: target.clone(),
+            from,
             time: Some(Wave::default()),
             ..Route::default()
         });
@@ -1104,14 +1112,76 @@ fn gate_mark(signal: &Signal) -> Option<f32> {
     (threshold > 0.0).then_some(threshold)
 }
 
+/// How a Quiet or Loud slider maps a span to its track. An unsigned one runs
+/// 0 to 100% with typing up to [`SPAN_OVER`]. A signed one runs -100% to
+/// 100% with zero in the middle, and typing reaches [`SPAN_OVER`] either way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SpanRange {
+    signed: bool,
+}
+
+impl SpanRange {
+    fn of(signed: bool) -> SpanRange {
+        SpanRange { signed }
+    }
+
+    fn floor(self) -> f32 {
+        if self.signed { -SPAN_OVER } else { 0.0 }
+    }
+
+    /// A span as the slider's fraction.
+    fn fraction(self, value: f32) -> f32 {
+        if self.signed {
+            (value + 1.0) / 2.0
+        } else {
+            value
+        }
+    }
+
+    /// The slider's fraction as a span, held to the range.
+    fn value(self, fraction: f32) -> f32 {
+        let value = if self.signed {
+            fraction * 2.0 - 1.0
+        } else {
+            fraction
+        };
+        value.clamp(self.floor(), SPAN_OVER)
+    }
+}
+
+/// A route's Quiet or Loud end as a slider whose readout takes a typed
+/// percentage. `apply` gets the span itself, already held to the range.
+fn span_slider<P: 'static>(
+    scrub: &ScrubState,
+    edit: &ValueEdit,
+    value: f32,
+    range: SpanRange,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    let shown = value.clamp(range.floor(), SPAN_OVER);
+    let percent = (shown * 100.0).round();
+
+    panel::value_slider_edit_between(
+        scrub,
+        edit,
+        range.fraction(shown),
+        rox_i18n::format::format_percent(percent as f64),
+        format!("{}", percent as i32),
+        [range.fraction(range.floor()), range.fraction(SPAN_OVER)],
+        move |typed| range.fraction(typed / 100.0),
+        move |this: &mut P, fraction, cx| apply(this, range.value(fraction), cx),
+        cx,
+    )
+}
+
 fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Div {
     let route = &host.routes()[index];
     let scrubs = &host.signal_ui().route_scrubs[index];
     let pool = host.hub().pool();
     let timed = route.time.is_some();
     let known = !timed && pool.iter().any(|s| s.id == route.signal);
-    let from = route.from.clamp(0.0, SPAN_OVER);
-    let to = route.to.clamp(0.0, SPAN_OVER);
+    let range = SpanRange::of(host.signed(&route.target));
     let (quiet_line, loud_line) = if timed {
         (
             rox_i18n::t!("route-time-low.description"),
@@ -1232,17 +1302,14 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     .child(panel::setting_row_wrap(
         quiet_label,
         Some(quiet_line),
-        panel::value_slider_edit_over(
+        span_slider(
             &scrubs.from,
             host.value_edit(),
-            from,
-            rox_i18n::format::format_percent((from * 100.0).round() as f64),
-            format!("{}", (from * 100.0).round() as i32),
-            SPAN_OVER,
-            |v| v / 100.0,
-            move |this: &mut P, fraction, cx| {
+            route.from,
+            range,
+            move |this: &mut P, value, cx| {
                 if let Some(route) = this.routes_mut().get_mut(index) {
-                    route.from = fraction.clamp(0.0, SPAN_OVER);
+                    route.from = value;
                 }
                 cx.notify();
             },
@@ -1252,17 +1319,14 @@ fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Di
     .child(panel::setting_row_wrap(
         loud_label,
         Some(loud_line),
-        panel::value_slider_edit_over(
+        span_slider(
             &scrubs.to,
             host.value_edit(),
-            to,
-            rox_i18n::format::format_percent((to * 100.0).round() as f64),
-            format!("{}", (to * 100.0).round() as i32),
-            SPAN_OVER,
-            |v| v / 100.0,
-            move |this: &mut P, fraction, cx| {
+            route.to,
+            range,
+            move |this: &mut P, value, cx| {
                 if let Some(route) = this.routes_mut().get_mut(index) {
-                    route.to = fraction.clamp(0.0, SPAN_OVER);
+                    route.to = value;
                 }
                 cx.notify();
             },
@@ -1510,7 +1574,7 @@ pub fn bindable_row<P: RouteHost>(
     control: Div,
     cx: &mut Context<P>,
 ) -> Div {
-    let bound = host.routes().iter().rposition(|r| r.target == target);
+    let bound = bound_to(host.routes(), &target);
     let open = host.signal_ui().open_bind.as_deref() == Some(target.as_str());
     let weak = cx.entity().downgrade();
     let menu_target = target.clone();
@@ -1568,7 +1632,7 @@ pub fn bindable_row<P: RouteHost>(
         // An unbound row keeps an empty slot the same size so the sliders
         // stay in column.
         .map(|d| {
-            if bound.is_some() {
+            if !bound.is_empty() {
                 d.child(settings_ui::icon_button(
                     icons::AUDIO_WAVEFORM,
                     false,
@@ -1603,51 +1667,113 @@ pub fn bindable_row<P: RouteHost>(
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(panel::setting_row_wrap(label, description, control));
-    if open && let Some(index) = bound {
-        let header = settings_ui::block_header(
+    if !open {
+        return row;
+    }
+
+    // Each route on the knob gets its own block, since they add up.
+    if bound.len() > 1 {
+        row = row.child(
             div()
                 .text_xs()
-                .text_color(palette::text_muted())
-                .child(rox_i18n::t!("route-header")),
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(tokens::SPACE_XS)
-                .child(toggle(
-                    host.routes()[index].enabled,
-                    move |this: &mut P, on, cx| {
-                        if let Some(route) = this.routes_mut().get_mut(index) {
-                            route.enabled = on;
-                        }
-                        cx.notify();
-                    },
-                    cx,
-                ))
-                .child(settings_ui::icon_button(
-                    icons::TRASH,
-                    false,
-                    cx.listener(move |this: &mut P, _, _, cx| {
-                        this.signal_ui_mut().open_bind = None;
-                        remove_route(this, index, cx);
-                    }),
-                )),
+                .text_color(palette::text_faint())
+                .child(rox_i18n::t!("canvas-route-stacked")),
         );
-        row = row.child(settings_ui::nested(
+    }
+    // An id per block, or two blocks' pickers share one menu's state.
+    let last = bound.len() == 1;
+    for index in bound {
+        row = row.child(
             div()
-                .flex()
-                .flex_col()
-                .gap(tokens::SPACE_SM)
-                .child(header)
-                .child(route_tuning(host, index, cx)),
-        ));
+                .id(SharedString::from(format!("route-block-{target}-{index}")))
+                .child(route_block(host, index, last, cx)),
+        );
     }
     row
+}
+
+/// The routes on `target`, in list order.
+fn bound_to(routes: &[Route], target: &str) -> Vec<usize> {
+    routes
+        .iter()
+        .enumerate()
+        .filter(|(_, route)| route.target == target)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// One route under its knob: a header with its switch and its trash, then
+/// its tuning. Trashing the `last` one on the knob folds the knob shut.
+fn route_block<P: RouteHost>(host: &P, index: usize, last: bool, cx: &mut Context<P>) -> Div {
+    let header = settings_ui::block_header(
+        div()
+            .text_xs()
+            .text_color(palette::text_muted())
+            .child(rox_i18n::t!("route-header")),
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(tokens::SPACE_XS)
+            .child(toggle(
+                host.routes()[index].enabled,
+                move |this: &mut P, on, cx| {
+                    if let Some(route) = this.routes_mut().get_mut(index) {
+                        route.enabled = on;
+                    }
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(settings_ui::icon_button(
+                icons::TRASH,
+                false,
+                cx.listener(move |this: &mut P, _, _, cx| {
+                    if last {
+                        this.signal_ui_mut().open_bind = None;
+                    }
+                    remove_route(this, index, cx);
+                }),
+            )),
+    );
+
+    settings_ui::nested(
+        div()
+            .flex()
+            .flex_col()
+            .gap(tokens::SPACE_SM)
+            .child(header)
+            .child(route_tuning(host, index, cx)),
+    )
 }
 
 #[cfg(test)]
 mod label_tests {
     use super::*;
+
+    #[test]
+    fn a_span_is_signed_and_a_signed_slider_centres_on_zero() {
+        let sway = Route {
+            from: -1.0,
+            to: 1.0,
+            ..Route::default()
+        };
+        assert_eq!(span(&sway, 0.0), -1.0);
+        assert_eq!(span(&sway, 0.5), 0.0);
+        assert_eq!(span(&sway, 1.0), 1.0);
+
+        let signed = SpanRange::of(true);
+        assert_eq!(signed.fraction(0.0), 0.5);
+        assert_eq!(signed.value(0.0), -1.0);
+        assert_eq!(signed.value(signed.fraction(-0.25)), -0.25);
+        assert_eq!(signed.value(signed.fraction(-9.0)), -SPAN_OVER);
+
+        // Unsigned, a typed value under zero stops there, as it always did.
+        let plain = SpanRange::of(false);
+        assert_eq!(plain.fraction(0.75), 0.75);
+        assert_eq!(plain.value(-0.5), 0.0);
+        assert_eq!(plain.value(9.0), SPAN_OVER);
+    }
 
     fn unnamed(source: Source) -> Signal {
         Signal {

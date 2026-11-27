@@ -601,7 +601,11 @@ impl RouteTargets for Modulated {
         targets
     }
 
+    /// Every knob takes a share of its setting, and two routes on one knob
+    /// multiply. A share under zero would turn a knob inside out, so it
+    /// holds at zero.
     fn apply(&mut self, id: &str, value: f32) {
+        let value = value.max(0.0);
         if let Some((eid, knob)) = emitter_route(id) {
             if let (Some(emitter), Some(target)) = (
                 self.emitters.iter_mut().find(|e| e.id == eid),
@@ -2128,6 +2132,24 @@ impl ParticlesPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_routes_on_a_knob_multiply_and_a_share_under_zero_stops_it() {
+        let config = ParticlesConfig::default();
+        let mut targets = Modulated {
+            emitters: config.emitters.clone(),
+            scene: config.scene.clone(),
+            forces: config.forces.clone(),
+        };
+        let drag = config.scene.drag;
+
+        targets.apply("drag", 0.5);
+        targets.apply("drag", 3.0);
+        assert!((targets.scene.drag - drag * 1.5).abs() < 1e-4);
+
+        targets.apply("drag", -2.0);
+        assert_eq!(targets.scene.drag, 0.0);
+    }
 
     #[test]
     fn builtin_presets_round_trip_through_the_dump() {

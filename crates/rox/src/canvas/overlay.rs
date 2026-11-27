@@ -791,6 +791,7 @@ fn item_rows(
             rows = rows.child(place_rows::limit_rows(panel, &id, axis, limits, cx));
         }
     }
+    rows = rows.child(place_rows::aspect_row(panel, item, viewport, cx));
 
     // A flat item stores its turn and scale and draws neither, so those rows
     // stay inert and take no route.

@@ -298,7 +298,8 @@ impl Edges {
 
 /// A flat item's place after dragging `edges` of its screen box by `delta`.
 /// The sides not dragged stay where they were, so the center moves too. Each
-/// length keeps its unit, and the box never shrinks under `floor` pixels.
+/// length keeps its unit, and the box never shrinks under `floor` pixels. A
+/// locked shape keeps its shape ([`locked_box`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resized(
     item: &CanvasItem,
@@ -311,6 +312,10 @@ pub(crate) fn resized(
     floor: [f32; 2],
     flat: bool,
 ) -> Place {
+    if let Some((next, target)) = locked_box(item, parent, start, edges, delta, floor) {
+        return centred(next, parent, camera, viewport, flat, target);
+    }
+
     let [mut left, mut top, mut right, mut bottom] = start;
     if edges.left {
         left = (left + delta[0]).min(right - floor[0]);
@@ -344,14 +349,121 @@ pub(crate) fn resized(
 
     let mut next = item.clone();
     for axis in 0..2 {
-        next.place.size[axis] = match item.place.size[axis] {
-            Length::Stage(_) if parent.size[axis] > 0. => {
-                Length::Stage(units[axis] / parent.size[axis])
-            }
-            _ => Length::Units(units[axis]),
-        };
+        next.place.size[axis] =
+            resized_length(item.place.size[axis], units[axis], parent.size[axis]);
     }
 
+    let target = [(left + right) / 2., (top + bottom) / 2.];
+    centred(next, parent, camera, viewport, flat, target)
+}
+
+/// `units` long, a fraction where the side was one and the parent has a
+/// length to divide by.
+fn resized_length(length: Length, units: f32, parent_axis: f32) -> Length {
+    match length {
+        Length::Stage(_) if parent_axis > 0. => Length::Stage(units / parent_axis),
+        _ => Length::Units(units),
+    }
+}
+
+/// A locked item resized, and the middle its box should land on, or None
+/// for an item with no lock or no box to scale. The shape holds: a corner
+/// scales the box by the drag along its diagonal and keeps the opposite
+/// corner, and an edge scales it by the drag across that edge, keeping the
+/// opposite edge and the middle of the two beside it. Every side of the
+/// space the sizes give scales by the same factor, in its own unit, so the
+/// item answers a new window shape as it did before.
+fn locked_box(
+    item: &CanvasItem,
+    parent: &Frame,
+    start: [f32; 4],
+    edges: Edges,
+    delta: [f32; 2],
+    floor: [f32; 2],
+) -> Option<(CanvasItem, [f32; 2])> {
+    item.place.aspect()?;
+    let [left, top, right, bottom] = start;
+    let (w0, h0) = (right - left, bottom - top);
+    if !(w0 > 0. && h0 > 0.) {
+        return None;
+    }
+
+    // The box as an unlocked drag would leave it.
+    let horizontal = edges.left || edges.right;
+    let vertical = edges.top || edges.bottom;
+    let grow = |near: bool, far: bool, by: f32| match (near, far) {
+        (true, _) => -by,
+        (_, true) => by,
+        _ => 0.,
+    };
+    let w1 = w0 + grow(edges.left, edges.right, delta[0]);
+    let h1 = h0 + grow(edges.top, edges.bottom, delta[1]);
+
+    let mut factor = match (horizontal, vertical) {
+        (true, true) => (w1 * w0 + h1 * h0) / (w0 * w0 + h0 * h0),
+        (true, false) => w1 / w0,
+        (false, true) => h1 / h0,
+        (false, false) => return None,
+    };
+
+    // Each side of the space stops at its limits, a minimum winning a tie,
+    // and the drawn box never under the floor.
+    let space = item.place.space_in(parent.size);
+    let (mut most, mut least) = (f32::INFINITY, 0f32);
+    for axis in 0..2 {
+        if space[axis] <= 0. {
+            continue;
+        }
+        if let Some(max) = item.place.max_size[axis] {
+            most = most.min(max / space[axis]);
+        }
+        if let Some(min) = item.place.min_size[axis] {
+            least = least.max(min / space[axis]);
+        }
+    }
+    let floored = (floor[0] / w0).max(floor[1] / h0);
+    factor = factor.min(most).max(least).max(floored);
+    if !factor.is_finite() || factor <= 0. {
+        return None;
+    }
+
+    let (w, h) = (w0 * factor, h0 * factor);
+    let (cx, cy) = ((left + right) / 2., (top + bottom) / 2.);
+    let x = if edges.left {
+        right - w / 2.
+    } else if edges.right {
+        left + w / 2.
+    } else {
+        cx
+    };
+    let y = if edges.top {
+        bottom - h / 2.
+    } else if edges.bottom {
+        top + h / 2.
+    } else {
+        cy
+    };
+
+    let mut next = item.clone();
+    for axis in 0..2 {
+        next.place.size[axis] = resized_length(
+            item.place.size[axis],
+            space[axis] * factor,
+            parent.size[axis],
+        );
+    }
+    Some((next, [x, y]))
+}
+
+/// `next` moved so its drawn box's middle lands on `target`, in pixels.
+fn centred(
+    mut next: CanvasItem,
+    parent: &Frame,
+    camera: &Camera,
+    viewport: Viewport,
+    flat: bool,
+    target: [f32; 2],
+) -> Place {
     // The new size moves the center about the anchor, so it's measured where
     // it landed and carried to the middle of the new box.
     if let Some(projected) = project(
@@ -365,7 +477,6 @@ pub(crate) fn resized(
     ) {
         let (origin, extent) = super::bbox(&projected.corners);
         let landed = [origin[0] + extent[0] / 2., origin[1] + extent[1] / 2.];
-        let target = [(left + right) / 2., (top + bottom) / 2.];
         let shift = [target[0] - landed[0], target[1] - landed[1]];
 
         let [du, dv] = unproject_delta(&next, parent, camera, viewport, flat, shift);
@@ -1115,6 +1226,103 @@ mod tests {
         );
         assert!(near(origin[1], start[1]));
         assert_eq!(next.place.size[0], Length::Units(460.));
+    }
+
+    /// A grid sized 0.25 by 0.5 of the 1600 by 900 stage, square-locked: a
+    /// 400 by 450 space holding a 400 square.
+    fn locked() -> CanvasItem {
+        let mut item = grid("g", [0., 0., 0.], [Length::Stage(0.25), Length::Stage(0.5)]);
+        item.place.aspect = Some(1.);
+        item
+    }
+
+    fn screen_box(item: &CanvasItem) -> [f32; 4] {
+        let (origin, extent) = super::super::bbox(&put(item, &stage()).corners);
+        [
+            origin[0],
+            origin[1],
+            origin[0] + extent[0],
+            origin[1] + extent[1],
+        ]
+    }
+
+    fn drag(item: &CanvasItem, edges: Edges, delta: [f32; 2], floor: f32) -> CanvasItem {
+        let mut next = item.clone();
+        next.place = resized(
+            item,
+            &stage(),
+            &camera(),
+            VIEW,
+            screen_box(item),
+            edges,
+            delta,
+            [floor, floor],
+            is_flat(&item.content),
+        );
+        next
+    }
+
+    #[test]
+    fn a_corner_scales_a_locked_box_and_keeps_the_opposite_corner() {
+        let item = locked();
+        let start = screen_box(&item);
+        assert!(near(start[2] - start[0], 400.) && near(start[3] - start[1], 400.));
+
+        // Down and right by uneven amounts: the shape holds and the top left
+        // stays where it was.
+        let corner = Edges {
+            right: true,
+            bottom: true,
+            ..Edges::default()
+        };
+        let next = drag(&item, corner, [100., 60.], 10.);
+        let after = screen_box(&next);
+        let (w, h) = (after[2] - after[0], after[3] - after[1]);
+        assert!(near(w, h), "{w} {h}");
+        assert!(near(w, 480.), "{w}");
+        assert!(
+            near(after[0], start[0]) && near(after[1], start[1]),
+            "{after:?}"
+        );
+
+        // Both sides of the space scaled by one factor, each still a fraction.
+        assert!(fraction_near(next.place.size[0], 0.3));
+        assert!(fraction_near(next.place.size[1], 0.6));
+    }
+
+    #[test]
+    fn an_edge_scales_a_locked_box_about_the_middle_of_its_other_sides() {
+        let item = locked();
+        let start = screen_box(&item);
+        let right = Edges {
+            right: true,
+            ..Edges::default()
+        };
+
+        let next = drag(&item, right, [-100., 0.], 10.);
+        let after = screen_box(&next);
+        assert!(near(after[2] - after[0], 300.) && near(after[3] - after[1], 300.));
+        assert!(near(after[0], start[0]), "the left edge stays");
+        let middle = |b: [f32; 4]| (b[1] + b[3]) / 2.;
+        assert!(near(middle(after), middle(start)), "{after:?}");
+    }
+
+    #[test]
+    fn a_locked_resize_stops_at_a_limit_and_the_floor_with_its_shape() {
+        let mut item = locked();
+        item.place.max_size = [Some(500.), None];
+        let corner = Edges {
+            right: true,
+            bottom: true,
+            ..Edges::default()
+        };
+
+        // The 400 wide space can grow to 500, so the square to 500.
+        let grown = screen_box(&drag(&item, corner, [400., 400.], 10.));
+        assert!(near(grown[2] - grown[0], 500.) && near(grown[3] - grown[1], 500.));
+
+        let shrunk = screen_box(&drag(&item, corner, [-600., -600.], 50.));
+        assert!(near(shrunk[2] - shrunk[0], 50.) && near(shrunk[3] - shrunk[1], 50.));
     }
 
     #[test]

@@ -73,12 +73,32 @@ and reads empty, so the pool stays editable and persistable without audio.
 
 A route carries one reading onto a host's knob (`apply_routes`,
 `crates/rox-panel-api/src/signal_ui.rs`). The reading goes through the route's curve, then
-onto its span: `max(0, from + (to - from) * curve(value))`. Linear passes the value
+onto its span: `from + (to - from) * curve(value)`. Linear passes the value
 exactly, overshoot included, as every route did before curves. The others hold it to 0 to
 1 first: Ease In is `x^2`, Ease Out `1 - (1 - x)^2`, Ease In and Out the smoothstep
 `x^2 (3 - 2x)`, and an exponent is `x^p` with `p` held to 0.1 to 10 (`Curve::bend`,
 `crates/rox-viz/src/signal.rs`). Every route row has the curve picker, the shader slots'
 route editor included.
+
+The span is signed. A host whose knob has no meaning below zero holds the output there
+itself: a shader slot, every particle knob, and a canvas item's opacity and scale. Where
+the knob is an offset, a canvas item's position or rotation sway, `"from": -1.0,
+"to": 1.0` swings it the whole sway either way round its home. A host says which of its
+targets are offsets (`RouteHost::signed`), and on those the Quiet and Loud sliders run
+-100% to 100% with zero in the middle, and a typed value reaches 400% either way
+(`SpanRange`). Elsewhere they run 0 to 100% and typing reaches 400%, as before. Neither
+the parser nor the saved form changed, so a route reads and writes the same bytes.
+
+Every route on one target counts. Each host's `RouteTargets::apply` composes a route's
+output with what the routes before it left: a share of a setting multiplies and an offset
+or a reading adds. A canvas sway adds and its opacity and scale multiply (below). Particle
+knobs multiply, which they already did. A shader slot's first route replaces its hand-set
+value and every route after adds to it. There's no per-route flag: no shipped look or
+default workspace had two routes on one target, so no picture moved. A knob's route row
+lists every route on it, each with its own switch and trash, and right-clicking a bound
+knob adds another route from the picked signal or from Time rather than repointing the
+one there. Picking a signal the knob already follows opens that route instead. On an
+offset, a new Time route starts at `-1` to `1`.
 
 A route can read time instead of a signal. Its `time` holds a period in seconds, held to
 0.1 to 3,600, a shape, and a phase from 0 to 1, and the reading is the shape at

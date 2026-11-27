@@ -62,8 +62,8 @@ pub use rox_panel_kit::{
     pattern_input, picker, scrub_on_paint, setting_block, setting_row, setting_row_dyn,
     setting_row_wrap, title_text, toggle, toggle_face, toggle_locked, tracking_rows,
     type_ahead_context, type_ahead_fade, type_ahead_grow, type_ahead_hit, type_ahead_live,
-    type_ahead_overlay, type_ahead_scan, valign_rows, value_slider_edit, value_slider_edit_over,
-    value_slider_edit_sized, window_body, workspace_body,
+    type_ahead_overlay, type_ahead_scan, valign_rows, value_slider_edit, value_slider_edit_between,
+    value_slider_edit_over, value_slider_edit_sized, window_body, workspace_body,
 };
 
 /// The shared entities every panel renders over. Cloning shares the

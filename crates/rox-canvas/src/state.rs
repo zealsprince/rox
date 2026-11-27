@@ -401,6 +401,10 @@ pub struct Place {
     /// The most each side resolves to, in units. Null for no limit.
     #[serde(skip_serializing_if = "no_limits")]
     pub max_size: [Option<f32>; 2],
+    /// Width over height. Set, the box is the largest of this shape inside
+    /// the one the sizes and limits give, placed by the anchor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<f32>,
     /// Degrees about x, y, z.
     pub rotation: [f32; 3],
     pub scale: f32,
@@ -414,6 +418,7 @@ impl Default for Place {
             size: [Length::Units(480.), Length::Units(320.)],
             min_size: [None; 2],
             max_size: [None; 2],
+            aspect: None,
             rotation: [0.; 3],
             scale: 1.,
         }

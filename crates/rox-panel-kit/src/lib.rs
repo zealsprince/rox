@@ -1023,6 +1023,37 @@ pub fn value_slider_edit_sized<P: 'static>(
     )
 }
 
+/// A slider whose typed value may also pass under the track: `reach` is the
+/// lowest and highest fraction a typed value lands on, for a knob centred on
+/// zero.
+#[allow(clippy::too_many_arguments)]
+pub fn value_slider_edit_between<P: 'static>(
+    scrub: &ScrubState,
+    edit: &ValueEdit,
+    fraction: f32,
+    readout: String,
+    edit_text: String,
+    reach: [f32; 2],
+    to_fraction: impl Fn(f32) -> f32 + Clone + 'static,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    slider_edit_reaching(
+        scrub,
+        edit,
+        fraction,
+        readout,
+        edit_text,
+        reach,
+        SliderWidth::Fixed,
+        SLIDER_STEP,
+        parse_number,
+        to_fraction,
+        apply,
+        cx,
+    )
+}
+
 /// For a readout written in words, like `1 h 30 min`.
 #[allow(clippy::too_many_arguments)]
 pub fn value_slider_edit_typed<P: 'static>(
@@ -1032,6 +1063,37 @@ pub fn value_slider_edit_typed<P: 'static>(
     readout: String,
     edit_text: String,
     over: f32,
+    width: SliderWidth,
+    step: f32,
+    parse: ParseTyped,
+    to_fraction: impl Fn(f32) -> f32 + Clone + 'static,
+    apply: impl Fn(&mut P, f32, &mut Context<P>) + Clone + 'static,
+    cx: &mut Context<P>,
+) -> Div {
+    slider_edit_reaching(
+        scrub,
+        edit,
+        fraction,
+        readout,
+        edit_text,
+        [0.0, over.max(1.0)],
+        width,
+        step,
+        parse,
+        to_fraction,
+        apply,
+        cx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn slider_edit_reaching<P: 'static>(
+    scrub: &ScrubState,
+    edit: &ValueEdit,
+    fraction: f32,
+    readout: String,
+    edit_text: String,
+    reach: [f32; 2],
     width: SliderWidth,
     step: f32,
     parse: ParseTyped,
@@ -1133,8 +1195,8 @@ pub fn value_slider_edit_typed<P: 'static>(
                                 InputEvent::PressEnter { .. } => {
                                     let text = input.read(cx).value().to_string();
                                     if let Some(value) = parse(&text) {
-                                        let ceiling = over.max(1.0);
-                                        apply(this, to_fraction(value).clamp(0.0, ceiling), cx);
+                                        let [floor, ceiling] = reach;
+                                        apply(this, to_fraction(value).clamp(floor, ceiling), cx);
                                     }
                                     edit.end();
                                     cx.notify();

@@ -440,12 +440,52 @@ with no limit writes neither key. The fields are additive with serde defaults, a
 released build reads a canvas, so neither `CANVAS_VERSION` nor the workspace version
 moves for them.
 
+A place can lock its shape with `"aspect"`, width over height. The sizes and limits then
+give the space, and the item's box is the largest box of that shape inside it
+(`Place::size_in`, `place::fitted`). The box sits at the anchor's spot inside the space,
+since an anchor places a box by its own matching point: a top-left anchor keeps the
+space's top-left corner, a centred one centres it. A cover sized as fractions of a window
+stays square in a wide, a square and a tall window alike:
+
+```json
+"place": {
+  "anchor": "top",
+  "size": [{ "stage": 0.66 }, { "stage": 0.86 }],
+  "max_size": [460.0, 460.0],
+  "aspect": 1.0
+}
+```
+
+The limits bound the space, and the shape fits inside it afterwards. That order keeps
+the shape exact and every maximum held. A minimum can't always hold as well: a space
+widened to its minimum width but short in height draws a box narrower than that minimum.
+Fitting first and limiting after would have broken the shape, which is the one promise a
+lock makes. A place without one writes no key, and a zero, a negative or a NaN reads as
+no lock. Everything that sizes an item reads the locked box: the projection, a group's box
+for its children, a sliced image's face, an image's fit, a grid's dock, a render target's
+rest size when it follows its box, the align, fill, fit and distribute tools, and the
+drag snapping. Fill on a locked item fills as far as the shape allows, centred. Moving a
+set is unchanged, since it moves positions only.
+
+The inspector's Keep Shape row sits under the width and height
+(`crates/rox/src/canvas/overlay/place_rows.rs`). Its switch locks the shape the space has
+in this window, so nothing moves until the window does, and switching it off drops the
+key. While locked the row shows the ratio as a number to type, and an image whose
+picture has decoded gets a From Picture press that takes the picture's own width over
+height. Each is one undo step.
+
 In the editor every axis keeps its unit. A drag works out the move in the parent's
 units at the item's depth and adds it to each axis in its own unit, so dragging a
 fractional axis writes a fraction, and so do a resize from a handle, an arrow-key nudge
 (one unit, ten with shift, divided by the parent's length on a fractional axis), the
 align, fill and fit tools, a change of anchor, and grouping or moving into a group. A
-resize stops at a side's limits, measured from the edge not dragged. The inspector's x
+resize stops at a side's limits, measured from the edge not dragged. A locked item
+resizes by one factor (`edit::locked_box`): a corner by the drag along the box's diagonal,
+keeping the opposite corner, and an edge by the drag across it, keeping the opposite edge
+and the middle of the two beside it. Both sides of the space scale by that factor, each
+in its own unit, so the item answers a new window shape as it did before the drag. The
+factor stops where a side of the space meets a limit, and where the box would pass the
+floor. The inspector's x
 and y rows carry the Units or Percent toggle the size rows have, which re-expresses the
 axis at the same place, and a fractional side, or one with a limit, shows its minimum
 and maximum under it, where an empty field clears the limit. A route on `x` or `y` keeps
@@ -689,9 +729,22 @@ the item's own setting, a position or rotation axis a share of its sway. Music r
 follow playback through the canvas's Rest or Hold setting (`crates/rox/src/canvas/routes.rs`).
 A time route follows the canvas's own clock instead, which starts at the canvas's first
 render and is never the wall clock or the playing position (`Motion::clock`). It applies
-at full weight whatever playback does, and on a target a music route also drives, the time
-route wins. The canvas is the one host that reads time routes, so only its route rows
-offer Time. A canvas with a time route switched on keeps drawing while it's drawn, and
+at full weight whatever playback does. The canvas is the one host that reads time routes,
+so only its route rows offer Time.
+
+Every route on one field of one item counts (`Lives::apply`). Sway shares add, so a time
+route and a music route on `bubble.y` move it by both, and one sway serves both: with a
+1250 unit rise as the sway, a music nudge of 40 units is a span to `0.032`. Opacity and
+scale shares multiply, and each holds at zero, since a share under it means nothing there.
+The opacity product stops where the item reaches full, once every route has applied
+(`Lives::finish`), so the order the routes are listed in doesn't change the picture. Music
+routes compose first and ease to and from rest as one, then the time routes compose over
+that eased pose. Paused, the music's part eases away under Rest and the drift carries on;
+under Hold the held music pose stays under the drift. A frame with a music route moving
+asks for the next at once, so the pacing below only runs when time is all that's left.
+Under Reduce Motion each time route rests as below and the music's part keeps moving on
+top of it. Position and rotation spans are signed, so `"from": -1.0, "to": 1.0` on a
+time route swings round home instead of sitting half its sway off to one side. A canvas with a time route switched on keeps drawing while it's drawn, and
 stops when gpui stops rendering it, a hidden tab or a hidden window, the same thing that
 pauses a render target. The inspector's weight line says in words that the canvas keeps
 drawing while it shows and that this costs power, or that Reduce Motion is holding it

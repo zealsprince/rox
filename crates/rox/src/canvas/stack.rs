@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use rox_canvas::{CanvasItem, Frame, child_frames};
 
-use crate::canvas::fades::{self, Fades};
+use crate::canvas::fades::Fades;
 use crate::canvas::states::{self, Applied, Cases};
 
 /// Where this frame lays out the children of `group`, one frame each.
@@ -45,7 +45,7 @@ pub(crate) fn frames(
             ..Applied::default()
         };
         rooms
-            .step(&child.id, &room, fades::length(child, still), now)
+            .step(&child.id, &room, states::ease_length(child, still), now)
             .opacity
     })
 }

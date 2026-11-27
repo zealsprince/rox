@@ -18,7 +18,9 @@ use gpui::{
     SharedString, Subscription, Window, anchored, deferred, div, prelude::*, px, svg,
 };
 use gpui_component::Sizable as _;
+use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::DropdownMenu as _;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_canvas::{
     Align, Anchor, CanvasItem, CanvasState, Case, Content, Fit, Idle, ImageFit, Length,
@@ -230,12 +232,12 @@ pub(crate) fn render(
     let weight = weight(panel);
     // Several selected show the set's rows, not the primary's.
     let several = panel.selected.several();
+    // As its case draws it, so the rows show and edit the place on screen.
     let selected = panel
         .selected
         .primary()
         .filter(|_| !several)
-        .and_then(|id| panel.config.canvas.find(id))
-        .cloned();
+        .and_then(|id| panel.drawn_canvas(cx).find(id).cloned());
 
     if selected
         .as_ref()
@@ -783,7 +785,7 @@ fn item_rows(
             rows = rows.child(sway_row(panel, &id, SwayAxis::Position(axis), item, cx));
         }
     }
-    if crate::canvas::edit::stack_of(&panel.config.canvas, &id).is_some() {
+    if crate::canvas::edit::stack_of(&panel.drawn_canvas(cx), &id).is_some() {
         rows = rows
             .child(stack_rows::offset_note())
             .child(stack_rows::child_rows(panel, item, cx));
@@ -1015,27 +1017,7 @@ fn command_row(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
 /// state. A state this build doesn't have shows as Nothing and keeps its
 /// cases as saved.
 fn state_rows(panel: &CanvasPanel, item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
-    let id = item.id.clone();
-    let picker = panel::picker(
-        "canvas-item-state",
-        item.state.clone(),
-        controls::state_options(),
-        false,
-        move |this: &mut CanvasPanel, state: String, cx| {
-            let id = id.clone();
-            this.inspector.preview = None;
-            this.change_later(
-                "item.state",
-                move |canvas| {
-                    if let Some(item) = canvas.find_mut(&id) {
-                        states::set_state(item, state);
-                    }
-                },
-                cx,
-            )
-        },
-        cx,
-    );
+    let picker = state_picker(item, cx);
 
     let mut rows = div()
         .flex()
@@ -1049,12 +1031,101 @@ fn state_rows(panel: &CanvasPanel, item: &CanvasItem, cx: &mut Context<CanvasPan
 
     if let Some(spec) = states::followed(item) {
         rows = rows.child(motion_rows::ease_row(item, cx));
+
+        // How a case gets a place is said once, under the first case that
+        // shows, until one has a place of its own.
+        let shown = |case: &&StateCase| {
+            item.cases
+                .iter()
+                .find(|held| held.when == case.id)
+                .is_none_or(|held| held.visible)
+        };
+        let hint = (!item.cases.iter().any(Case::moves))
+            .then(|| spec.cases.iter().find(shown))
+            .flatten()
+            .map(|case| case.id);
+
         for case in spec.cases {
-            rows = rows.child(case_block(panel, item, spec, case, cx));
+            rows = rows.child(case_block(
+                panel,
+                item,
+                spec,
+                case,
+                hint == Some(case.id),
+                cx,
+            ));
         }
     }
 
     rows.into_any_element()
+}
+
+/// Custom Controls' states and the canvas's own, under a heading each. A
+/// state this build doesn't have labels the button as None.
+fn state_picker(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
+    let followed = states::followed(item);
+    let label = followed.map_or_else(
+        || rox_i18n::t!("button-editor-state-none"),
+        |spec| rox_i18n::t!(spec.label_key),
+    );
+    let current = followed.map(|spec| spec.id);
+
+    let me = cx.entity().downgrade();
+    let id = item.id.clone();
+    let pick = move |state: &'static str| {
+        let (me, id) = (me.clone(), id.clone());
+        move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| {
+            let id = id.clone();
+            me.update(cx, |this, cx| {
+                this.inspector.preview = None;
+                this.change_later(
+                    "item.state",
+                    move |canvas| {
+                        if let Some(item) = canvas.find_mut(&id) {
+                            states::set_state(item, state.to_string());
+                        }
+                    },
+                    cx,
+                )
+            })
+            .ok();
+        }
+    };
+
+    Button::new("canvas-item-state")
+        .label(label)
+        .small()
+        .outline()
+        .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.scrollable(true).item(
+                PopupMenuItem::new(rox_i18n::t!("button-editor-state-none"))
+                    .checked(current.is_none())
+                    .on_click(pick("")),
+            );
+
+            // A muted heading over a rule, so it doesn't read as a state.
+            for (heading, specs) in states::picker_groups() {
+                let heading = rox_i18n::t!(heading);
+                menu = menu.item(PopupMenuItem::separator()).item(
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .text_xs()
+                            .text_color(palette::text_muted())
+                            .child(heading.clone())
+                    })
+                    .disabled(true),
+                );
+                for spec in specs {
+                    menu = menu.item(
+                        PopupMenuItem::new(rox_i18n::t!(spec.label_key))
+                            .checked(current == Some(spec.id))
+                            .on_click(pick(spec.id)),
+                    );
+                }
+            }
+            menu
+        })
+        .into_any_element()
 }
 
 /// One case: whether the item shows, and while it does, its opacity and the
@@ -1064,6 +1135,7 @@ fn case_block(
     item: &CanvasItem,
     spec: &'static StateSpec,
     case: &'static StateCase,
+    hint: bool,
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let entry = item
@@ -1072,19 +1144,15 @@ fn case_block(
         .find(|held| held.when == case.id)
         .cloned()
         .unwrap_or_default();
-    let previewing = panel.inspector.preview() == Some((item.id.as_str(), case.id));
+    let previewing = panel.previewing(item, case.id);
 
+    // A shape case previewed from another item stops here too.
     let me = cx.entity().downgrade();
     let preview_id = item.id.clone();
     let mut eye = settings_ui::icon_button(icons::EYE, false, move |_, _, cx| {
         let id = preview_id.clone();
         me.update(cx, |this, cx| {
-            let pick = (id, case.id.to_string());
-            this.inspector.preview = if this.inspector.preview.as_ref() == Some(&pick) {
-                None
-            } else {
-                Some(pick)
-            };
+            this.inspector.preview = (!previewing).then(|| (id, case.id.to_string()));
             cx.notify();
         })
         .ok();
@@ -1140,12 +1208,83 @@ fn case_block(
             _ => {}
         }
         body = body.children(looks::case_rows(panel, item, case.id, cx));
+        body = body.children(case_moves(item, case.id, &entry, hint && !previewing, cx));
     }
 
     div()
         .id(SharedString::from(format!("canvas-case-{}", case.id)))
         .child(settings_ui::nested(body))
         .into_any_element()
+}
+
+/// Whether the case gives the item a place of its own, and a group a stack
+/// of its own, each with a reset back to the item's. A place is set by
+/// moving the item while the case is previewed, which `hint` says.
+fn case_moves(
+    item: &CanvasItem,
+    when: &'static str,
+    entry: &Case,
+    hint: bool,
+    cx: &mut Context<CanvasPanel>,
+) -> Vec<AnyElement> {
+    let mut rows = Vec::new();
+
+    let mut row = |label: SharedString, own: bool, key: &'static str, reset: fn(&mut Case)| {
+        let control = if own {
+            let id = item.id.clone();
+            let me = cx.entity().downgrade();
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(tokens::SPACE_SM)
+                .child(rox_i18n::t!("canvas-case-own"))
+                .child(
+                    settings_ui::small_button(
+                        rox_i18n::t!("canvas-case-reset"),
+                        icons::REFRESH_CW,
+                        false,
+                        move |_, _, cx| {
+                            let id = id.clone();
+                            me.update(cx, |this, cx| edit_case(this, &id, when, key, reset, cx))
+                                .ok();
+                        },
+                    )
+                    .keyed(ElementId::Name(format!("{key}:{when}").into())),
+                )
+                .into_any_element()
+        } else {
+            inert_readout(rox_i18n::t!("canvas-case-items").to_string())
+        };
+        rows.push(setting_row(label, None, control).into_any_element());
+    };
+
+    row(
+        rox_i18n::t!("canvas-case-place"),
+        entry.place.is_some(),
+        "case.place",
+        |case| case.place = None,
+    );
+    if matches!(item.content, Content::Group { .. }) {
+        row(
+            rox_i18n::t!("canvas-case-stack"),
+            entry.stack.is_some(),
+            "case.stack",
+            |case| case.stack = None,
+        );
+    }
+
+    if hint {
+        rows.push(
+            div()
+                .text_xs()
+                .text_color(palette::text_muted())
+                .child(rox_i18n::t!("canvas-case-place-hint"))
+                .into_any_element(),
+        );
+    }
+
+    rows
 }
 
 /// Through `change`, so every case edit is an undo step and a save.
@@ -1476,7 +1615,7 @@ fn arrange_rows(
             "canvas-align-tip-stage",
         ),
     };
-    let stack = crate::canvas::edit::stack_of(&panel.config.canvas, &item.id);
+    let stack = crate::canvas::edit::stack_of(&panel.drawn_canvas(cx), &item.id);
     let stacked = |arrange: Arrange| {
         stack.is_some_and(|stack| !crate::canvas::align::free_in(arrange, stack))
     };

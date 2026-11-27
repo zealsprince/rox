@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::place::{Position, no_growth, no_limits, no_margin};
+use crate::place::{PlaceOverride, Position, no_growth, no_limits, no_margin};
 use crate::stack::{Stack, StackAlign};
 
 pub const CANVAS_VERSION: u32 = 1;
@@ -322,6 +322,20 @@ pub struct Case {
         skip_serializing_if = "Option::is_none"
     )]
     pub pressed: Option<Look>,
+    /// Where the item sits in this case: each field set here stands in for
+    /// the item's own. Lenient, like a look.
+    #[serde(
+        deserialize_with = "lenient_place",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub place: Option<PlaceOverride>,
+    /// Groups: how the children stack in this case, in place of the group's
+    /// own stack or its lack of one.
+    #[serde(
+        deserialize_with = "crate::stack::lenient_stack",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stack: Option<Stack>,
 }
 
 impl Default for Case {
@@ -334,19 +348,45 @@ impl Default for Case {
             color: String::new(),
             hover: None,
             pressed: None,
+            place: None,
+            stack: None,
         }
     }
 }
 
 impl Case {
-    /// Shown, at full opacity, with the item's own image and color: a case
-    /// that changes nothing.
+    /// Shown, at full opacity, with the item's own image, color, place and
+    /// stack: a case that changes nothing.
     pub fn is_plain(&self) -> bool {
         *self
             == Case {
                 when: self.when.clone(),
                 ..Case::default()
             }
+    }
+
+    /// Whether the case moves its item or restacks its children.
+    pub fn moves(&self) -> bool {
+        self.place.is_some() || self.stack.is_some()
+    }
+}
+
+/// A case's place that doesn't parse reads as none, so it costs the place
+/// and not the case.
+fn lenient_place<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PlaceOverride>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    match PlaceOverride::deserialize(value) {
+        Ok(place) => Ok(Some(place)),
+        Err(e) => {
+            log::warn!("canvas: dropping a case's place that doesn't parse: {e}");
+            Ok(None)
+        }
     }
 }
 
@@ -1627,5 +1667,96 @@ mod tests {
             None
         );
         assert_eq!(Content::Shader { shader: json!({}) }.asset(), None);
+    }
+
+    #[test]
+    fn a_case_without_a_place_or_stack_writes_back_as_it_was_read() {
+        // Every case saved before cases could move anything looks like this.
+        let saved = json!({
+            "when": "dark",
+            "visible": false,
+            "opacity": 0.5,
+            "asset": "night",
+            "hover": { "opacity": 0.8 },
+        });
+
+        let case: Case = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!((case.place, case.stack), (None, None));
+        assert!(!case.moves());
+
+        let again = serde_json::to_value(&case).unwrap();
+        assert_eq!(again["when"], saved["when"]);
+        assert!(again.get("place").is_none() && again.get("stack").is_none());
+        assert_eq!(serde_json::from_value::<Case>(again).unwrap(), case);
+    }
+
+    #[test]
+    fn a_case_place_and_stack_round_trip_and_junk_costs_only_itself() {
+        let case: Case = serde_json::from_value(json!({
+            "when": "tall",
+            "place": { "anchor": "top", "size": [{ "stage": 1.0 }, { "stage": 0.5 }] },
+            "stack": { "axis": "x", "gap": 24 },
+        }))
+        .unwrap();
+
+        let place = case.place.expect("a place");
+        assert_eq!(place.anchor, Some(Anchor::Top));
+        assert_eq!(place.size, Some([Length::Stage(1.), Length::Stage(0.5)]));
+        assert_eq!(place.position, None);
+        assert_eq!(case.stack.map(|stack| stack.gap), Some(24.));
+        assert!(case.moves() && !case.is_plain());
+
+        // Only the fields set are written.
+        let saved = serde_json::to_value(&case).unwrap();
+        assert_eq!(
+            saved["place"],
+            json!({ "anchor": "top", "size": [{ "stage": 1.0 }, { "stage": 0.5 }] })
+        );
+        assert_eq!(serde_json::from_value::<Case>(saved).unwrap(), case);
+
+        // A place that doesn't parse costs the place, not the case.
+        let odd: Case = serde_json::from_value(json!({
+            "when": "tall",
+            "opacity": 0.5,
+            "place": { "anchor": "sideways" },
+            "stack": { "axis": "z" },
+        }))
+        .unwrap();
+        assert_eq!((odd.place, odd.stack, odd.opacity), (None, None, 0.5));
+    }
+
+    #[test]
+    fn a_place_override_lays_only_its_fields_over_the_items() {
+        let own = Place {
+            anchor: Anchor::Left,
+            size: [Length::Stage(0.3), Length::Stage(1.)],
+            aspect: Some(1.),
+            ..Place::default()
+        };
+        let over = PlaceOverride {
+            anchor: Some(Anchor::Top),
+            size: Some([Length::Stage(1.), Length::Stage(0.35)]),
+            ..PlaceOverride::default()
+        };
+
+        let placed = over.over(own);
+        assert_eq!(placed.anchor, Anchor::Top);
+        assert_eq!(placed.size, [Length::Stage(1.), Length::Stage(0.35)]);
+        assert_eq!((placed.aspect, placed.scale), (Some(1.), 1.));
+        assert_eq!(PlaceOverride::default().over(own), own);
+
+        // An edit takes just what it changed, keeping what was already set.
+        let mut taken = over;
+        let mut moved = placed;
+        moved.position = Position::units([0., 40., 0.]);
+        moved.aspect = None;
+        taken.take(&placed, &moved);
+        assert_eq!(taken.anchor, Some(Anchor::Top));
+        assert_eq!(taken.position, Some(Position::units([0., 40., 0.])));
+        assert_eq!(taken.rotation, None);
+
+        // A lock taken off in the case saves as 0, which draws as none.
+        assert_eq!(taken.aspect, Some(0.));
+        assert_eq!(taken.over(own).aspect(), None);
     }
 }

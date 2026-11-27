@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::state::{Length, Place};
+use crate::state::{Anchor, Length, Place};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Position {
@@ -268,6 +268,79 @@ pub(crate) fn no_growth(grow: &f32) -> bool {
 
 pub(crate) fn no_margin(margin: &[f32; 2]) -> bool {
     *margin == [0.; 2]
+}
+
+/// A case's own place for its item: each field it sets stands in for the
+/// item's, and each it leaves out keeps the item's. An `aspect` of 0 unlocks
+/// a locked item in that case, since a lock that can't be drawn reads as none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaceOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Anchor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<Position>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<[Length; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_size: Option<[Option<f32>; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<[Option<f32>; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<[f32; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f32>,
+}
+
+impl PlaceOverride {
+    /// `place` with every field this sets taken from it.
+    pub fn over(&self, place: Place) -> Place {
+        Place {
+            anchor: self.anchor.unwrap_or(place.anchor),
+            position: self.position.unwrap_or(place.position),
+            size: self.size.unwrap_or(place.size),
+            min_size: self.min_size.unwrap_or(place.min_size),
+            max_size: self.max_size.unwrap_or(place.max_size),
+            aspect: self.aspect.or(place.aspect),
+            rotation: self.rotation.unwrap_or(place.rotation),
+            scale: self.scale.unwrap_or(place.scale),
+            // How an item sits in a stack is the item's own in every case.
+            ..place
+        }
+    }
+
+    /// Takes every field an edit changed from `was` to `now`, keeping what
+    /// it already set, so an edit in a case lands in that case and only
+    /// there.
+    pub fn take(&mut self, was: &Place, now: &Place) {
+        if now.anchor != was.anchor {
+            self.anchor = Some(now.anchor);
+        }
+        if now.position != was.position {
+            self.position = Some(now.position);
+        }
+        if now.size != was.size {
+            self.size = Some(now.size);
+        }
+        if now.min_size != was.min_size {
+            self.min_size = Some(now.min_size);
+        }
+        if now.max_size != was.max_size {
+            self.max_size = Some(now.max_size);
+        }
+        if now.aspect != was.aspect {
+            // A lock taken off saves as 0, which reads as none.
+            self.aspect = Some(now.aspect.unwrap_or(0.));
+        }
+        if now.rotation != was.rotation {
+            self.rotation = Some(now.rotation);
+        }
+        if now.scale != was.scale {
+            self.scale = Some(now.scale);
+        }
+    }
 }
 
 /// One of x and y as JSON: a bare number of units, or a tagged length.

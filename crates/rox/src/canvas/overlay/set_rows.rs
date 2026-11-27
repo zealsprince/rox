@@ -42,7 +42,7 @@ pub(super) fn rows(panel: &CanvasPanel, cx: &mut Context<CanvasPanel>) -> AnyEle
             panel
                 .selected
                 .primary()
-                .and_then(|id| edit::stack_of(&panel.config.canvas, id)),
+                .and_then(|id| edit::stack_of(&panel.drawn_canvas(cx), id)),
             cx,
         ))
         .child(setting_block(

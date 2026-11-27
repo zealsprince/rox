@@ -97,6 +97,9 @@ pub struct NowPlayingArt {
     bake_gen: u64,
     /// So an unchanged picture doesn't cost a bake and a cross-fade to itself.
     shown: Option<u64>,
+    /// Whether the last picture to land had one. It holds while the next
+    /// track's read is on its way, the way a cover panel keeps its slide up.
+    has_art: bool,
     _player_changed: Subscription,
     _title_changed: Subscription,
 }
@@ -125,6 +128,7 @@ impl NowPlayingArt {
             generation: 0,
             bake_gen: 0,
             shown: None,
+            has_art: false,
             _player_changed,
             _title_changed,
         }
@@ -139,6 +143,13 @@ impl NowPlayingArt {
     /// track.
     pub fn live_art(&self) -> Option<Arc<Image>> {
         self.live.clone()
+    }
+
+    /// Whether the playing track has a cover, as of the last read to land:
+    /// false with nothing playing, and the previous track's answer while the
+    /// new one's read is on its way.
+    pub fn has_art(&self) -> bool {
+        self.has_art
     }
 
     /// Runs every pump tick, so everything up to the path compare stays cheap.
@@ -272,6 +283,11 @@ impl NowPlayingArt {
     /// Every route into the backdrop ends here. An identical picture is left
     /// alone, so a turnover that finds nothing doesn't cross-fade to itself.
     fn show(&mut self, bytes: Option<Vec<u8>>, cx: &mut Context<Self>) {
+        if self.has_art != bytes.is_some() {
+            self.has_art = bytes.is_some();
+            cx.notify();
+        }
+
         let shown = bytes.as_deref().map(rox_library::hash::fnv1a);
         if shown == self.shown {
             return;

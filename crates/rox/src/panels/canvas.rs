@@ -17,6 +17,7 @@
 //! mode none of that shows and a canvas is plain content, where a click on an
 //! item that names a command runs it through [`keymap::dispatch`].
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -49,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canvas::edit::{self, Edges, History};
-use crate::canvas::fades::{self, Fades};
+use crate::canvas::fades::Fades;
 use crate::canvas::grid::{self, Grid};
 use crate::canvas::image::{self, Images};
 use crate::canvas::overlay::Inspector;
@@ -575,11 +576,14 @@ pub struct CanvasPanel {
     marks: MarkCache,
     /// The followed states' cases as the last render drew them.
     cases: Cases,
+    /// The canvas's shape as the last render read it, which the next one
+    /// turns from only past the band either side of square.
+    shape: Option<states::Shape>,
     _player: Subscription,
     _player_view: Subscription,
     _cover: Subscription,
     _library: Subscription,
-    _states: [Subscription; 5],
+    _states: [Subscription; 6],
 }
 
 impl CanvasPanel {
@@ -649,7 +653,8 @@ impl CanvasPanel {
             |this: &mut Self, library, event: &LibraryEvent, cx| {
                 if matches!(event, LibraryEvent::Updated) {
                     this.text_values = None;
-                    if text::holds_text(&this.config.canvas) {
+                    let canvas = &this.config.canvas;
+                    if text::holds_text(canvas) || states::needs_values(canvas) {
                         cx.notify();
                     }
                 }
@@ -682,6 +687,10 @@ impl CanvasPanel {
             }),
             // The watch switch notifies without an event.
             cx.observe_in(&state.library, window, |this: &mut Self, _, window, cx| {
+                this.recheck_states(window, cx)
+            }),
+            // A cover read landing for the playing track.
+            cx.observe_in(&state.now_art, window, |this: &mut Self, _, window, cx| {
                 this.recheck_states(window, cx)
             }),
         ];
@@ -729,6 +738,7 @@ impl CanvasPanel {
             object_dialog: None,
             marks: MarkCache::default(),
             cases: Cases::new(),
+            shape: None,
             _player: player,
             _player_view: player_view,
             _cover: cover,
@@ -808,8 +818,16 @@ impl CanvasPanel {
         self.config = self.saved(cx);
         let before = self.snapshot();
 
+        // The edit sees every item where its case draws it, and a place it
+        // changes under a case that moves the item, or one the inspector
+        // previews, lands in that case.
+        let view = self.edit_view(cx);
         let mut routes = std::mem::take(&mut self.config.routes);
-        self.rebuild_with(|canvas| edit(canvas, &mut routes), window, cx);
+        self.rebuild_with(
+            |canvas| states::edit_drawn(canvas, &view, |canvas| edit(canvas, &mut routes)),
+            window,
+            cx,
+        );
         self.config.routes = routes;
         routes::prune(&mut self.config.routes, &self.config.canvas);
         self.seen_routes = self.config.routes.clone();
@@ -1156,15 +1174,11 @@ impl CanvasPanel {
                 .read(&self.state.signals, running, time, colours);
         }
 
-        let values = if text::holds_text(&self.config.canvas) {
-            self.text_values
-                .get_or_insert_with(|| Rc::new(text::now_playing(&self.state, cx)))
-                .clone()
-        } else {
-            Rc::default()
-        };
+        let values = self.values(cx);
 
         // A canvas where nothing follows a state reads none of it.
+        self.shape = states::Shape::next(self.shape, at.viewport);
+        let was = std::mem::take(&mut self.cases);
         self.cases = if states::follows(&self.config.canvas) {
             self.read_cases(window, cx)
         } else {
@@ -1172,13 +1186,21 @@ impl CanvasPanel {
             Cases::new()
         };
 
+        // A case that moves a grid changes its box while the canvas's own
+        // bounds stand still, and a grid's splits fit a new size only on the
+        // settle pass a resize gets.
+        if self.cases != was && states::moves_any(&self.config.canvas) {
+            self.settle.set(2);
+        }
+
         // The case the inspector shows stands in for the live one, on the
-        // selected item only.
+        // selected item, or on every item for the shape.
         let active = design && self.is_active(cx);
-        let preview = self
-            .inspector
-            .preview()
-            .filter(|(id, _)| active && self.selected.primary() == Some(*id));
+        let view = self.view(active);
+        let preview = view
+            .preview
+            .as_ref()
+            .map(|(id, case)| (id.as_str(), case.as_str()));
 
         let looks = canvas::looks::this_frame(&mut self.looks, self.design, preview, still, window);
 
@@ -1188,7 +1210,7 @@ impl CanvasPanel {
             at: &at,
             lives: &lives,
             values: &values,
-            cases: &self.cases,
+            cases: &view.cases,
             looks: &looks,
             inherited: None,
             preview,
@@ -1395,6 +1417,7 @@ impl CanvasPanel {
     fn read_cases(&mut self, window: &Window, cx: &mut Context<Self>) -> Cases {
         let wanted = states::needs_marks(&self.config.canvas);
         let marks = controls::playing_marks(&mut self.marks, &self.state, wanted, cx);
+        let values = self.values(cx);
 
         let live = buttons::Live {
             player: self.state.player.read(cx),
@@ -1406,7 +1429,83 @@ impl CanvasPanel {
                 mini: crate::workspace::mini_showing(window, cx),
             },
         };
-        states::read(&self.config.canvas, &live)
+        let sense = states::Sense {
+            values: &values,
+            art: self.state.now_art.read(cx).has_art(),
+            shape: self.shape,
+        };
+        states::read(&self.config.canvas, &live, &sense)
+    }
+
+    /// The playing track's fields, held until the track or its tags change,
+    /// and read only for a canvas with text or an item following a field.
+    fn values(&mut self, cx: &App) -> Rc<Values> {
+        let canvas = &self.config.canvas;
+        if !text::holds_text(canvas) && !states::needs_values(canvas) {
+            return Rc::default();
+        }
+
+        self.text_values
+            .get_or_insert_with(|| Rc::new(text::now_playing(&self.state, cx)))
+            .clone()
+    }
+
+    /// What this render draws for the editor: the live cases, with the
+    /// inspector's preview standing in on the selected item. The shape's
+    /// preview stands in on every item following it, selected or not, since
+    /// a layout is the whole canvas's.
+    pub(crate) fn view(&self, active: bool) -> states::View {
+        let mut view = states::View {
+            cases: self.cases.clone(),
+            ..states::View::default()
+        };
+        let Some((id, case)) = self.inspector.preview().filter(|_| active) else {
+            return view;
+        };
+        let Some(item) = self.config.canvas.find(id) else {
+            return view;
+        };
+
+        if item.state == states::SHAPE {
+            let named = case.split(':').next().unwrap_or(case);
+            let known = states::spec(states::SHAPE)
+                .and_then(|spec| spec.cases.iter().find(|known| known.id == named));
+            if let Some(known) = known {
+                view.cases.insert(states::SHAPE, known.id);
+                view.across = Some(states::SHAPE);
+            }
+        }
+        if self.selected.primary() == Some(id) {
+            view.preview = Some((id.to_string(), case.to_string()));
+        }
+        view
+    }
+
+    /// The view the editor works in now: in design mode, the inspector's
+    /// preview included.
+    fn edit_view(&self, cx: &Context<Self>) -> states::View {
+        self.view(self.design && self.is_active(cx))
+    }
+
+    /// The canvas as the editor sees it: every item where its case puts it.
+    pub(crate) fn drawn_canvas(&self, cx: &Context<Self>) -> Cow<'_, CanvasState> {
+        states::drawn(&self.config.canvas, &self.edit_view(cx))
+    }
+
+    /// Whether the inspector shows `case` of `item` on the canvas now.
+    pub(crate) fn previewing(&self, item: &CanvasItem, case: &str) -> bool {
+        match self.inspector.preview() {
+            Some((id, held)) if id == item.id => held == case,
+            Some((id, held)) if item.state == states::SHAPE => {
+                held == case
+                    && self
+                        .config
+                        .canvas
+                        .find(id)
+                        .is_some_and(|other| other.state == states::SHAPE)
+            }
+            _ => false,
+        }
     }
 
     /// From an observer: a render only when a case moved since the last one.
@@ -1500,8 +1599,14 @@ fn place(
             .filter(|(id, _)| *id == item.id)
             .map(|(_, case)| case);
         let applied = states::resolve(item, draw.cases, preview);
-        let length = fades::length(item, draw.still);
+        let length = states::ease_length(item, draw.still);
         let faded = draw.fades.step(&item.id, &applied, length, draw.now);
+
+        // Placed where its case puts it, which cuts. What a group holds is
+        // read from the item itself, since the placed copy is shallow.
+        let own = item;
+        let placed = states::placed(own, applied.case);
+        let item: &CanvasItem = &placed;
         // The pictures before a hover or pressed look, which a picture hit
         // tests, so a lit copy's glow can't hold the hover past the edge.
         let resting = faded.pictures;
@@ -1568,7 +1673,7 @@ fn place(
             )
         };
 
-        match (body, &item.content) {
+        match (body, &own.content) {
             (Body::Grid(grid), _) => {
                 let Some(projected) = projected() else {
                     continue;
@@ -1593,8 +1698,9 @@ fn place(
                 let frame = child_frame(item, parent, &live);
                 let center = [frame.size[0] / 2., frame.size[1] / 2., 0.];
                 let depth = frame.transform.point(center)[2];
+                let laid = states::placed_children(items, draw.cases, draw.preview);
                 let frames = canvas::stack::frames(
-                    item, &frame, items, draw.cases, at.design, draw.still, draw.rooms, draw.now,
+                    item, &frame, &laid, draw.cases, at.design, draw.still, draw.rooms, draw.now,
                 );
 
                 let mut path = groups.to_vec();
@@ -2281,8 +2387,10 @@ impl CanvasPanel {
     fn begin(&mut self, id: &str, local: [f32; 2], begin: Begin, cx: &mut Context<Self>) {
         self.config = self.saved(cx);
 
+        // Measured where each item's case draws it, as the edit will be.
         let viewport = self.viewport();
-        let canvas = &self.config.canvas;
+        let drawn = self.drawn_canvas(cx).into_owned();
+        let canvas = &drawn;
         let (Some(item), Some(parent), Some(shape)) = (
             canvas.find(id).cloned(),
             edit::parent_frame(canvas, id, viewport),
@@ -2294,10 +2402,15 @@ impl CanvasPanel {
             return;
         }
 
-        let riders = match begin {
+        let mut riders = match begin {
             Begin::Move => self.riders(id, cx),
             _ => Vec::new(),
         };
+        for rider in &mut riders {
+            if let Some(placed) = canvas.find(&rider.id) {
+                rider.item = placed.clone();
+            }
+        }
         let skip: Vec<String> = riders.iter().map(|rider| rider.id.clone()).collect();
         let start_box = self.start_box(&shape, &skip);
 
@@ -2502,17 +2615,20 @@ impl CanvasPanel {
         }
 
         let id = g.id.clone();
-        if let Some(item) = self.config.canvas.find_mut(&id) {
-            item.place = place;
-        }
-        if let Some(slot) = slot {
-            edit::reorder(&mut self.config.canvas, &id, slot);
-        }
-        for (id, position) in carried {
-            if let Some(item) = self.config.canvas.find_mut(&id) {
-                item.place.position = position;
+        let view = self.edit_view(cx);
+        states::edit_drawn(&mut self.config.canvas, &view, |canvas| {
+            if let Some(item) = canvas.find_mut(&id) {
+                item.place = place;
             }
-        }
+            if let Some(slot) = slot {
+                edit::reorder(canvas, &id, slot);
+            }
+            for (id, position) in carried {
+                if let Some(item) = canvas.find_mut(&id) {
+                    item.place.position = position;
+                }
+            }
+        });
         cx.notify();
     }
 

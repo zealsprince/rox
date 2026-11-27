@@ -5,6 +5,7 @@
 //! but it takes no tilt.
 
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
 use gpui::{
     AnyElement, App, ContentMask, Font, Hsla, Rgba, SharedString, TextRun, canvas, point,
@@ -129,6 +130,22 @@ pub(crate) fn values(sample: Option<&PresenceSample>) -> Values {
             format_quality(&sample.codec, sample.bitrate_kbps),
         ),
     ]
+}
+
+/// Whether the placeholder `name` (`album` for `%album%`) renders nothing
+/// against `values`, by the same rule a text item's hole closes on. None for
+/// a name a text item doesn't fill.
+pub(crate) fn renders_empty(name: &str, values: &Values) -> Option<bool> {
+    // Each placeholder alone, parsed once.
+    static LINES: LazyLock<Vec<(&'static str, Line)>> = LazyLock::new(|| {
+        PLACEHOLDERS
+            .iter()
+            .map(|placeholder| (placeholder.trim_matches('%'), Line::new(placeholder)))
+            .collect()
+    });
+
+    let (_, line) = LINES.iter().find(|(held, _)| *held == name)?;
+    Some(line.render(values).is_empty())
 }
 
 /// Reads the library's store, so it runs once per track or tag change and

@@ -5,7 +5,7 @@ use gpui::{AnyElement, Context, IntoElement, SharedString};
 use rox_canvas::{CanvasItem, Content, Hit};
 use rox_panel_api::panel::{self, setting_row};
 
-use crate::canvas::fades;
+use crate::canvas::{fades, states};
 use crate::panels::canvas::CanvasPanel;
 
 /// The pointer row. None on a grid, whose panels take their own input.
@@ -78,7 +78,13 @@ fn ms(ms: u32) -> SharedString {
 
 /// The ease row, for an item that follows a state.
 pub(super) fn ease_row(item: &CanvasItem, cx: &mut Context<CanvasPanel>) -> AnyElement {
-    let default = fades::EASE.as_millis() as u32;
+    // What leaving it out gives this item: the look's theme ease on a theme
+    // item and a cut on the shape, not only the plain default.
+    let probe = CanvasItem {
+        state: item.state.clone(),
+        ..CanvasItem::default()
+    };
+    let default = states::ease_length(&probe, false).as_millis() as u32;
     let mut options = vec![
         (
             None,

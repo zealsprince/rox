@@ -746,6 +746,87 @@ once its flip has landed. A canvas where nothing follows a state reads none of i
 redraws for none of it. A case's image is an asset in the store like the
 item's own: an object exports it with the item, and placing rewrites it to the store's id.
 
+A canvas item can also follow states only a canvas can read, which Custom Controls
+doesn't offer (`CANVAS_STATES` in `crates/rox/src/canvas/states.rs`). The inspector's
+picker lists every state under four headings: Player, Playing Track, Canvas and App.
+
+- `track.` and the name of each placeholder a text item fills (`track.title`,
+  `track.artist`, `track.albumartist`, `track.album`, `track.track`, `track.year`,
+  `track.genre`, `track.station`, `track.source`, `track.format`), each `empty` or
+  `present`. A field is empty exactly when its placeholder alone renders nothing
+  (`text::renders_empty`): the same values and the same trim a text item's hole closes
+  on, so a tag of spaces is empty and nothing playing leaves every field empty. The
+  canvas holds the playing track's values for these as it does for its text, dropped on
+  a new track or a library update, so a field's case moves with the track and with a tag
+  edit to it.
+- `player.art`, `present` or `none`: whether the playing track has a cover, as the
+  workspace's now-playing art service reads it (`NowPlayingArt::has_art` in
+  `crates/rox-services/src/backdrop.rs`), the same read the backdrop and the song colors
+  take: the front cover, embedded or a folder image. The read runs off the UI thread when
+  the track changes, and until it lands the state keeps the previous track's case, the
+  way a Cover panel keeps its slide up while it loads. A track with art after one without
+  reads `none` for the length of the read and turns `present` with the cover. Nothing
+  playing is `none`, and the blink between two tracks holds. The canvas observes the
+  service, so a landed read redraws only when the case moved.
+- `canvas.shape`, `wide` or `tall`: the canvas's own box, not the window's, so a canvas
+  docked among other panels reads its own shape. It turns tall below 0.943 width over
+  height and wide above 1.06, and between the two keeps the case it had, so a window
+  dragged across square turns once and a few pixels never flip it back. A canvas with no
+  case yet splits at square. The shape is read on the render a resize draws anyway, so a
+  resize asks for no frames of its own.
+
+A text item whose line renders empty draws nothing, but it keeps its room in a stack: a
+line like `%album% - %year%` isn't empty with no album. Following the field's state gives
+the room up, as any hidden case does:
+
+```json
+{ "id": "album", "state": "track.album",
+  "cases": [{ "when": "empty", "visible": false }],
+  "content": { "kind": "text", "text": "%album% - %year%", "size": 15, "color": "text_dim" } }
+```
+
+A case can also move its item. `place` on a case holds any of a place's fields
+(`anchor`, `position`, `size`, `min_size`, `max_size`, `aspect`, `rotation`, `scale`),
+each standing in for the item's own while that case is drawn, and `stack` on a group's
+case lays its children out that way in that case, whether the group stacks or not. An
+`aspect` of 0 unlocks a locked item in that case. A case with neither draws as it always
+did and writes nothing new, and one that doesn't parse costs only the place or the stack
+(`PlaceOverride` in `crates/rox-canvas/src/place.rs`, `Case` in `state.rs`). This is how
+a look rearranges for a tall canvas without a second copy of anything: each item that
+moves follows `canvas.shape`, and its `tall` case gives it a place, a group a stack, or
+both. A deck that sits on the left as a column and goes across the top as a row:
+
+```json
+{ "id": "card", "state": "canvas.shape",
+  "place": { "anchor": "left", "position": [24, 0, 0],
+             "size": [{ "stage": 0.32, "units": -48 }, { "stage": 1, "units": -48 }] },
+  "stack": { "axis": "y", "gap": 16, "align": "center", "justify": "center" },
+  "cases": [{ "when": "tall",
+              "place": { "anchor": "top", "position": [0, 24, 0],
+                         "size": [{ "stage": 1, "units": -48 }, { "stage": 0.36, "units": -48 }] },
+              "stack": { "axis": "x", "gap": 24, "align": "center", "justify": "start" } }],
+  "content": { "kind": "group", "items": [] } }
+```
+
+A case's place and stack cut, whatever the ease: a place that glided would trail a
+window being dragged. An item following `canvas.shape` that leaves `ease` out cuts its
+look too, and so does its room in a stack. A grid a case moves is the same grid, its dock
+held by item id through any change of case, so its panels keep their state, a library its
+scroll and selection. Its splits refit on the settle pass a resize gets, which a change
+of case asks for too when the canvas has a case that moves something.
+
+In the editor every item is measured and edited where its case draws it
+(`states::drawn`, `states::edit_drawn`). An edit to a place or a stack, from a drag, a
+resize, the arrow keys, an align or the inspector's rows, lands in the case it was drawn
+in when that case already moves the item or the inspector previews it, and on the item
+otherwise; everything else the edit changes lands as it always did. Previewing a
+`canvas.shape` case previews it on every item that follows the shape, selected or not,
+since a layout is the whole canvas's, so a look's tall arrangement is laid out in a wide
+window by previewing Tall and moving things. Each case block says whether the case has a
+place of its own, and on a group a stack of its own, with a reset back to the item's.
+Grouping, ungrouping or moving an item into a group re-expresses the place it's drawn at;
+a place another of its cases gives it keeps the old parent's frame.
+
 A change of case eases (`crates/rox/src/canvas/fades.rs`). The canvas keeps each drawn
 item's last case, and when it moves the item eases from the look it showed to the new one
 over 180 ms with a smoothstep (`fades::EASE`), or over its own `ease` in milliseconds,
@@ -1051,7 +1132,8 @@ arithmetic), `crates/rox/src/panels/canvas/set.rs` (the marquee and the set's ed
 `crates/rox/src/canvas/overlay.rs` with `overlay/place_rows.rs`, `overlay/slice_rows.rs`,
 `overlay/set_rows.rs` and `overlay/stack_rows.rs` (the inspector),
 `crates/rox/src/canvas/stack.rs` (a stacked child's room as its case fades),
-`patches/gpui/e7-image-patch-inner-edges.patch` (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
+`patches/gpui/e7-image-patch-inner-edges.patch` (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state, the canvas's own states, a case's place and stack, and the editor's write-back),
+`crates/rox-services/src/backdrop.rs` (`NowPlayingArt::has_art`),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
 `crates/rox/src/canvas/fades.rs` (eased case changes and the crossfade's draw weights),
 `overlay/motion_rows.rs` (the

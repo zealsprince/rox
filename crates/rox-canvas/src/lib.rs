@@ -14,7 +14,7 @@ pub mod stack;
 mod state;
 
 pub use mat::Mat4;
-pub use place::{LengthKind, Position};
+pub use place::{LengthKind, PlaceOverride, Position};
 pub use project::{
     Frame, Live, Projected, Viewport, box_size, child_frame, child_frames, inside, paint_order,
     project, project_points, quad_point, rest_size, unit_point, unproject_delta,

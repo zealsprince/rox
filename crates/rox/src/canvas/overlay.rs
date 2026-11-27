@@ -1613,7 +1613,8 @@ fn content_rows(
 ) -> AnyElement {
     match &item.content {
         Content::Image { asset, fit, slice } => {
-            image_rows(panel, &item.id, asset, *fit, *slice, window, cx)
+            let drawn = panel.drawn_asset(item).unwrap_or(asset);
+            image_rows(panel, &item.id, asset, drawn, *fit, *slice, cx)
         }
         Content::Shader { .. } => shader_rows(panel, item, window, cx),
         Content::Text {
@@ -1634,13 +1635,14 @@ fn content_rows(
     }
 }
 
+/// `drawn` is the picture its case shows now, which the slice preview shows.
 fn image_rows(
     panel: &CanvasPanel,
     id: &str,
     asset: &str,
+    drawn: &str,
     fit: ImageFit,
     slice: Option<[u32; 4]>,
-    _window: &mut Window,
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
     let fits = [
@@ -1731,7 +1733,7 @@ fn image_rows(
                 ),
             ))
         })
-        .child(slice_rows::rows(panel, id, asset, slice, cx))
+        .child(slice_rows::rows(panel, id, drawn, slice, cx))
         .into_any_element()
 }
 
@@ -2338,7 +2340,7 @@ fn shader_rows(
     .render(window, cx);
 
     let hub = PanelSettings::state(panel).signals.clone();
-    rows.routes.borrow_mut().sync(shader.routes.len());
+    rows.routes.borrow_mut().sync(&shader.routes);
     let routes_ui = rows.routes.borrow();
     let editor = RouteEditor {
         id: "canvas-shader-route",

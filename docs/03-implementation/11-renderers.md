@@ -2179,7 +2179,10 @@ core each, so that row is partly their cost. The mean crosses 8.3 ms, half a 60 
 at about 18.8 megapixels, read from nine runs at 18.7 (8.2 ms) and six at 19.4 (8.8 ms).
 That's where the canvas's weight line starts warning (`TARGET_PIXELS` in
 `crates/rox/src/canvas/cost.rs`). The inspector counts a target that follows its box at
-the size its session draws at now, and a fixed one at its own size (`drawing`).
+the size its session draws at now, and a fixed one at its own size (`drawing`). A workspace
+or object apply card has no session to ask, so it counts a following target without its
+megapixels, and when the fixed ones warn, the line says how many follow and aren't in its
+number.
 
 The GPU texture was measured 2026-11-25 on the same machine (Linux 6.18.64, Ryzen 9
 5950X, Radeon RX 6800 XT, RADV from Mesa 26.1.8), in a release build with a 1920x1080

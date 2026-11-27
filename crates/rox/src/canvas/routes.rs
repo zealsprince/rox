@@ -415,6 +415,12 @@ pub(crate) fn hold_clock(seconds: Option<f64>) {
     CLOCK_HELD.set(seconds);
 }
 
+/// The seconds every canvas's clock is held at, if `debug.canvas_clock`
+/// holds them.
+pub(crate) fn held_clock() -> Option<f64> {
+    CLOCK_HELD.get()
+}
+
 impl Motion {
     /// Seconds on this canvas's own clock, which starts at its first pose.
     fn clock(&mut self, now: Instant) -> f64 {

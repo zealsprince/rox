@@ -5015,6 +5015,7 @@ canvas-target-panel-match = Follow the Panel
 canvas-target-panel-size = Width and Height in Pixels
 canvas-weight-targets = Render targets { $count }, { $megapixels } megapixels
 canvas-weight-heavy-targets = Render targets: { $megapixels } megapixels, more than draws smoothly
+canvas-weight-heavy-targets-following = Render targets: { $megapixels } megapixels, more than draws smoothly. Following their item and not counted until they draw: { $count }
 
 ## Catalog
 

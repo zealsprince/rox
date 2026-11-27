@@ -8,7 +8,6 @@
 //! The row fold lives in [`RouteEditState`] on the host window, never in
 //! config: which row you left open isn't a setting.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{Context, Div, MouseButton, SharedString, div, prelude::*, px, svg};
@@ -22,7 +21,7 @@ use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_kit::ui::{self as settings_ui, OVER};
 
-use super::{gate_mark, meter};
+use super::{RowStates, gate_mark, meter};
 
 /// How a host takes one edit to its route list. The editor never touches
 /// the routes it renders. Its own listeners notify, so a plain write is
@@ -33,45 +32,43 @@ pub type RouteMutate<P> = Arc<dyn Fn(&mut P, &mut dyn FnMut(&mut Vec<Route>), &m
 /// [`sync`](Self::sync) at the top of a render.
 #[derive(Default)]
 pub struct RouteEditState {
-    /// Quiet, Loud and the curve's exponent, per row.
-    scrubs: Vec<(ScrubState, ScrubState, ScrubState)>,
-    open: HashSet<usize>,
+    rows: RowStates<RowState>,
+    /// A row just added, opened on the next sync once the list holds it.
+    open_next: Option<usize>,
+}
+
+#[derive(Default)]
+struct RowState {
+    /// Quiet, Loud and the curve's exponent.
+    scrubs: (ScrubState, ScrubState, ScrubState),
+    open: bool,
 }
 
 impl RouteEditState {
-    pub fn sync(&mut self, count: usize) {
-        if self.scrubs.len() != count {
-            self.scrubs.resize_with(count, Default::default);
+    pub fn sync(&mut self, routes: &[Route]) {
+        self.rows.sync(routes);
+
+        if let Some(index) = self.open_next.take()
+            && index < routes.len()
+        {
+            self.expand_only(index);
         }
-        self.open.retain(|index| *index < count);
     }
 
     fn expand_only(&mut self, index: usize) {
-        self.open.clear();
-        self.open.insert(index);
-    }
-
-    /// Shift the fold and sliders up past a deleted row.
-    fn removed(&mut self, index: usize) {
-        self.open = self
-            .open
-            .iter()
-            .filter(|open| **open != index)
-            .map(|open| if *open > index { open - 1 } else { *open })
-            .collect();
-        if index < self.scrubs.len() {
-            self.scrubs.remove(index);
+        for (at, row) in self.rows.iter_mut().enumerate() {
+            row.open = at == index;
         }
     }
 
     fn toggle(&mut self, index: usize) {
-        if !self.open.remove(&index) {
-            self.open.insert(index);
+        if let Some(row) = self.rows.get_mut(index) {
+            row.open = !row.open;
         }
     }
 
     fn is_open(&self, index: usize) -> bool {
-        self.open.contains(&index)
+        self.rows.get(index).is_some_and(|row| row.open)
     }
 }
 
@@ -143,10 +140,7 @@ impl<P: 'static> RouteEditor<'_, P> {
                     },
                     cx,
                 );
-                if let Some(index) = landed {
-                    ui_mut(this).sync(index + 1);
-                    ui_mut(this).expand_only(index);
-                }
+                ui_mut(this).open_next = landed;
                 cx.notify();
             }),
         )
@@ -255,7 +249,6 @@ impl<P: 'static> RouteEditor<'_, P> {
                                 },
                                 cx,
                             );
-                            ui_mut(this).removed(index);
                             cx.notify();
                         }
                     }),
@@ -421,7 +414,11 @@ fn spans<P: 'static>(
     route: &Route,
     cx: &mut Context<P>,
 ) -> Div {
-    let Some((from_scrub, to_scrub, power_scrub)) = editor.ui.scrubs.get(index) else {
+    let Some(RowState {
+        scrubs: (from_scrub, to_scrub, power_scrub),
+        ..
+    }) = editor.ui.rows.get(index)
+    else {
         return div();
     };
     let from = route.from.clamp(0.0, OVER);
@@ -576,25 +573,63 @@ mod tests {
         assert_eq!(next_free_slot(&freed), Some(4));
     }
 
+    fn slots(slots: &[usize]) -> Vec<Route> {
+        slots
+            .iter()
+            .map(|slot| route(&slot_target(*slot)))
+            .collect()
+    }
+
     #[test]
     fn fold_state_follows_the_list() {
         let mut ui = RouteEditState::default();
-        ui.sync(3);
-        assert_eq!(ui.scrubs.len(), 3);
+        let three = slots(&[0, 1, 2]);
+        ui.sync(&three);
         ui.expand_only(2);
         assert!(ui.is_open(2) && !ui.is_open(0));
         ui.toggle(0);
         assert!(ui.is_open(0) && ui.is_open(2));
         ui.toggle(0);
         assert!(!ui.is_open(0));
-        ui.removed(1);
-        assert_eq!(ui.scrubs.len(), 2);
-        assert!(ui.is_open(1) && !ui.is_open(2));
-        ui.removed(1);
+
+        // The middle row goes: the open one below moves up with its route.
+        ui.sync(&slots(&[0, 2]));
+        assert!(ui.is_open(1) && !ui.is_open(0));
+        ui.sync(&slots(&[0]));
         assert!(!ui.is_open(0) && !ui.is_open(1));
-        ui.expand_only(0);
-        ui.sync(0);
+
+        // An added row opens once the list holds it.
+        ui.open_next = Some(1);
+        ui.sync(&slots(&[0, 5]));
+        assert!(ui.is_open(1) && !ui.is_open(0));
+        ui.sync(&[]);
         assert!(!ui.is_open(0));
-        assert!(ui.scrubs.is_empty());
+    }
+
+    #[test]
+    fn a_rows_sliders_stay_with_its_route_when_one_above_goes() {
+        let mut ui = RouteEditState::default();
+        ui.sync(&slots(&[0, 1, 2]));
+        let id =
+            |ui: &RouteEditState, index: usize| ui.rows.get(index).map(|row| row.scrubs.0.id());
+        let below = id(&ui, 2);
+
+        // A drag in flight on the last row stays on it.
+        ui.rows.get(2).unwrap().scrubs.0.begin();
+        ui.sync(&slots(&[0, 2]));
+        assert_eq!(id(&ui, 1), below);
+        assert!(ui.rows.get(1).unwrap().scrubs.0.is_dragging());
+        assert!(id(&ui, 2).is_none());
+
+        // Undone, the row comes back fresh and the moved one goes home.
+        ui.sync(&slots(&[0, 1, 2]));
+        assert_eq!(id(&ui, 2), below);
+        assert!(!ui.rows.get(1).unwrap().scrubs.0.is_dragging());
+
+        // An edit to a route's fields keeps every row where it was.
+        let mut edited = slots(&[0, 1, 2]);
+        edited[2].from = 0.5;
+        ui.sync(&edited);
+        assert_eq!(id(&ui, 2), below);
     }
 }

@@ -39,7 +39,7 @@ use gpui::{
 };
 
 use rox_core::settings::{self, BackdropVisualConfig, MilkdropColor, Settings};
-use rox_design::palette::{self, Mode};
+use rox_design::palette;
 use rox_milkdrop::library::Shuffle;
 use rox_milkdrop::{Command, Engine, EngineOptions, Event, PresetLibrary, Rotation, Status};
 use rox_panel_api::panel::shader as surface;
@@ -755,16 +755,18 @@ fn paint(bounds: gpui::Bounds<gpui::Pixels>, window: &mut Window, cx: &mut App, 
     signals[grade::SLOT_FADE] = weight(config.strength, opacity);
     signals[SLOT_FLIP_H] = if config.flip_horizontal { 1.0 } else { 0.0 };
     signals[SLOT_FLIP_V] = if config.flip_vertical { 1.0 } else { 0.0 };
-    // The app-wide theme, not a panel's: this sits under every panel. The
-    // resolved palette carries the cover tint when song theming is on.
-    let theme = palette::resolved();
+    // The window's palette as it paints, not a panel's: this sits under
+    // every panel, carries the cover tint when song theming is on, and fades
+    // with the rest on a theme switch. Light is read off that background, as
+    // the Milkdrop panel reads its own, so the flip lands with the surfaces.
+    let theme = palette::eased();
     let cover = player
         .as_ref()
         .and_then(|player| palette::seed(player.entity_id()))
         .and_then(|seed| seed.primary);
     Grade::new(
         grade_mode(config.color),
-        palette::mode() == Mode::Light,
+        grade::is_light(theme.bg_root),
         theme.bg_root,
         theme.accent,
         cover,

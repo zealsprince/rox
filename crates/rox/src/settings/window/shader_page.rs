@@ -840,6 +840,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Section {
         let config = Self::backdrop_config();
+        self.backdrop_route_ui.sync(&config.routes);
         let enabled = config.enabled;
         let all_windows = config.all_windows;
         let run_idle = config.run_when_idle;

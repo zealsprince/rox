@@ -138,7 +138,97 @@ pub trait RouteHost: SignalHost {
     }
 }
 
-/// Index-aligned with the host's route list.
+/// One state per row of a route list, kept with its route as rows above it
+/// come and go. Routes carry no id, so a list that changed length is matched
+/// against the one last seen, route by route: a drag in flight stays on its
+/// row whichever surface deleted, added or undid a row.
+pub(crate) struct RowStates<T> {
+    seen: Vec<Route>,
+    rows: Vec<T>,
+}
+
+impl<T> Default for RowStates<T> {
+    fn default() -> Self {
+        RowStates {
+            seen: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+}
+
+impl<T: Default> RowStates<T> {
+    /// Same length keeps every row where it is, since an edit to a route's
+    /// fields leaves its place alone.
+    pub(crate) fn sync(&mut self, routes: &[Route]) {
+        if self.seen == routes {
+            return;
+        }
+
+        if self.seen.len() == routes.len() {
+            self.rows.resize_with(routes.len(), T::default);
+        } else {
+            let kept = matched(&self.seen, routes);
+            let mut old: Vec<Option<T>> = std::mem::take(&mut self.rows)
+                .into_iter()
+                .map(Some)
+                .collect();
+            self.rows = kept
+                .into_iter()
+                .map(|from| from.and_then(|ix| old[ix].take()).unwrap_or_default())
+                .collect();
+        }
+
+        self.seen = routes.to_vec();
+    }
+
+    pub(crate) fn is_synced(&self, routes: &[Route]) -> bool {
+        self.seen == routes
+    }
+
+    pub(crate) fn get(&self, index: usize) -> Option<&T> {
+        self.rows.get(index)
+    }
+
+    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.rows.get_mut(index)
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.rows.iter_mut()
+    }
+}
+
+/// For each route of `new`, the index in `old` it is the same row as: the
+/// longest run of equal routes the two lists share in order.
+fn matched(old: &[Route], new: &[Route]) -> Vec<Option<usize>> {
+    let (n, m) = (old.len(), new.len());
+    let mut longest = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            longest[i][j] = match old[i] == new[j] {
+                true => longest[i + 1][j + 1] + 1,
+                false => longest[i + 1][j].max(longest[i][j + 1]),
+            };
+        }
+    }
+
+    let mut out = vec![None; m];
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if old[i] == new[j] {
+            out[j] = Some(i);
+            i += 1;
+            j += 1;
+        } else if longest[i + 1][j] >= longest[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    out
+}
+
 #[derive(Default)]
 struct RouteScrubs {
     from: ScrubState,
@@ -160,7 +250,7 @@ struct SignalScrubs {
 /// The widget state a host embeds, kept in step by [`sync`].
 #[derive(Default)]
 pub struct SignalUi {
-    route_scrubs: Vec<RouteScrubs>,
+    route_scrubs: RowStates<RouteScrubs>,
     signal_scrubs: HashMap<u64, SignalScrubs>,
     /// The bounds cell backs the click-outside cancel: nothing else in the
     /// settings window takes focus, so blur alone never fires.
@@ -174,12 +264,12 @@ pub struct SignalUi {
 /// Run at the top of every settings render, whatever the page: a route
 /// created from any page must find its scrubs on the next render.
 pub fn sync<P: SignalHost>(host: &mut P) {
-    let count = host.routes().len();
+    if !host.signal_ui().route_scrubs.is_synced(host.routes()) {
+        let routes = host.routes().to_vec();
+        host.signal_ui_mut().route_scrubs.sync(&routes);
+    }
     let pool = host.hub().pool();
     let ui = host.signal_ui_mut();
-    if ui.route_scrubs.len() != count {
-        ui.route_scrubs.resize_with(count, RouteScrubs::default);
-    }
     ui.signal_scrubs
         .retain(|id, _| pool.iter().any(|s| s.id == *id));
     ui.open.retain(|id| pool.iter().any(|s| s.id == *id));
@@ -1177,7 +1267,9 @@ fn span_slider<P: 'static>(
 
 fn route_tuning<P: RouteHost>(host: &P, index: usize, cx: &mut Context<P>) -> Div {
     let route = &host.routes()[index];
-    let scrubs = &host.signal_ui().route_scrubs[index];
+    let Some(scrubs) = host.signal_ui().route_scrubs.get(index) else {
+        return div();
+    };
     let pool = host.hub().pool();
     let timed = route.time.is_some();
     let known = !timed && pool.iter().any(|s| s.id == route.signal);
@@ -1363,7 +1455,9 @@ fn frac_to_period(fraction: f32) -> f32 {
 /// A time route's own rows: its period, shape and phase, in place of the
 /// shared signal's tuning.
 fn time_rows<P: RouteHost>(host: &P, index: usize, wave: Wave, cx: &mut Context<P>) -> Div {
-    let scrubs = &host.signal_ui().route_scrubs[index];
+    let Some(scrubs) = host.signal_ui().route_scrubs.get(index) else {
+        return div();
+    };
     let edit = move |cx: &mut Context<P>, this: &mut P, f: &dyn Fn(&mut Wave)| {
         if let Some(wave) = this
             .routes_mut()
@@ -1773,6 +1867,33 @@ mod label_tests {
         assert_eq!(plain.fraction(0.75), 0.75);
         assert_eq!(plain.value(-0.5), 0.0);
         assert_eq!(plain.value(9.0), SPAN_OVER);
+    }
+
+    #[test]
+    fn a_route_lists_rows_are_matched_route_by_route() {
+        let on = |target: &str| Route {
+            target: target.to_string(),
+            ..Route::default()
+        };
+        let old = [on("a"), on("b"), on("c"), on("d")];
+
+        assert_eq!(
+            matched(&old, &[on("a"), on("c"), on("d")]),
+            [Some(0), Some(2), Some(3)]
+        );
+        assert_eq!(
+            matched(&old, &[on("x"), on("a"), on("b"), on("c"), on("d")]),
+            [None, Some(0), Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(matched(&old, &[]), Vec::<Option<usize>>::new());
+
+        let mut rows: RowStates<usize> = RowStates::default();
+        rows.sync(&old);
+        for (ix, row) in rows.iter_mut().enumerate() {
+            *row = ix + 10;
+        }
+        rows.sync(&[on("b"), on("d")]);
+        assert_eq!((rows.get(0), rows.get(1)), (Some(&11), Some(&13)));
     }
 
     fn unnamed(source: Source) -> Signal {

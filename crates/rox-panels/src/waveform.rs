@@ -324,7 +324,7 @@ fn linked_role(value: &str) -> Option<&'static palette::Role> {
 
 /// Junk from a hand edit takes the side's default link.
 fn bar_color(value: &str, default: &str) -> Rgba {
-    let role = |value| linked_role(value).map(|role| (role.get)(&palette::resolved()));
+    let role = |value| linked_role(value).map(|role| (role.get)(&palette::eased()));
     palette::parse_hex(value)
         .or_else(|| role(value))
         .or_else(|| role(default))
@@ -3044,7 +3044,7 @@ mod tests {
 
     #[test]
     fn a_bar_color_follows_a_link_and_shrugs_off_junk() {
-        let palette = palette::resolved();
+        let palette = palette::eased();
         assert_eq!(bar_color("accent", "text_faint"), palette.accent, "linked");
         assert_eq!(
             bar_color(" highlight ", "accent"),

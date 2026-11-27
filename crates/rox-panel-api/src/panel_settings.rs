@@ -2047,7 +2047,7 @@ impl<P: PanelSettings> PanelSettingsWindow<P> {
         // Slot names come off what runs, so a named panel reads the pool's
         // `// @slot n:` comments.
         let labels = shader::slot_labels(&running);
-        self.shader_routes.sync(shader.routes.len());
+        self.shader_routes.sync(&shader.routes);
 
         // Read before the field is borrowed for the picker below.
         let fallback = {

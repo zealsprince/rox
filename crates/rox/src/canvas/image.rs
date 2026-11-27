@@ -633,11 +633,13 @@ fn along(at: f32, lines: &[f32; 4], texels: &[u32; 4]) -> f32 {
 /// `pictures` names the item's own with None, and a name the store doesn't
 /// hold draws the item's own, so a case or look naming a missing image falls
 /// back the way it always has. With `hit` the result also carries where each
-/// draws, for a hit against its picture.
+/// of `resting` lies, the pictures before any hover or pressed look, for a
+/// hit against them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn element(
     item: &CanvasItem,
     pictures: &Mix,
+    resting: &Mix,
     parent: &Frame,
     at: &Placing,
     live: &Live,
@@ -655,17 +657,16 @@ pub(crate) fn element(
         images.look(named, cx);
     }
 
-    let mut drawn = Drawn {
-        elements: Vec::new(),
-        pictures: hit.then(Vec::new),
-    };
+    let mut drawn = Drawn::default();
     let layers = pictures.parts();
     let assets: Vec<&str> = layers
         .iter()
-        .map(|(name, _)| match name {
-            Some(name) if !matches!(images.look(name, cx), Look::Missing) => name,
-            _ => own.as_str(),
-        })
+        .map(|(name, _)| shown(*name, own, images, cx))
+        .collect();
+    let rest: Vec<&str> = resting
+        .parts()
+        .iter()
+        .map(|(name, _)| shown(*name, own, images, cx))
         .collect();
     let bodies: Vec<Option<f32>> = assets.iter().map(|asset| images.body(asset)).collect();
     let draws = fades::mix_draws(pictures, &bodies);
@@ -687,7 +688,39 @@ pub(crate) fn element(
         );
     }
 
+    // The hit reads the resting pictures, drawn or not: a hover look's lit
+    // copy is the drawn one once it lands, and its glow would hold the
+    // pointer past the edge it took it at. Clocks of their own, since a
+    // still image drops the clock it's read under.
+    if hit {
+        let mut probe = Drawn {
+            elements: Vec::new(),
+            pictures: Some(Vec::new()),
+        };
+        for (ix, asset) in rest.into_iter().enumerate() {
+            let clock = format!("{}\u{2}{ix}", item.id);
+            layer_element(
+                item, asset, &clock, false, parent, at, live, images, &mut probe, cx,
+            );
+        }
+        drawn.pictures = probe.pictures;
+    }
+
     drawn
+}
+
+/// The image a part of a mix draws: the one it names, or the item's own when
+/// it names none or names one that's missing.
+fn shown<'s>(
+    name: Option<&'s str>,
+    own: &'s str,
+    images: &mut Images,
+    cx: &mut Context<CanvasPanel>,
+) -> &'s str {
+    match name {
+        Some(name) if !matches!(images.look(name, cx), Look::Missing) => name,
+        _ => own,
+    }
 }
 
 /// One picture of an image item. `top` is the one a missing image's outline
@@ -1186,6 +1219,48 @@ mod tests {
         };
         assert!(tilted.hits([30., 10.]));
         assert!(!tilted.hits([39., 1.]), "outside the narrowed side");
+    }
+
+    /// A 16 square PNG: an opaque disc of radius 5, and past it to `glow` a
+    /// band at alpha 200, as a lit copy's glow is.
+    fn disc(glow: f32) -> Arc<RenderImage> {
+        let image = image::RgbaImage::from_fn(16, 16, |x, y| {
+            let off = (x as f32 + 0.5 - 8.).hypot(y as f32 + 0.5 - 8.);
+            let alpha = match off {
+                off if off <= 5. => 255,
+                off if off <= glow => 200,
+                _ => 0,
+            };
+            image::Rgba([255, 255, 255, alpha])
+        });
+        let mut out = Cursor::new(Vec::new());
+        image
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("a png encodes");
+        decode(&out.into_inner()).expect("decodes")
+    }
+
+    #[test]
+    fn a_lit_copys_glow_would_hold_the_pointer_past_the_resting_edge() {
+        let picture = |image| Picture {
+            corners: [[0., 0.], [16., 0.], [16., 16.], [0., 16.]],
+            image,
+            frame: 0,
+            map: Map::Fit(Bounds {
+                origin: point(0., 0.),
+                size: size(1., 1.),
+            }),
+        };
+        let resting = picture(disc(5.));
+        let lit = picture(disc(7.));
+
+        // The band between the two edges is why the hit reads the resting
+        // picture: a pointer there entered nothing, so leaving it can't keep
+        // the hover.
+        let band = [14.5, 8.5];
+        assert!(lit.hits(band));
+        assert!(!resting.hits(band));
+        assert!(resting.hits([12.5, 8.5]) && lit.hits([12.5, 8.5]));
     }
 
     #[test]

@@ -4960,6 +4960,7 @@ canvas-target-panel-match = Segui il pannello
 canvas-target-panel-size = Larghezza e altezza in pixel
 canvas-weight-targets = Target di rendering { $count }, { $megapixels } megapixel
 canvas-weight-heavy-targets = Target di rendering: { $megapixels } megapixel, più di quanti se ne disegnano in modo fluido
+canvas-weight-heavy-targets-following = Target di rendering: { $megapixels } megapixel, più di quanti se ne disegnano in modo fluido. Seguono il loro elemento e contano solo quando disegnano: { $count }
 
 ## Catalog
 

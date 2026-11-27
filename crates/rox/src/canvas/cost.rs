@@ -82,6 +82,10 @@ pub(crate) struct Weight {
     /// Switched-on time routes. One is enough to keep a canvas drawing every
     /// frame while it shows.
     pub time_routes: usize,
+    /// Render targets that follow their item, counted in `cost.targets` but
+    /// not in `cost.target_pixels`: their size is their box's on screen, so
+    /// nothing saved says what they'll draw. [`drawing`] counts a live one.
+    pub following: usize,
 }
 
 impl Weight {
@@ -99,6 +103,7 @@ impl Weight {
             shader_surfaces: self.shader_surfaces.max(other.shader_surfaces),
             moving_grids: self.moving_grids.max(other.moving_grids),
             time_routes: self.time_routes.max(other.time_routes),
+            following: self.following.max(other.following),
         }
     }
 }
@@ -195,13 +200,17 @@ fn canvas(config: &Value, level: usize, tally: &mut Tally) {
         .unwrap_or_default();
 
     let cost = state.cost();
+    let (following, kept) = following(&state);
     let sum = &mut tally.weight.cost;
     sum.items += cost.items;
     sum.grids += cost.grids;
     sum.shaders += cost.shaders;
     sum.depth = sum.depth.max(level + cost.depth);
     sum.targets += cost.targets;
-    sum.target_pixels = sum.target_pixels.saturating_add(cost.target_pixels);
+    sum.target_pixels = sum
+        .target_pixels
+        .saturating_add(cost.target_pixels.saturating_sub(kept));
+    tally.weight.following += following;
 
     tally.weight.time_routes += routes
         .iter()
@@ -249,17 +258,14 @@ fn items(
     }
 }
 
-/// `weight` with each target of `canvas` that follows its box counted at the
-/// pixels its session draws at, `drawn` by item id, in place of the width
-/// and height it keeps for Fixed. One not drawing counts nothing. Only the
-/// canvas's own items: a canvas in one of its grids has sessions of its own.
-pub(crate) fn drawing(
-    mut weight: Weight,
-    canvas: &CanvasState,
-    drawn: impl Fn(&str) -> Option<[u32; 2]>,
-) -> Weight {
-    let pixels = |[width, height]: [u32; 2]| u64::from(width) * u64::from(height);
+fn pixels([width, height]: [u32; 2]) -> u64 {
+    u64::from(width) * u64::from(height)
+}
 
+/// How many of `canvas`'s targets follow their item, at any depth of its
+/// groups, and the pixels their saved width and height would have counted.
+fn following(canvas: &CanvasState) -> (usize, u64) {
+    let mut out = (0, 0u64);
     canvas.walk(&mut |item, _| {
         if let Content::Target {
             sizing: TargetSize::Follow,
@@ -268,10 +274,33 @@ pub(crate) fn drawing(
             ..
         } = &item.content
         {
-            let kept = pixels([*width, *height]);
+            out.0 += 1;
+            out.1 = out.1.saturating_add(pixels([*width, *height]));
+        }
+    });
+
+    out
+}
+
+/// `weight` with each target of `canvas` that follows its item counted at
+/// the pixels its session draws at, `drawn` by item id. One not drawing
+/// counts nothing. Only the canvas's own items: a canvas in one of its grids
+/// has sessions of its own, and its following targets stay uncounted.
+pub(crate) fn drawing(
+    mut weight: Weight,
+    canvas: &CanvasState,
+    drawn: impl Fn(&str) -> Option<[u32; 2]>,
+) -> Weight {
+    canvas.walk(&mut |item, _| {
+        if let Content::Target {
+            sizing: TargetSize::Follow,
+            ..
+        } = &item.content
+        {
             let now = drawn(&item.id).map_or(0, pixels);
             let sum = &mut weight.cost.target_pixels;
-            *sum = sum.saturating_sub(kept).saturating_add(now);
+            *sum = sum.saturating_add(now);
+            weight.following = weight.following.saturating_sub(1);
         }
     });
 
@@ -333,11 +362,18 @@ pub(crate) fn warnings(weight: &Weight) -> Vec<SharedString> {
         .map(|(count, _, key)| rox_i18n::t!(key, count = count as u64))
         .collect();
 
+    // Only the targets of a known size can go over. One that follows its
+    // item is named beside them, since the line's number leaves it out.
     if weight.cost.target_pixels >= TARGET_PIXELS {
-        lines.push(rox_i18n::t!(
-            "canvas-weight-heavy-targets",
-            megapixels = megapixels(weight.cost.target_pixels)
-        ));
+        let megapixels = megapixels(weight.cost.target_pixels);
+        lines.push(match weight.following {
+            0 => rox_i18n::t!("canvas-weight-heavy-targets", megapixels = megapixels),
+            count => rox_i18n::t!(
+                "canvas-weight-heavy-targets-following",
+                megapixels = megapixels,
+                count = count as u64
+            ),
+        });
     }
 
     lines
@@ -402,14 +438,52 @@ mod tests {
         ] }))
         .unwrap();
         let weight = weigh_canvas(serde_json::to_value(&canvas).unwrap());
-        assert_eq!(weight.cost.target_pixels, 1920 * 1080 + 2 * 1280 * 720);
+        assert_eq!(
+            weight.cost.target_pixels,
+            1920 * 1080,
+            "a following one's saved size isn't what it draws"
+        );
+        assert_eq!((weight.cost.targets, weight.following), (3, 2));
 
         let drawn = drawing(weight, &canvas, |id| match id {
             "follows" => Some([3840, 2144]),
             _ => None,
         });
         assert_eq!(drawn.cost.target_pixels, 1920 * 1080 + 3840 * 2144);
-        assert_eq!(drawn.cost.targets, 3);
+        assert_eq!((drawn.cost.targets, drawn.following), (3, 0));
+    }
+
+    #[test]
+    fn a_card_warns_only_on_the_targets_it_can_size_and_names_the_rest() {
+        rox_i18n::pin_thread_locale("en-CA");
+        let target = |id: &str, width: u32, follow: bool| {
+            let mut content = json!({
+                "kind": "target", "owner": "plugin:a", "width": width, "height": 2160
+            });
+            if follow {
+                content["sizing"] = json!("follow");
+            }
+            json!({ "id": id, "content": content })
+        };
+
+        // Huge saved sizes on following targets say nothing.
+        let follows = weigh_canvas(json!({ "items": [
+            target("a", 3840, true), target("b", 3840, true), target("c", 3840, true)
+        ] }));
+        assert_eq!(follows.cost.target_pixels, 0);
+        assert!(warnings(&follows).is_empty());
+
+        // Fixed ones over the line warn, with the following one named.
+        let mixed = weigh_canvas(json!({ "items": [
+            target("a", 3840, false), target("b", 3840, false), target("c", 3840, false),
+            target("d", 3840, true)
+        ] }));
+        assert_eq!(
+            warnings(&mixed),
+            [SharedString::from(
+                "Render targets: 24.9 megapixels, more than draws smoothly. Following their item and not counted until they draw: 1"
+            )]
+        );
     }
 
     #[test]

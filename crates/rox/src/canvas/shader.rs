@@ -30,7 +30,7 @@ use rox_panel_api::signal_ui::routes::RouteEditState;
 use serde_json::Value;
 
 use crate::canvas::texture::on_box;
-use crate::canvas::{bbox, edit};
+use crate::canvas::{bbox, edit, routes};
 use crate::panels::canvas::CanvasPanel;
 
 /// Whether an item sits square to the screen. A shader item does when the
@@ -153,7 +153,12 @@ impl Render for ShaderView {
                 origin: point(px(origin[0]), px(origin[1])),
                 size: size(px(extent[0]), px(extent[1])),
             };
+            // A held canvas clock holds the shader's time with it. Unheld,
+            // the shader runs on the renderer's own clock as a panel's does.
+            let held = routes::held_clock().map(|seconds| seconds as f32);
+            window.hold_user_shader_time(held);
             let painted = surface.paint_face(corners, bounds, window, cx);
+            window.hold_user_shader_time(None);
 
             // The canvas lays the item out by what this paint found, and the
             // inspector shows the compile message. gpui drops a notify made

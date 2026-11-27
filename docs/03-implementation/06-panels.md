@@ -601,8 +601,14 @@ paint order. Picking an item under another parent starts a new selection with it
 - On the stage, Shift or Ctrl (Cmd on macOS) adds an item to the set or takes it out.
   Both work there, since the stage has no row order to take a run along. Under a
   modifier the press picks at the set's own level, so a set inside a group grows from
-  the stage. A plain press on one of several selected items keeps the set so the drag
-  moves them all, and letting go without moving leaves just that one.
+  the stage.
+- A plain press on what's selected, or on something inside it, leaves the selection as
+  it is, so a drag from it moves what's selected: a nested child once it's picked, or the
+  whole set when the press lands on one of several. Only letting go without moving (4
+  pixels) steps the selection, one group further in on a second press at the same spot
+  and round to the outermost from the innermost, and on one of a set it leaves just that
+  one. A plain press anywhere else picks the outermost group under it at once and drags
+  that (`selection::press`).
 - In the inspector's tree the list modifiers apply, as in rox's lists: Shift takes the
   run of siblings from the primary to the row, Ctrl or Cmd toggles a row, both add the
   run to what's held. Every selected row is lit.
@@ -677,8 +683,8 @@ the half pixel inside each side, which on a seam between two patches leaves a fa
 wherever the seam misses a pixel boundary, and on a tilted face it always does. A patch
 draws the sides it shares hard, so each pixel along a seam is covered once. Each sampler
 clamps to its own patch's texels, so the edge texels of neighbouring patches don't blend
-across a seam. The image's preview with the cut drawn over it sits under the four inset
-fields in the inspector, and each inset is one undo step. The weight line counts items,
+across a seam. The preview of the picture the item draws now, its case's or its own,
+with the cut drawn over it sits under the four inset fields in the inspector, and each inset is one undo step. The weight line counts items,
 not quads, so a sliced image weighs what any image does.
 
 An item can follow a piece of state from the table Custom Controls picks from (`STATES`
@@ -759,10 +765,14 @@ as it paints that frame (`palette::eased`), so it fades with them. With the them
 left on the look's theme ease, panes, rows, text and scenery move as one. A grid needs
 nothing of its own for this: its dock renders cached, and the palette's pump refreshes the
 window on every step, which re-renders cached views too, the last step included, so no
-grid keeps a frame of the old theme. What still lands at once: gpui-component's tokens rox
-doesn't project, which follow the stock light or dark baseline and flip at the middle of
-the ease, a waveform's role colors, and the colors a render target is sent, which are
-where the ease will land, sent once.
+grid keeps a frame of the old theme. A waveform's role-linked bar colors and the
+backdrop's Milkdrop grade read the eased palette too, and the gpui-component tokens a
+fade can see are projected from it: the active tab's label, the primary fill on a linked
+swatch, a selected or hovered button, a focused field's caret, a disabled field and a link.
+What still lands at once: the stock baseline's light or dark pick, which sets which way a
+ghost button's hover shades; the stock text selection color, seen only while text is
+selected; the tokens of widgets rox doesn't use; and the colors a render target is sent,
+which are where the ease will land, sent once.
 
 An item a click command covers can also carry a `hover` look, for while the pointer is
 over it, and a `pressed` look, for while a left press that landed on it is held and the
@@ -827,7 +837,9 @@ inside it. `"picture"` takes it only where an image item draws at least half opa
 same inverse `unit_point` gives a render target, then through the fit's crop or the
 nine-slice cut to one texel, whose alpha decides. It's one texel read per image under the
 pointer per move, from the decoded copy the image keeps, on the frame showing now. During
-a crossfade either picture counts. An image still decoding takes nothing. Anything but an
+a crossfade either picture counts. A hover or pressed look doesn't move it: the hit reads
+the picture the case shows at rest, so a lit copy's glow can't hold a hover past the edge
+the pointer came in at. An image still decoding takes nothing. Anything but an
 image reads `"picture"` as its box, and a grid ignores `hit`, since its panels take their
 own input. Design mode picks every item by its box whatever it says.
 

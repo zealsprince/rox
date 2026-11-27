@@ -4755,6 +4755,7 @@ canvas-target-panel-match = 跟随面板
 canvas-target-panel-size = 宽度和高度（像素）
 canvas-weight-targets = 渲染目标 { $count }，{ $megapixels } 百万像素
 canvas-weight-heavy-targets = 渲染目标：{ $megapixels } 百万像素，超出流畅绘制的量
+canvas-weight-heavy-targets-following = 渲染目标：{ $megapixels } 百万像素，超出流畅绘制的量。跟随项目、绘制前不计入的：{ $count }
 
 ## Catalog
 

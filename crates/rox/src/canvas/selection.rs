@@ -94,6 +94,64 @@ impl Selection {
     }
 }
 
+// ── A press ──
+
+/// What a plain press on the stage does, decided before anything changes. A
+/// drag from the press moves what's selected; the press only steps the
+/// selection when it lets go without moving.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Press {
+    /// What a drag from here moves, with the rest of a set riding along.
+    /// None when that is locked.
+    pub drags: Option<String>,
+    /// Selected at the press: a press on nothing selected picks at once.
+    pub now: Option<String>,
+    /// Selected on a release that didn't move.
+    pub on_release: Option<String>,
+}
+
+/// A plain press on `chain`, the ids under the pointer outermost first.
+/// `again` is a press on the same spot and chain as the last one, which
+/// steps one group in from the selected level, and round to the outermost
+/// from the innermost.
+pub(crate) fn press(
+    selection: &Selection,
+    chain: &[String],
+    again: bool,
+    locked: impl Fn(&str) -> bool,
+) -> Press {
+    let deeper = again
+        .then(|| {
+            let at = chain
+                .iter()
+                .position(|id| Some(id.as_str()) == selection.primary())?;
+            chain.get(at + 1)
+        })
+        .flatten();
+    let step = deeper.unwrap_or(&chain[0]).clone();
+    let unlocked = |id: &String| (!locked(id)).then(|| id.clone());
+
+    // One selection lives in one parent, so at most one id along the chain
+    // is held.
+    match chain.iter().find(|id| selection.contains(id)) {
+        Some(held) => Press {
+            drags: unlocked(held),
+            now: None,
+            // Letting go on one of a set leaves just that one.
+            on_release: Some(match selection.several() {
+                true => held.clone(),
+                false => step,
+            }),
+        },
+
+        None => Press {
+            drags: unlocked(&step),
+            now: Some(step),
+            on_release: None,
+        },
+    }
+}
+
 // ── Parents ──
 
 /// The groups holding `id`, outermost first: empty at the top level.
@@ -514,6 +572,132 @@ mod tests {
         assert_eq!(ids(&selection), ["b", "a"]);
         selection.raise("b");
         assert_eq!(selection.primary(), Some("b"));
+    }
+
+    fn chain(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    fn pressed(
+        selection: &Selection,
+        ids: &[&str],
+        again: bool,
+        locked: &[&str],
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let out = press(selection, &chain(ids), again, |id| locked.contains(&id));
+        (out.drags, out.now, out.on_release)
+    }
+
+    fn some(id: &str) -> Option<String> {
+        Some(id.to_string())
+    }
+
+    #[test]
+    fn a_press_on_nothing_selected_picks_the_outermost_and_drags_it() {
+        let none = Selection::default();
+        assert_eq!(
+            pressed(&none, &["a"], false, &[]),
+            (some("a"), some("a"), None)
+        );
+
+        // With nothing selected a second press has no level to step from.
+        assert_eq!(
+            pressed(&none, &["g", "c"], true, &[]),
+            (some("g"), some("g"), None)
+        );
+
+        // Another item than the one selected: a fresh pick.
+        assert_eq!(
+            pressed(&one("c"), &["g", "d"], true, &[]),
+            (some("g"), some("g"), None)
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_selection_drags_it_and_steps_only_on_release() {
+        // A selected top-level item.
+        assert_eq!(
+            pressed(&one("a"), &["a"], true, &[]),
+            (some("a"), None, some("a"))
+        );
+
+        // A child of the selected group: the drag moves the group, a click
+        // steps in.
+        assert_eq!(
+            pressed(&one("g"), &["g", "c"], true, &[]),
+            (some("g"), None, some("c"))
+        );
+        assert_eq!(
+            pressed(&one("g"), &["g", "c"], false, &[]),
+            (some("g"), None, some("g")),
+            "a press elsewhere on it starts from the outermost again"
+        );
+
+        // A selected nested child: the drag moves the child, and only a
+        // click goes round to the outermost.
+        assert_eq!(
+            pressed(&one("c"), &["g", "c"], true, &[]),
+            (some("c"), None, some("g"))
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_stacked_child_drags_the_child_once_it_is_selected() {
+        let deck = ["deck", "card"];
+        assert_eq!(
+            pressed(&Selection::default(), &deck, false, &[]),
+            (some("deck"), some("deck"), None)
+        );
+        assert_eq!(
+            pressed(&one("deck"), &deck, true, &[]),
+            (some("deck"), None, some("card"))
+        );
+        assert_eq!(
+            pressed(&one("card"), &deck, true, &[]),
+            (some("card"), None, some("deck"))
+        );
+    }
+
+    #[test]
+    fn a_press_on_one_of_a_set_drags_the_set_and_a_click_leaves_that_one() {
+        let mut set = one("a");
+        set.toggle("b", true);
+        assert_eq!(
+            pressed(&set, &["a"], true, &[]),
+            (some("a"), None, some("a"))
+        );
+
+        // A press inside a group of the set takes the group.
+        let mut set = one("a");
+        set.toggle("g", true);
+        assert_eq!(
+            pressed(&set, &["g", "c"], true, &[]),
+            (some("g"), None, some("g"))
+        );
+
+        // Off the set a plain press starts again.
+        assert_eq!(
+            pressed(&set, &["e"], false, &[]),
+            (some("e"), some("e"), None)
+        );
+    }
+
+    #[test]
+    fn a_locked_item_is_picked_and_stepped_but_never_dragged() {
+        assert_eq!(
+            pressed(&Selection::default(), &["a"], false, &["a"]),
+            (None, some("a"), None)
+        );
+        assert_eq!(
+            pressed(&one("g"), &["g", "c"], true, &["g"]),
+            (None, None, some("c"))
+        );
+
+        // A locked child doesn't hold its unlocked group still.
+        assert_eq!(
+            pressed(&one("g"), &["g", "c"], true, &["c"]),
+            (some("g"), None, some("c"))
+        );
     }
 
     #[test]

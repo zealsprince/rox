@@ -59,9 +59,11 @@ fn adds(modifiers: Modifiers) -> bool {
 }
 
 impl CanvasPanel {
-    /// A press on an item. A plain press picks it, and on one of several
-    /// selected it keeps the set so the drag moves them all. Under a
-    /// modifier it goes in or out of the set. Whatever ends up selected
+    /// A press on an item. A plain press on something selected, or inside
+    /// it, keeps the selection so a drag moves it, a whole set included,
+    /// and steps the selection only if it lets go without moving
+    /// ([`selection::press`]). A plain press elsewhere picks at once. Under
+    /// a modifier it goes in or out of the set. Whatever ends up selected
     /// under the press moves with the drag.
     pub(super) fn pick(
         &mut self,
@@ -71,7 +73,7 @@ impl CanvasPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.collapse = None;
+        self.pending = None;
 
         if adds(modifiers) {
             let target = self.target_in_set(local, chain);
@@ -90,16 +92,23 @@ impl CanvasPanel {
             return;
         }
 
-        let target = self.choose(local, chain);
-        if self.selected.several() && self.selected.contains(&target) {
-            self.selected.raise(&target);
-            self.collapse = Some(target.clone());
-            self.activate(window, cx);
-            cx.notify();
-        } else {
-            self.select(Some(target.clone()), window, cx);
+        let again = self.again(local, chain);
+        let canvas = &self.config.canvas;
+        let locked = |id: &str| canvas.find(id).is_none_or(|item| item.locked);
+        let press = selection::press(&self.selected, chain, again, locked);
+
+        match press.now {
+            Some(id) => self.select(Some(id), window, cx),
+            None => {
+                self.activate(window, cx);
+                cx.notify();
+            }
         }
-        self.begin(&target, local, Begin::Move, cx);
+        self.pending = press.on_release.map(|id| (id, local));
+
+        if let Some(id) = press.drags {
+            self.begin(&id, local, Begin::Move, cx);
+        }
     }
 
     /// Under a modifier the press picks at the set's own level: the item
@@ -108,11 +117,13 @@ impl CanvasPanel {
     fn target_in_set(&mut self, local: [f32; 2], chain: &[String]) -> String {
         let scope = selection::scope(&self.config.canvas.items, &self.selected);
         let inside = chain.len() > scope.len() && chain[..scope.len()] == scope[..];
+        // Outside the set's parent nothing along the chain is held, so a
+        // press there picks the outermost.
+        self.again(local, chain);
         if self.selected.is_empty() || !inside {
-            return self.choose(local, chain);
+            return chain[0].clone();
         }
 
-        self.last_press = Some((local, chain.to_vec()));
         chain[scope.len()].clone()
     }
 
@@ -127,7 +138,7 @@ impl CanvasPanel {
         cx: &mut Context<Self>,
     ) {
         self.last_press = None;
-        self.collapse = None;
+        self.pending = None;
 
         let (scope, base) = match adds(modifiers) {
             true => (

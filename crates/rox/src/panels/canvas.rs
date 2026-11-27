@@ -123,7 +123,8 @@ const HANDLE: f32 = 8.;
 /// How near the pointer has to come to a turn handle to take it.
 const GRIP_REACH: f32 = 7.;
 
-/// A second press this close to the first steps into a group.
+/// A second press this close to the first steps into a group, and a press
+/// that moves no further than this is a click, not a drag.
 const SAME_SPOT: f32 = 4.;
 
 /// The smallest a non-grid item resizes to, in pixels.
@@ -230,6 +231,9 @@ struct Gesture {
     /// Set for a move in a stack: along its axis a drag reorders, and only
     /// across it does the offset change.
     stack: Option<edit::StackDrag>,
+    /// Whether a move has left [`SAME_SPOT`] of the press, so a click that
+    /// shakes a pixel stays a click.
+    moving: bool,
 }
 
 enum GestureKind {
@@ -526,9 +530,9 @@ pub struct CanvasPanel {
     pub(crate) selected: Selection,
     /// The marquee being dragged on empty stage.
     marquee: Option<set::Marquee>,
-    /// A press on one of several selected items that becomes a selection of
-    /// just that one if it lets go without moving.
-    collapse: Option<String>,
+    /// What a press on the selection selects if it lets go without moving,
+    /// and where the press was.
+    pending: Option<(String, [f32; 2])>,
     history: History<Snapshot>,
     /// The routes as the history last saw them. The shared binding rows
     /// write `config.routes` directly, so a difference is an edit to record.
@@ -702,7 +706,7 @@ impl CanvasPanel {
             tab_panel: None,
             selected: Selection::default(),
             marquee: None,
-            collapse: None,
+            pending: None,
             history: History::default(),
             seen_routes,
             motion: routes::Motion::default(),
@@ -944,6 +948,26 @@ impl CanvasPanel {
 
     pub(crate) fn images(&self) -> &Images {
         &self.images
+    }
+
+    /// The picture an image item draws now: its own, or the one its case
+    /// shows, with the inspector's previewed case standing in for the live
+    /// one as it does on the stage.
+    pub(crate) fn drawn_asset<'a>(&self, item: &'a CanvasItem) -> Option<&'a str> {
+        let Content::Image { asset, .. } = &item.content else {
+            return None;
+        };
+
+        let preview = self
+            .inspector
+            .preview()
+            .filter(|(id, _)| *id == item.id)
+            .map(|(_, case)| case);
+        Some(
+            states::resolve(item, &self.cases, preview)
+                .asset
+                .unwrap_or(asset),
+        )
     }
 
     /// A target item's status line, as its session last left it.
@@ -1478,6 +1502,9 @@ fn place(
         let applied = states::resolve(item, draw.cases, preview);
         let length = fades::length(item, draw.still);
         let faded = draw.fades.step(&item.id, &applied, length, draw.now);
+        // The pictures before a hover or pressed look, which a picture hit
+        // tests, so a lit copy's glow can't hold the hover past the edge.
+        let resting = faded.pictures;
         let weights = canvas::looks::weights(item, draw.looks, draw.inherited);
         let faded = match weights {
             Some(weights) => canvas::looks::over(item, applied.case, faded, weights),
@@ -1618,6 +1645,7 @@ fn place(
                 let drawn = image::element(
                     item,
                     &faded.pictures,
+                    &resting,
                     parent,
                     at,
                     &live,
@@ -1885,6 +1913,7 @@ impl CanvasPanel {
 
         self.selected.clear();
         self.gesture = None;
+        self.pending = None;
         self.marquee = None;
         cx.notify();
     }
@@ -1942,6 +1971,12 @@ impl CanvasPanel {
                     let held = event.pressed_button == Some(MouseButton::Left);
                     moving
                         .update(cx, |this, cx| {
+                            if let Some((_, at)) = &this.pending
+                                && (!held || (at[0] - local[0]).hypot(at[1] - local[1]) > SAME_SPOT)
+                            {
+                                this.pending = None;
+                            }
+
                             if this.gesture.is_some() {
                                 if held {
                                     this.drag_to(local, event.modifiers.shift, cx);
@@ -2190,24 +2225,15 @@ impl CanvasPanel {
         }
     }
 
-    /// The outermost group under the press, or one level further in when
-    /// the press lands where the last one did and that level is selected.
-    fn choose(&mut self, local: [f32; 2], chain: &[String]) -> String {
+    /// Whether a press lands where the last one did, on the same chain of
+    /// ids, which steps the selection one group in. Remembers this one.
+    fn again(&mut self, local: [f32; 2], chain: &[String]) -> bool {
         let again = self.last_press.as_ref().is_some_and(|(at, last)| {
             (at[0] - local[0]).hypot(at[1] - local[1]) <= SAME_SPOT && last == chain
         });
 
-        let deeper = again
-            .then(|| {
-                let at = chain
-                    .iter()
-                    .position(|id| Some(id.as_str()) == self.selected.primary())?;
-                chain.get(at + 1).cloned()
-            })
-            .flatten();
-
         self.last_press = Some((local, chain.to_vec()));
-        deeper.unwrap_or_else(|| chain[0].clone())
+        again
     }
 
     /// Which turn handle of the selected item sits under the pointer: the
@@ -2298,6 +2324,7 @@ impl CanvasPanel {
             kind,
             riders,
             stack,
+            moving: false,
         });
     }
 
@@ -2370,12 +2397,18 @@ impl CanvasPanel {
     }
 
     fn drag_to(&mut self, local: [f32; 2], shift: bool, cx: &mut Context<Self>) {
-        let Some(gesture) = &self.gesture else {
+        let Some(gesture) = &mut self.gesture else {
             return;
         };
 
         let delta = [local[0] - gesture.from[0], local[1] - gesture.from[1]];
-        let g = gesture;
+        if matches!(gesture.kind, GestureKind::Move(_)) && !gesture.moving {
+            if delta[0].hypot(delta[1]) <= SAME_SPOT {
+                return;
+            }
+            gesture.moving = true;
+        }
+        let g = &*gesture;
         let mut place = g.item.place;
         let mut carried = Vec::new();
         let mut slot = None;
@@ -2471,6 +2504,12 @@ impl CanvasPanel {
             cx.notify();
             return;
         }
+
+        // A press that let go where it landed steps the selection, which a
+        // locked item's press does too, though it has no gesture.
+        if let Some((id, _)) = self.pending.take() {
+            self.select(Some(id), window, cx);
+        }
         let Some(gesture) = self.gesture.take() else {
             return;
         };
@@ -2484,11 +2523,6 @@ impl CanvasPanel {
             canvas: self.saved(cx).canvas,
             routes,
         };
-        if let Some(id) = self.collapse.take()
-            && before == after
-        {
-            self.selected.set(Some(id));
-        }
         self.history.record(before, after, None, Instant::now());
 
         self.save_soon(window, cx);
@@ -4037,6 +4071,7 @@ impl Render for CanvasPanel {
             }
             if !design {
                 self.gesture = None;
+                self.pending = None;
                 self.menu = None;
             }
         }

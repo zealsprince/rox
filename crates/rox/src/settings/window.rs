@@ -1589,8 +1589,7 @@ impl Render for SettingsWindow {
 
         // Here rather than in the page: the Shader page builds from `&self`,
         // and search builds every page per keystroke.
-        self.post_shader_route_ui
-            .sync(self.post_shader_routes.len());
+        self.post_shader_route_ui.sync(&self.post_shader_routes);
 
         let text = self.search.read(cx).query().trim().to_string();
         let q = Query::parse(&text);

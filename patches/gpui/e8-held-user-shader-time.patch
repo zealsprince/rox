@@ -1,0 +1,182 @@
+Held user shader time: a window can give the shaders it paints one time.
+
+`Window::hold_user_shader_time(Some(t))` stamps every user shader painted
+while it's set, primitive, quad and region alike, with `t`. The renderer
+gives that draw `t` and a zero `delta` in place of its clock, and the clock
+goes on ticking underneath, so a draw outside the hold carries on where it
+would have been. A primitive's clock is shared by every draw of one program
+in a window, so the hold rides the draw, not the clock: the time goes in
+`UserShader::pad`, alignment the GPU never reads (the bits, then 1 while
+held), and a run of instances only batches while that matches. A region
+carries it as a plain field. With nothing held the pad stays zero, every
+run batches as before and every draw reads its clock, so nothing painted
+changes. Covers blade and DirectX 11, the two backends that draw user
+shaders.
+
+rox uses it for `debug.canvas_clock`, which holds a canvas's shader items
+on the moment its time routes are held on, so two builds' pixels compare.
+
+Not a backport. A gpui bump carries this forward with b0 and e4.
+
+diff -ruN -x .rox-stamp -x target a/src/platform/blade/blade_renderer.rs b/src/platform/blade/blade_renderer.rs
+--- a/src/platform/blade/blade_renderer.rs
++++ b/src/platform/blade/blade_renderer.rs
+@@ -1784,7 +1784,10 @@
+             return;
+         };
+         instance.clock.tick();
+-        let (time, delta) = (instance.clock.time, instance.clock.delta);
++        let (time, delta) = match region.time {
++            Some(held) => (held, 0.0),
++            None => (instance.clock.time, instance.clock.delta),
++        };
+         let scratch = instance.scratch;
+         let scratch_view = instance.scratch_view;
+         let instance_mask = instance.mask;
+@@ -2981,10 +2984,15 @@
+                             && user_shaders[end].params == head.params
+                             && user_shaders[end].meta == head.meta
+                             && user_shaders[end].bounds == head.bounds
++                            && user_shaders[end].pad == head.pad
+                         {
+                             end += 1;
+                         }
+                         let run = &user_shaders[start..end];
++                        let (time, delta) = match head.held_time() {
++                            Some(held) => (held, 0.0),
++                            None => (time, delta),
++                        };
+                         let params = ShaderParams {
+                             time,
+                             delta,
+diff -ruN -x .rox-stamp -x target a/src/platform/windows/directx_renderer.rs b/src/platform/windows/directx_renderer.rs
+--- a/src/platform/windows/directx_renderer.rs
++++ b/src/platform/windows/directx_renderer.rs
+@@ -2602,10 +2602,15 @@
+                 && user_shaders[end].params == head.params
+                 && user_shaders[end].meta == head.meta
+                 && user_shaders[end].bounds == head.bounds
++                && user_shaders[end].pad == head.pad
+             {
+                 end += 1;
+             }
+             let run = &user_shaders[start..end];
++            let (time, delta) = match head.held_time() {
++                Some(held) => (held, 0.0),
++                None => (time, delta),
++            };
+             let params = UserShaderParams {
+                 time,
+                 delta,
+@@ -2732,7 +2737,10 @@
+             return;
+         };
+         instance.clock.tick();
+-        let (time, delta) = (instance.clock.time, instance.clock.delta);
++        let (time, delta) = match region.time {
++            Some(held) => (held, 0.0),
++            None => (instance.clock.time, instance.clock.delta),
++        };
+         let scratch_view = instance.scratch.srv();
+         let scratch_texture = instance.scratch.texture.clone();
+ 
+diff -ruN -x .rox-stamp -x target a/src/scene.rs b/src/scene.rs
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -1017,6 +1017,21 @@
+     pub perspective: [f32; 4],
+ }
+ 
++// rox patch: `pad` is alignment the GPU never reads, so it carries a held
++// time: the bits in the first word, and 1 in the second while one is held.
++impl UserShader {
++    pub(crate) fn holding(time: Option<f32>) -> [u32; 2] {
++        match time {
++            Some(time) => [time.to_bits(), 1],
++            None => [0; 2],
++        }
++    }
++
++    pub(crate) fn held_time(&self) -> Option<f32> {
++        (self.pad[1] == 1).then(|| f32::from_bits(self.pad[0]))
++    }
++}
++
+ impl From<UserShader> for Primitive {
+     fn from(user_shader: UserShader) -> Self {
+         Primitive::UserShader(user_shader)
+@@ -1041,6 +1056,8 @@
+     pub mouse: [f32; 4],
+     pub signals: [f32; 16],
+     pub meta: [f32; 8],
++    /// A time given in place of the instance's clock, with a zero delta.
++    pub time: Option<f32>,
+ }
+ 
+ impl From<UserShaderRegion> for Primitive {
+diff -ruN -x .rox-stamp -x target a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -881,6 +881,9 @@
+     // rox patch: shaders registered through `register_user_shader`, ids local
+     // to this window because the pipelines live in this window's renderer.
+     pub(crate) user_shaders: UserShaderRegistry,
++    // rox patch: the time `hold_user_shader_time` gives the user shaders
++    // painted while it's set.
++    held_shader_time: Option<f32>,
+     // rox patch: images registered through `register_user_texture`, ids local
+     // to this window for the same reason.
+     pub(crate) user_textures: UserTextureRegistry,
+@@ -1269,6 +1272,7 @@
+             prompt: None,
+             client_inset: None,
+             user_shaders: UserShaderRegistry::default(),
++            held_shader_time: None,
+             user_textures: UserTextureRegistry::default(),
+             mouse_buttons_down: [false; 2],
+             image_cache_stack: Vec::new(),
+@@ -3878,6 +3882,18 @@
+         self.user_shaders.caps(shader)
+     }
+ 
++    /// Gives the user shaders painted from here on `time` in place of their
++    /// own clocks, with a zero `delta`, until it's set back to None. The
++    /// clocks go on running underneath, so a shader painted outside the hold
++    /// carries on where it would have been. With nothing held, nothing
++    /// painted changes.
++    ///
++    /// rox patch: holds a canvas's shader items on one moment, so two builds'
++    /// pixels can be compared.
++    pub fn hold_user_shader_time(&mut self, time: Option<f32>) {
++        self.held_shader_time = time;
++    }
++
+     /// Paints one instance of a registered shader over `bounds`, with this
+     /// frame's values for its 16 signal slots and 8 caller `meta` floats.
+     /// Shaders that sample the screen or read `prev` silently paint nothing:
+@@ -3910,7 +3926,7 @@
+             shader_id: shader.0,
+             bounds,
+             content_mask,
+-            pad: [0; 2],
++            pad: UserShader::holding(self.held_shader_time),
+             mouse,
+             params: signals,
+             meta,
+@@ -3979,7 +3995,7 @@
+             shader_id: shader.0,
+             bounds,
+             content_mask,
+-            pad: [0; 2],
++            pad: UserShader::holding(self.held_shader_time),
+             mouse,
+             params: signals,
+             meta,
+@@ -4047,6 +4063,7 @@
+                 mouse,
+                 signals,
+                 meta,
++                time: self.held_shader_time,
+             });
+         }
+         #[cfg(not(any(

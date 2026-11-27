@@ -4987,6 +4987,7 @@ canvas-target-panel-match = За панеллю
 canvas-target-panel-size = Ширина й висота в пікселях
 canvas-weight-targets = Цілі рендеру { $count }, { $megapixels } Мп
 canvas-weight-heavy-targets = Цілі рендеру: { $megapixels } Мп, більше, ніж малюється плавно
+canvas-weight-heavy-targets-following = Цілі рендеру: { $megapixels } Мп, більше, ніж малюється плавно. За елементом, не враховуються, доки не малюють: { $count }
 
 ## Catalog
 

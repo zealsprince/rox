@@ -749,7 +749,7 @@ impl ShaderPanel {
         // Off what runs, so a pool shader's slot names show.
         let running = self.running();
         let labels = surface::slot_labels(&running);
-        self.routes_ui.sync(self.config.routes.len());
+        self.routes_ui.sync(&self.config.routes);
 
         let hub = self.state.signals.clone();
         let editor = signal_ui::routes::RouteEditor {

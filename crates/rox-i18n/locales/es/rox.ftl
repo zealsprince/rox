@@ -4994,6 +4994,7 @@ canvas-target-panel-match = Seguir al panel
 canvas-target-panel-size = Ancho y alto en píxeles
 canvas-weight-targets = Destinos de render { $count }, { $megapixels } megapíxeles
 canvas-weight-heavy-targets = Destinos de render: { $megapixels } megapíxeles, más de los que se dibujan con fluidez
+canvas-weight-heavy-targets-following = Destinos de render: { $megapixels } megapíxeles, más de los que se dibujan con fluidez. Siguen a su elemento y no cuentan hasta que dibujan: { $count }
 
 ## Catalog
 

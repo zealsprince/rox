@@ -4898,6 +4898,7 @@ canvas-target-panel-match = Dem Panel folgen
 canvas-target-panel-size = Breite und Höhe in Pixeln
 canvas-weight-targets = Render-Ziele { $count }, { $megapixels } Megapixel
 canvas-weight-heavy-targets = Render-Ziele: { $megapixels } Megapixel, mehr als sich flüssig zeichnen lässt
+canvas-weight-heavy-targets-following = Render-Ziele: { $megapixels } Megapixel, mehr als sich flüssig zeichnen lässt. Folgen ihrem Element und zählen erst, wenn sie zeichnen: { $count }
 
 ## Catalog
 

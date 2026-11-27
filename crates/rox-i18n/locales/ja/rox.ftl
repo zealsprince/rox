@@ -4756,6 +4756,7 @@ canvas-target-panel-match = パネルに合わせる
 canvas-target-panel-size = 幅と高さ（ピクセル）
 canvas-weight-targets = レンダーターゲット { $count }、{ $megapixels } メガピクセル
 canvas-weight-heavy-targets = レンダーターゲット: { $megapixels } メガピクセル、滑らかに描画できる量を超えています
+canvas-weight-heavy-targets-following = レンダーターゲット: { $megapixels } メガピクセル、滑らかに描画できる量を超えています。アイテムに合わせるため描画するまで数えないもの: { $count }
 
 ## Catalog
 

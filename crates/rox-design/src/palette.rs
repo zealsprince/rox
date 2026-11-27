@@ -1775,6 +1775,21 @@ fn apply(cx: &mut App) {
     colors.accent_foreground = palette.text_bright.into();
     // The completion menu highlights matches with the stock `blue`.
     colors.blue = palette.accent.into();
+    // Stock tokens a theme fade can see swap at once halfway: the active
+    // tab's label, the primary fill on linked swatches, a selected or hovered
+    // button, a focused field's caret, a disabled field and a link.
+    colors.tab_active_foreground = palette.text_bright.into();
+    colors.primary = palette.accent.into();
+    colors.primary_hover = palette.accent_hover.into();
+    colors.primary_active = palette.accent_hover.into();
+    colors.primary_foreground = palette.text_on_accent.into();
+    colors.secondary_hover = scaled(palette.bg_control_hover, opacity).into();
+    colors.secondary_active = scaled(palette.bg_control_active, opacity).into();
+    colors.caret = palette.text.into();
+    colors.muted = scaled(palette.bg_control, opacity).into();
+    colors.link = palette.text.into();
+    colors.link_hover = palette.text_bright.into();
+    colors.link_active = palette.text.into();
     colors.tab_bar = scaled(palette.bg_panel, opacity).into();
     colors.tab_active = scaled(palette.bg_root, opacity).into();
     colors.secondary = scaled(palette.bg_panel, opacity).into();

@@ -1853,6 +1853,145 @@ mod tests {
         }
     }
 
+    /// Items following the theme leave their ease to the look's, so a switch
+    /// fades the glass and the scenery with the panels. One with its own ease
+    /// fades out of step and nothing else says so.
+    #[test]
+    fn aero_fades_with_the_theme_as_one() {
+        let (bundle, canvas) = aero();
+        let ease = bundle
+            .appearance
+            .theme_ease
+            .expect("Aero sets a theme ease");
+        assert!((350..=5000).contains(&ease), "a theme ease of {ease} ms");
+
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas).unwrap();
+        let mut themed = 0;
+        state.walk(&mut |item, _| {
+            if item.state != "app.theme" {
+                return;
+            }
+
+            themed += 1;
+            assert_eq!(item.ease, None, "{} fades on its own", item.id);
+        });
+        assert!(themed > 0);
+    }
+
+    /// A group paints at its own depth, whatever its children's, so the
+    /// bokeh's group has to sit behind the hills and the shard on the stage
+    /// for its spots to show behind them.
+    #[test]
+    fn aero_paints_its_bokeh_behind_the_hills_and_the_shard() {
+        let (_, canvas) = aero();
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas).unwrap();
+        let depth = |id: &str| {
+            state
+                .items
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap_or_else(|| panic!("{id} sits on the stage"))
+                .place
+                .position
+                .z
+        };
+
+        for front in ["hills-back", "hills-front", "shard"] {
+            assert!(depth("air") < depth(front), "the bokeh paints over {front}");
+        }
+    }
+
+    /// A pane's box is its glass, so the panels inside line up with the
+    /// glass: the picture reaches past the box by its shadow on every side.
+    /// A picture sized to its box draws the glass a shadow inside it.
+    #[test]
+    fn aero_panes_reach_past_their_box_by_their_shadow() {
+        let (_, canvas) = aero();
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas).unwrap();
+
+        let mut panes = 0;
+        state.walk(&mut |item, _| {
+            let rox_canvas::Content::Image { slice: Some(_), .. } = &item.content else {
+                return;
+            };
+
+            panes += 1;
+            let place = &item.place;
+            assert_eq!(place.anchor, rox_canvas::Anchor::Center, "{}", item.id);
+            assert_eq!(
+                place.position.xy,
+                [rox_canvas::Length::Units(0.); 2],
+                "{}",
+                item.id
+            );
+            assert_eq!(place.size[0], place.size[1], "{}", item.id);
+            assert!(
+                matches!(
+                    place.size[0],
+                    rox_canvas::Length::Mixed { stage, units } if stage == 1. && units > 0.
+                ),
+                "{} is sized {:?}",
+                item.id,
+                place.size[0]
+            );
+        });
+        assert!(panes >= 4, "{panes} panes");
+    }
+
+    /// The card's column fits its glass at every window shape, with and
+    /// without its lines, and its cover stays square. A stack that runs past
+    /// its group says so only in the editor.
+    #[test]
+    fn aero_card_fits_its_glass_at_every_window_shape() {
+        let (_, canvas) = aero();
+        let state: rox_canvas::CanvasState = serde_json::from_value(canvas).unwrap();
+        let deck = state.find("deck").expect("a deck");
+        let card = state.find("card").expect("a card");
+        let stack = card.stack.expect("the card stacks");
+        let rox_canvas::Content::Group { items } = &card.content else {
+            panic!("the card is a group");
+        };
+        assert!(items.iter().any(|child| child.id == "lines"));
+
+        // The stage takes the window's size, so the deck's glass is its place
+        // in the window and the card's room its place in the glass.
+        let windows = [
+            [800., 600.],
+            [1100., 700.],
+            [1600., 1000.],
+            [1920., 1080.],
+            [2560., 1440.],
+            [900., 1200.],
+            [1100., 1400.],
+        ];
+        for window in windows {
+            let glass = deck.place.size_in(window);
+            let room = card.place.size_in(glass);
+
+            for idle in [false, true] {
+                let entries = rox_canvas::stack::entries(items, room, |child| {
+                    if idle && child.id == "lines" { 0. } else { 1. }
+                });
+                let (cells, run) = rox_canvas::stack::cells(&stack, room, &entries);
+                assert!(
+                    run <= room[1] + 0.5,
+                    "at {window:?} the card runs {run} in {}",
+                    room[1]
+                );
+                assert!(cells.iter().all(|cell| cell[1] >= -0.5), "{cells:?}");
+            }
+
+            let cover = items
+                .iter()
+                .find(|child| child.id == "cover-box")
+                .expect("a cover")
+                .place
+                .size_in(room);
+            assert!((cover[0] - cover[1]).abs() < 0.01, "{cover:?}");
+            assert!(cover[0] >= 150., "at {window:?} the cover is {cover:?}");
+        }
+    }
+
     #[test]
     fn shipped_trust_collects_every_shader_a_bundle_carries() {
         let bundle = WorkspaceBundle {

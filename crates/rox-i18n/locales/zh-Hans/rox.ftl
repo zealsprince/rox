@@ -4366,7 +4366,7 @@ dictionary-summary-lindera-ipadic = 支撑汉字读音的日文词典。没有�
 ## Shipped workspaces
 workspace-shipped-default = （默认）
 workspace-shipped-default-blurb = rox 开箱时的样子：桌面之上的半透明表面、没有窗口装饰、封面染色关着。这里其他每一套外观都是从这个起点走出去的。
-workspace-shipped-aero-blurb = 画在一张画布上的晴朗天蓝色早晨：云朵和绿色山丘上的玻璃面板、果冻按钮、随音乐升起的气泡、随中频呼吸的极光，还有随节拍闪耀的太阳。深色模式下变成夜晚。
+workspace-shipped-aero-blurb = 画在一张画布上的晴朗天蓝色早晨：云朵和绿色山丘上的玻璃面板、果冻按钮、在玻璃后升起并随低音跳动的气泡、随中频呼吸的极光，还有随节拍闪耀的太阳。深色模式下变成夜晚。
 workspace-shipped-catrox-blurb = 一切的起点、那套 foobar2000 皮肤的重制：封面渲染成圆形 CD、元数据字段沿左侧排下来，曲目按专辑分组并带评分小点。
 workspace-shipped-critters-blurb = 整个应用变成 1 位印刷品：每一块表面上的有序抖动、跟着超低频压碎的色调，还有一面随歌扭动的噪点墙。致敬 Critters for Sale。
 workspace-shipped-diffuse-blurb = 只有正在播放的专辑：封面和播放卡片作为一组填满窗口，透明表面浮在背景上，没有接缝。媒体库、队列和歌词在右边缘的抽屉里候着，把手一悬停就滑出来盖在音乐上。单色设计，颜色交给封面。

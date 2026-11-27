@@ -6,8 +6,9 @@
 It reads every file in crates/rox/assets/workspaces/Aero/assets for the
 asset table's sizes and hashes, so run aero_assets.py first whenever an image
 changes. The whole look is one canvas filling the window, laid out at
-1920x1080 with anchors, fractions and size limits so it reflows, and it
-imports aero_assets.py for the panes' nine-slice insets.
+1920x1080 with anchors, fractions, size limits and a stack so it reflows,
+and it imports aero_assets.py for the panes' nine-slice insets and shadow
+margins.
 """
 
 import hashlib
@@ -23,13 +24,13 @@ ASSETS = os.path.join(SHIPPED, "Aero", "assets")
 # Pool signal ids.
 LOW, MID, HIGH, LEVEL, BEAT = range(1, 6)
 
-# How long case changes take, in ms. The scenery behind the glass turns to
-# night slowly. The glass cuts almost with the panels and the text on it,
-# which switch theme at once: a slow pane leaves dark rows and light text
-# on light glass for the length of the fade. The play and pause glyphs cut,
-# since two white glyphs crossfading read as both at once.
-SCENE_EASE = 600
-PANE_EASE = 120
+# How long a theme switch fades the whole window, in ms: the panels, the text,
+# the glass and the scenery together. Every item following the theme leaves
+# its own ease out and takes this one.
+THEME_EASE = 600
+
+# The play and pause glyphs cut, since two white glyphs crossfading read as
+# both at once.
 GLYPH_EASE = 0
 
 
@@ -44,13 +45,18 @@ def U(n):
     return {"units": n}
 
 
+def M(f, n):
+    """A fraction of the parent plus units that don't stretch with it."""
+    return {"stage": f, "units": n}
+
+
 def _axis(v):
     return v if isinstance(v, dict) else float(v)
 
 
 def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), rot=(0, 0, 0),
          scale=1.0, opacity=1.0, sway=None, action="", state="", cases=None, name="", min_size=None,
-         max_size=None, aspect=None, hover=None, pressed=None, hit=None, ease=None):
+         max_size=None, aspect=None, hover=None, pressed=None, hit=None, ease=None, stack=None):
     place = {
         "anchor": anchor,
         "position": [_axis(pos[0]), _axis(pos[1]), float(pos[2])],
@@ -92,6 +98,8 @@ def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), 
         out["hit"] = hit
     if ease is not None:
         out["ease"] = ease
+    if stack:
+        out["stack"] = stack
     return out
 
 
@@ -118,6 +126,19 @@ def sliced(asset):
     return {"kind": "image", "asset": asset, "fit": "stretch", "slice": pane_insets(*PANES[asset][:3])}
 
 
+def glass(id, asset, **args):
+    """A pane's picture behind its parent, whose box is the glass. The picture
+    reaches past it by its shadow's margin on every side, so the glass lands
+    on the box at any size, and so do the gloss and the rims cut to it."""
+    margin = 2 * PANES[asset][1]
+    return item(id, sliced(asset), size=(M(1, margin), M(1, margin)), **args)
+
+
+def column(gap=0, align="center", justify="center"):
+    """A stack running down the group."""
+    return {"axis": "y", "gap": gap, "align": align, "justify": justify}
+
+
 def text(line, size, color, align="center"):
     return {"kind": "text", "text": line, "font": None, "size": size, "color": color, "align": align}
 
@@ -126,9 +147,10 @@ def group(items):
     return {"kind": "group", "items": items}
 
 
-def themed(night, ease=None):
-    """Follows the theme: the night picture in dark mode."""
-    return dict(state="app.theme", cases=[case("dark", asset=night)], ease=ease)
+def themed(night):
+    """Follows the theme: the night picture in dark mode, over the look's
+    theme ease."""
+    return dict(state="app.theme", cases=[case("dark", asset=night)])
 
 
 def tabs(*panels, active=0):
@@ -192,14 +214,14 @@ def scenery():
     sky = item(
         "sky-box",
         group([
-            item("sky", image("sky_day", "cover"), size=(S(1), S(1)), **themed("sky_night", SCENE_EASE)),
+            item("sky", image("sky_day", "cover"), size=(S(1), S(1)), **themed("sky_night")),
             item("rays", shader("Aero Rays", [slot(MID, 0), slot(LEVEL, 1)]), size=(S(1), S(1)),
                  pos=(0, 0, 1)),
             # The sun sits at (0.33, 0.03) of the sky picture, which from the
             # middle is 0.17 of the width left and 0.47 of the height up.
             item("flare", image("flare", "contain"), pos=(S(-0.17), S(-0.47), 2), size=(U(820), U(820)),
                  opacity=0.6, sway={"rotation": (0, 0, 360)}, state="app.theme",
-                 cases=[case("dark", opacity=0.3)], ease=SCENE_EASE),
+                 cases=[case("dark", opacity=0.3)]),
         ]),
         name="Sky",
         # A group paints at its own depth, so the depth sits here and not on
@@ -235,7 +257,6 @@ def scenery():
         sway={"position": (24, 0, 0)},
         state="app.theme",
         cases=[case("light", opacity=0.45), case("dark", opacity=1.0)],
-        ease=SCENE_EASE,
     )
     for ribbon in ("aurora-a", "aurora-b"):
         route(f"{ribbon}.opacity", MID, 1.0, 1.9)
@@ -247,11 +268,15 @@ def scenery():
 
     hills = [
         item("hills-back", image("hills_back"), anchor="bottom", pos=(0, 110, -230),
-             size=(S(1.34), S(0.40)), name="Far hills", **themed("hills_back_night", SCENE_EASE)),
+             size=(S(1.34), S(0.40)), name="Far hills", **themed("hills_back_night")),
         item("hills-front", image("hills_front"), anchor="bottom", pos=(0, 90, -120),
-             size=(S(1.24), S(0.30)), name="Near hills", **themed("hills_front_night", SCENE_EASE)),
+             size=(S(1.24), S(0.30)), name="Near hills", **themed("hills_front_night")),
     ]
 
+    # A group paints at its own depth, so this one sits behind the far hills
+    # and each spot's depth is relative to it. At depth 0 every spot would
+    # paint over the hills and the shard.
+    air_z = -250
     bokeh = []
     # (id, picture, anchor, home as stage fractions and depth, size, opacity,
     #  wander in units, periods in seconds)
@@ -266,7 +291,7 @@ def scenery():
     ]
     for n, (id, asset, anchor, (fx, fy, z), size, opacity, (wx, wy), (px, py)) in enumerate(spots):
         # The sway is half the wander, swung both ways round home.
-        bokeh.append(item(id, image(asset, "contain"), anchor=anchor, pos=(S(fx), S(fy), z),
+        bokeh.append(item(id, image(asset, "contain"), anchor=anchor, pos=(S(fx), S(fy), z - air_z),
                           size=(U(size), U(size)), opacity=opacity, sway={"position": (wx / 2, wy / 2, 0)}))
         route(f"{id}.opacity", BEAT if id.startswith("ghost") else HIGH, 1.0, 1.8)
         # Two unrelated periods per spot trace a slow loop that never repeats
@@ -314,7 +339,7 @@ def scenery():
     return [
         sky,
         aurora,
-        item("air", group(bokeh), name="Bokeh", size=(S(1), S(1))),
+        item("air", group(bokeh), name="Bokeh", pos=(0, 0, air_z), size=(S(1), S(1))),
         *hills,
         item("bubbles", group(bubbles), name="Bubbles", size=(S(1), S(1))),
     ]
@@ -350,25 +375,33 @@ def gel_button(id, action, width, side, pos, glyph, *, anchor="center", hue="aqu
                 max_size=(side, None), action=action, name=name)
 
 
-# The cover and its lines: the gap between them, and how far above the
-# deck's middle the cover's centre sits. The glass above the seek bar runs
-# from 24 units down to 190 off the bottom, so its middle is 83 above the
-# deck's. The cover's centre sits half the gap and the lines' 104 above that,
-# which centres the pair on the glass at any cover size.
-COVER_GAP = 22
-COVER_RISE = -83 - (COVER_GAP + 104) / 2
+# The card is one column centred in the deck's glass: the cover, the lines,
+# the seek bar, the buttons and the volume. Each keeps its own height, and
+# the cover takes what's left, so the column fills a short card and sits as
+# one block in the middle of a tall one. A tall window can't widen the deck,
+# whose width is a share of the window's, so the cover stops at the card's
+# width and the glass shows above and below the block.
+#
+# The rows' heights carry the air between them, since a stack has one gap.
+# The lines take a share of the card's height on top of their own, so a tall
+# card spreads the block a little rather than leaving it all at the ends.
+CARD_MARGIN = 20
+LINES = (0.05, 110)
+SEEK_H = 42
+BUTTONS_H = 92
+VOLUME_H = 40
+COVER_ROOM = M(1 - LINES[0], -(LINES[1] + SEEK_H + BUTTONS_H + VOLUME_H))
 
 
 def deck():
-    # The deck's box takes in the pane's shadow, 24 units each side, so the
-    # glass shows 24 units in from every edge. The seek bar, the buttons and
-    # the volume are fixed in units off its bottom, and the cover with the
-    # lines hung under it sits in the middle of the glass above them.
+    # With nothing loaded the lines are empty, so they give their room up
+    # and the cover closes on the seek bar.
     lines = item("lines", group([
-        item("title", text("%title%", 26, "text_bright"), pos=(0, -34, 0), size=(S(1), U(38))),
-        item("artist", text("%artist%", 19, "text"), pos=(0, 2, 0), size=(S(1), U(28))),
-        item("album", text("%album% - %year%", 15, "text_dim"), pos=(0, 30, 0), size=(S(1), U(24))),
-    ]), anchor="bottom", pos=(0, COVER_GAP + 104, 0), size=(S(1.15), U(104)), name="Lines")
+        item("title", text("%title%", 26, "text_bright"), size=(S(1), U(38))),
+        item("artist", text("%artist%", 19, "text"), size=(S(1), U(28))),
+        item("album", text("%album% - %year%", 15, "text_dim"), size=(S(1), U(24))),
+    ]), size=(S(1), M(*LINES)), stack=column(gap=2), state="player.stop",
+        cases=[case("idle", visible=False)], name="Lines")
 
     cover = item(
         "cover-box",
@@ -377,29 +410,27 @@ def deck():
             # note, and a shadow under it reads as a dark blot in the glass.
             item("cover-shadow", image("shadow"), size=(S(1.12), S(1.12)), pos=(0, 10, -2), state="player.stop",
                  cases=[case("idle", visible=False)], ease=250),
+            # A track with no art shows the panel's own surface, frosted
+            # enough to keep the shadow from showing through it.
             item("cover", grid(panel("cover art", {
-                "theme": {"rounding": 14.0, "surface_opacity": 0.0},
+                "theme": {"rounding": 14.0, "surface_opacity": 0.7},
                 "source": "playing", "align": "center", "stretch": False,
             })), size=(S(1), S(1))),
             item("cover-gloss", image("cover_gloss"), size=(S(1), S(1)), pos=(0, 0, 2)),
-            lines,
         ]),
-        # Square at any window shape: the deck's width or its height,
-        # whichever is shorter, gives the side. The width keeps it inside the
-        # glass at the deck's narrowest, and the height leaves the lines room
-        # above the seek bar at its shortest.
-        size=(S(0.74), S(0.40)),
+        size=(M(0.8, 40), COVER_ROOM),
         max_size=(540, 540),
         aspect=1.0,
-        pos=(0, COVER_RISE, 0),
         name="Cover",
     )
 
+    # The transport reaches a little past the card on both sides, since
+    # its buttons shrink with the row.
     seek = item("seek", grid(panel("seek", {
         "theme": {"surface_opacity": 0.0},
         "show_total": False, "thickness": 6.0, "rounding": 6.0, "playhead_max": 16.0,
         "items": ["elapsed", "strip", "ending"],
-    })), anchor="bottom", pos=(0, -172, 0), size=(S(0.8), U(30)))
+    })), size=(M(1, 16), U(SEEK_H)), max_size=(480, None))
 
     pause = dict(state="player.playback", cases=[case("playing", asset="glyph_pause")], ease=GLYPH_EASE)
     repeat_one = dict(state="player.repeat", cases=[case("one", asset="glyph_repeat1")], ease=GLYPH_EASE)
@@ -417,9 +448,7 @@ def deck():
                        hue="clear", state="player.repeat", lit_in=("all", "one"), glyph_state=repeat_one,
                        name="Repeat"),
         ]),
-        anchor="bottom",
-        pos=(0, -74, 0),
-        size=(S(0.8), U(92)),
+        size=(M(1, 16), U(BUTTONS_H)),
         max_size=(400, None),
         name="Buttons",
     )
@@ -428,29 +457,41 @@ def deck():
     volume = item("volume", grid(panel("volume", {
         "theme": {"surface_opacity": 0.0},
         "align": "center", "stretch": True, "items": ["icon", "slider", "percent"],
-    })), anchor="bottom", pos=(0, -40, 0), size=(S(0.72), U(28)), max_size=(420, None))
+    })), size=(S(0.9), U(VOLUME_H)), max_size=(420, None))
 
-    droplet = item("droplet", image("droplet", "contain"), anchor="top_right", pos=(-50, 54, 4),
+    card = item("card", group([cover, lines, seek, buttons, volume]),
+                size=(M(1, -2 * CARD_MARGIN), M(1, -2 * CARD_MARGIN)), stack=column(), name="Card")
+
+    droplet = item("droplet", image("droplet", "contain"), anchor="top_right", pos=(-26, 30, 4),
                    size=(U(30), U(40)), opacity=0.9, state="player.playback",
                    cases=[case("playing", visible=False)], ease=300, name="Paused drop")
 
-    frame = item("deck-frame", sliced("glass_pane"), size=(S(1), S(1)), pos=(0, 0, -4),
-                 **themed("glass_pane_night", PANE_EASE))
+    frame = glass("deck-frame", "glass_pane", pos=(0, 0, -4), **themed("glass_pane_night"))
 
-    return item("deck", group([frame, cover, seek, buttons, volume, droplet]), anchor="left",
-                pos=(S(0.018), 8, 0), size=(S(0.31), S(0.90)), min_size=(290, 560), name="Deck")
+    # The box is the glass: its share of the window less the pane's 24-unit
+    # shadow on every side.
+    return item("deck", group([frame, card, droplet]), anchor="left", pos=(M(0.018, 24), 8, 0),
+                size=(M(0.31, -48), M(0.90, -48)), min_size=(242, 512), name="Deck")
 
 
 # ── Sheet: library, queue and playlists, the spectrum and the screen ──
 
 
+# The sheet's contents sit this far in from its glass, and the library this
+# far above the lower row. The screen takes what the well leaves less a
+# fixed 16-unit gap and its 24-unit offset, so its tilted near edge clears
+# the well at the narrowest sheet.
+SHEET_INSET = 24
+LOWER_SHARE = 0.31
+WELL_SHARE = 0.62
+
+
 def sheet():
-    # Like the deck, the box takes in the pane's 24-unit shadow.
-    frame = item("sheet-frame", sliced("glass_pane"), size=(S(1), S(1)), pos=(0, 0, -4),
-                 **themed("glass_pane_night", PANE_EASE))
+    frame = glass("sheet-frame", "glass_pane", pos=(0, 0, -4), **themed("glass_pane_night"))
     shimmer = item("shimmer", shader("Aero Shimmer", [slot(HIGH, 0), slot(LOW, 1)]), size=(S(1), S(1)),
                    pos=(0, 0, -3))
 
+    # Down to the lower row with a gap as wide as the inset.
     library = item("browser", grid(
         panel("library", {
             "theme": {"surface_opacity": 0.0},
@@ -462,39 +503,42 @@ def sheet():
                         "columns": ["number", "cover", "name", "artist", "duration"]}),
         panel("playlists", {"theme": {"surface_opacity": 0.0}, "headers": "off",
                             "columns": ["cover", "number", "name", "artist", "rating", "favourite"]}),
-    ), anchor="top", pos=(0, 48, 0), size=(S(0.9), S(0.55)), name="Library")
+    ), anchor="top", pos=(0, SHEET_INSET, 0),
+        size=(M(1, -2 * SHEET_INSET), M(1 - LOWER_SHARE, -3 * SHEET_INSET)), name="Library")
 
     well = item("well", group([
-        item("well-frame", sliced("glass_well"), size=(S(1), S(1)), **themed("glass_well_night", PANE_EASE)),
+        glass("well-frame", "glass_well", **themed("glass_well_night")),
         item("spectrum", grid(panel("spectrum", {
             "theme": {"surface_opacity": 0.0},
             "style": "bars", "orientation": "bottom", "symmetry": "none",
             "freq_lo": 30.0, "freq_hi": 16000.0, "bar_width": 6.0, "bar_gap": 3.0,
             "fft_size": 8192, "gradient": "custom", "gradient_lo": "#2fd06a", "gradient_hi": "#2fb8ff",
             "gradient_curve": 2.0, "caps": True, "freeze": False, "cap_gravity": 0.05, "labels": False,
-        })), size=(S(0.95), S(0.84))),
-    ]), anchor="left", size=(S(0.62), S(1)), name="Spectrum")
+        })), size=(M(1, -20), M(1, -40))),
+    ]), anchor="left", size=(S(WELL_SHARE), S(1)), name="Spectrum")
 
+    # The sheet and the gloss are one pane cut in two: the render target sits
+    # between them, so a renderer draws under the gloss.
     screen = item("screen", group([
-        item("screen-frame", sliced("glass_screen"), size=(S(1.07), S(1.1)), opacity=0.8,
-             **themed("glass_screen_night", PANE_EASE)),
+        glass("screen-frame", "glass_screen", opacity=0.8, **themed("glass_screen_night")),
         # It follows the pane, whose shape changes with the window. It doesn't rest with the
         # music: a renderer says so itself if it wants to.
         item("renderer", {"kind": "target", "owner": "", "width": 560, "height": 400, "rests": False,
                           "sizing": "follow", "fit": "cover", "config": None}, size=(S(0.93), S(0.88)), pos=(0, 0, 1), name="Render target"),
-        item("screen-gloss", image("cover_gloss"), size=(S(0.95), S(0.92)), pos=(0, 0, 2), opacity=0.55,
-             state="app.theme", cases=[case("dark", opacity=0.4)], ease=PANE_EASE),
-    ]), anchor="right", pos=(-16, 0, 24), size=(S(0.35), S(0.96)), rot=(0, -12, 0),
+        glass("screen-gloss", "glass_screen_gloss", pos=(0, 0, 2), opacity=0.8, hit=False,
+              **themed("glass_screen_gloss_night")),
+    ]), anchor="right", pos=(-24, 0, 24), size=(M(1 - WELL_SHARE, -40), S(0.96)), rot=(0, -12, 0),
         sway={"rotation": (1.5, 4, 0)}, name="Screen")
     route("screen.ry", MID, 0.0, 1.0)
     # A slow nod, as if the pane hung in moving air.
     drift("screen.rx", 41, "sine", 0.4, -1.0, 1.0, curve="ease_in_out")
 
-    lower = item("lower", group([well, screen]), anchor="bottom", pos=(0, -44, 0),
-                 size=(S(0.9), S(0.29)), min_size=(None, 180), name="Lower")
+    lower = item("lower", group([well, screen]), anchor="bottom", pos=(0, -SHEET_INSET, 0),
+                 size=(M(1, -2 * SHEET_INSET), S(LOWER_SHARE)), min_size=(None, 180), name="Lower")
 
-    return item("sheet", group([frame, shimmer, library, lower]), anchor="right",
-                pos=(S(-0.018), 8, 0), size=(S(0.635), S(0.90)), min_size=(540, 560), name="Sheet")
+    # Like the deck, the box is the glass.
+    return item("sheet", group([frame, shimmer, library, lower]), anchor="right", pos=(M(-0.018, -24), 8, 0),
+                size=(M(0.635, -48), M(0.90, -48)), min_size=(492, 512), name="Sheet")
 
 
 def shard():
@@ -682,7 +726,7 @@ def bundle():
                            "past the glass, an aurora that breathes with the mids and a sun that flares on "
                            "the beat. Dark mode turns it to night.",
             "created": "2026-11-26",
-            "updated": "2026-11-26",
+            "updated": "2026-11-27",
         },
         "appearance": {
             "surface_opacity": 0.0,
@@ -690,6 +734,7 @@ def bundle():
             "frame": {"margin": 0.0, "padding": 2.0, "rounding": 10.0, "border": 0.0},
             "seams": False,
             "keep_theme": True,
+            "theme_ease": THEME_EASE,
             "art_theming": False,
             "hide_menubar": True,
             "os_decorations": False,

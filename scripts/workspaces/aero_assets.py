@@ -684,14 +684,22 @@ def glass(w, h, radius, pad, night, well=False):
     return img
 
 
-# Nine-sliced panes: radius, shadow pad, gloss band height and whether it's a
-# shadowless well, all in pixels. Each also ships a `_night` copy.
+# What a pane draws, back to front.
+WHOLE = ("shadow", "sheet", "shine", "rims")
+
+# Nine-sliced panes: radius, shadow pad, gloss band height, whether it's a
+# shadowless well, all in pixels, and the layers it draws. Each also ships a
+# `_night` copy.
 PANES = {
-    # The deck and the sheet run 560 to 1300 units tall, so a band this deep
+    # The deck and the sheet run 510 to 1250 units tall, so a band this deep
     # reads as gloss on the tall ones without filling the short ones.
-    "glass_pane": (26, 24, 210, False),
-    "glass_well": (18, 6, 64, True),
-    "glass_screen": (18, 16, 80, False),
+    "glass_pane": (26, 24, 210, False, WHOLE),
+    "glass_well": (18, 6, 64, True, WHOLE),
+    # The screen's sheet sits behind its render target and its shine and
+    # rims in front of it. Both are cut to the same insets and sized alike,
+    # so their outlines are one.
+    "glass_screen": (18, 16, 80, False, ("shadow", "sheet")),
+    "glass_screen_gloss": (18, 16, 80, False, ("shine", "rims")),
 }
 
 # The stretchable middle of a pane, both ways. Wide enough that the gloss's
@@ -706,11 +714,12 @@ def pane_insets(radius, pad, gloss):
     return [side, pad + gloss + 10, side, pad + radius + 18]
 
 
-def pane(radius, pad, gloss, night, well=False):
+def pane(radius, pad, gloss, night, well=False, layers=WHOLE):
     """A sheet of glass cut for nine-slicing at `pane_insets`. The gloss is a
     band of `gloss` pixels down from the top edge, so it keeps its height on
     any pane. Its lower edge bows only across the middle columns, which the
-    cut stretches, so the bow spans whatever width the pane takes."""
+    cut stretches, so the bow spans whatever width the pane takes. Only the
+    layers named in `layers` are drawn."""
     side, top, _, bottom = pane_insets(radius, pad, gloss)
     mid = PANE_MIDDLE
     w, h = side * 2 + mid, top + mid + bottom
@@ -737,7 +746,8 @@ def pane(radius, pad, gloss, night, well=False):
         s = math.exp(-((d / (pad * 0.45)) ** 2)) * (0.30 if not night else 0.5)
         return (0.02, 0.12, 0.25, s)
 
-    img.paint(shadow)
+    if "shadow" in layers:
+        img.paint(shadow)
 
     def sheet(x, y):
         px, py = x * w - w / 2, y * h - h / 2
@@ -753,7 +763,8 @@ def pane(radius, pad, gloss, night, well=False):
         c = mix(c, (1.0, 1.0, 1.0) if not night else hexc("#2c74a8"), inner)
         return (c[0], c[1], c[2], (body_a + inner * 0.5) * cover)
 
-    img.paint(sheet)
+    if "sheet" in layers:
+        img.paint(sheet)
 
     def shine(x, y):
         px, py = x * w - w / 2, y * h - h / 2
@@ -772,7 +783,8 @@ def pane(radius, pad, gloss, night, well=False):
         s *= smooth(0.0, 6.0, -d)
         return (1.0, 1.0, 1.0, s * 0.7)
 
-    img.paint(shine)
+    if "shine" in layers:
+        img.paint(shine)
 
     def rims(x, y):
         px, py = x * w - w / 2, y * h - h / 2
@@ -787,7 +799,8 @@ def pane(radius, pad, gloss, night, well=False):
             return (rim_c[0], rim_c[1], rim_c[2], rim)
         return (hair_c[0], hair_c[1], hair_c[2], hair)
 
-    img.paint(rims)
+    if "rims" in layers:
+        img.paint(rims)
     return img
 
 
@@ -1078,9 +1091,9 @@ def main():
 
     # The panes are nine-sliced, so each is drawn once at its corner size and
     # serves every frame and window size.
-    for name, (radius, pad, gloss, well) in PANES.items():
-        save(f"{name}.png", pane(radius, pad, gloss, False, well))
-        save(f"{name}_night.png", pane(radius, pad, gloss, True, well))
+    for name, (radius, pad, gloss, well, layers) in PANES.items():
+        save(f"{name}.png", pane(radius, pad, gloss, False, well, layers))
+        save(f"{name}_night.png", pane(radius, pad, gloss, True, well, layers))
 
     # The shard only ever shows tilted at one size, so it stays a picture.
     save("glass_shard.png", glass(520, 380, 30, 20, False, well=True))

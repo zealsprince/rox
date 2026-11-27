@@ -333,10 +333,12 @@ table entry the way an archive's are checked. Aero is the one written by a scrip
 than exported: a single canvas filling the window, generated with its images by
 `scripts/workspaces/aero_workspace.py` and `aero_assets.py`. It draws every canvas item
 kind, follows playback, whether anything is loaded, shuffle, repeat and the theme through
-cases, lights its buttons through hover and pressed looks, and routes a beat, three bands,
-the level and the canvas's clock, so it doubles as the canvas's test bed, with tests in
-`workspaces.rs` holding it to one canvas, its assets, a beat, buttons that light and the
-weight limits.
+cases, lights its buttons through hover and pressed looks, stacks its now-playing card,
+sizes its panes as their glass plus a fixed shadow, and routes a beat, three bands, the
+level and the canvas's clock, so it doubles as the canvas's test bed, with tests in
+`workspaces.rs` holding it to one canvas, its assets, a beat, buttons that light, the
+weight limits, one theme fade, panes whose boxes are their glass and a card that fits at
+every window shape.
 
 ## Panel presets
 

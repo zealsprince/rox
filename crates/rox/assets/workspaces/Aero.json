@@ -100,8 +100,7 @@
                                     "opacity": 1.0,
                                     "asset": "sky_night"
                                   }
-                                ],
-                                "ease": 600
+                                ]
                               },
                               {
                                 "id": "rays",
@@ -214,8 +213,7 @@
                                     "visible": true,
                                     "opacity": 0.3
                                   }
-                                ],
-                                "ease": 600
+                                ]
                               }
                             ]
                           },
@@ -385,8 +383,7 @@
                               "visible": true,
                               "opacity": 1.0
                             }
-                          ],
-                          "ease": 600
+                          ]
                         },
                         {
                           "id": "air",
@@ -396,7 +393,7 @@
                             "position": [
                               0.0,
                               0.0,
-                              0.0
+                              -250.0
                             ],
                             "size": [
                               {
@@ -431,7 +428,7 @@
                                     {
                                       "stage": 0.19
                                     },
-                                    -260.0
+                                    -10.0
                                   ],
                                   "size": [
                                     {
@@ -481,7 +478,7 @@
                                     {
                                       "stage": 0.11
                                     },
-                                    -240.0
+                                    10.0
                                   ],
                                   "size": [
                                     {
@@ -531,7 +528,7 @@
                                     {
                                       "stage": 0.24
                                     },
-                                    -220.0
+                                    30.0
                                   ],
                                   "size": [
                                     {
@@ -581,7 +578,7 @@
                                     {
                                       "stage": -0.06
                                     },
-                                    -200.0
+                                    50.0
                                   ],
                                   "size": [
                                     {
@@ -631,7 +628,7 @@
                                     {
                                       "stage": 0.04
                                     },
-                                    -250.0
+                                    0.0
                                   ],
                                   "size": [
                                     {
@@ -681,7 +678,7 @@
                                     {
                                       "stage": 0.28
                                     },
-                                    -180.0
+                                    70.0
                                   ],
                                   "size": [
                                     {
@@ -731,7 +728,7 @@
                                     {
                                       "stage": 0.13
                                     },
-                                    -160.0
+                                    90.0
                                   ],
                                   "size": [
                                     {
@@ -813,8 +810,7 @@
                               "opacity": 1.0,
                               "asset": "hills_back_night"
                             }
-                          ],
-                          "ease": 600
+                          ]
                         },
                         {
                           "id": "hills-front",
@@ -857,8 +853,7 @@
                               "opacity": 1.0,
                               "asset": "hills_front_night"
                             }
-                          ],
-                          "ease": 600
+                          ]
                         },
                         {
                           "id": "bubbles",
@@ -1383,22 +1378,25 @@
                             "anchor": "left",
                             "position": [
                               {
-                                "stage": 0.018
+                                "stage": 0.018,
+                                "units": 24
                               },
                               8.0,
                               0.0
                             ],
                             "size": [
                               {
-                                "stage": 0.31
+                                "stage": 0.31,
+                                "units": -48
                               },
                               {
-                                "stage": 0.9
+                                "stage": 0.9,
+                                "units": -48
                               }
                             ],
                             "min_size": [
-                              290.0,
-                              560.0
+                              242.0,
+                              512.0
                             ],
                             "rotation": [
                               0.0,
@@ -1425,10 +1423,12 @@
                                   ],
                                   "size": [
                                     {
-                                      "stage": 1
+                                      "stage": 1,
+                                      "units": 48
                                     },
                                     {
-                                      "stage": 1
+                                      "stage": 1,
+                                      "units": 48
                                     }
                                   ],
                                   "rotation": [
@@ -1460,32 +1460,28 @@
                                     "opacity": 1.0,
                                     "asset": "glass_pane_night"
                                   }
-                                ],
-                                "ease": 120
+                                ]
                               },
                               {
-                                "id": "cover-box",
-                                "name": "Cover",
+                                "id": "card",
+                                "name": "Card",
                                 "place": {
                                   "anchor": "center",
                                   "position": [
                                     0.0,
-                                    -146.0,
+                                    0.0,
                                     0.0
                                   ],
                                   "size": [
                                     {
-                                      "stage": 0.74
+                                      "stage": 1,
+                                      "units": -40
                                     },
                                     {
-                                      "stage": 0.4
+                                      "stage": 1,
+                                      "units": -40
                                     }
                                   ],
-                                  "max_size": [
-                                    540.0,
-                                    540.0
-                                  ],
-                                  "aspect": 1.0,
                                   "rotation": [
                                     0.0,
                                     0.0,
@@ -1500,23 +1496,30 @@
                                   "kind": "group",
                                   "items": [
                                     {
-                                      "id": "cover-shadow",
-                                      "name": "",
+                                      "id": "cover-box",
+                                      "name": "Cover",
                                       "place": {
                                         "anchor": "center",
                                         "position": [
                                           0.0,
-                                          10.0,
-                                          -2.0
+                                          0.0,
+                                          0.0
                                         ],
                                         "size": [
                                           {
-                                            "stage": 1.12
+                                            "stage": 0.8,
+                                            "units": 40
                                           },
                                           {
-                                            "stage": 1.12
+                                            "stage": 0.95,
+                                            "units": -284
                                           }
                                         ],
+                                        "max_size": [
+                                          540.0,
+                                          540.0
+                                        ],
+                                        "aspect": 1.0,
                                         "rotation": [
                                           0.0,
                                           0.0,
@@ -1528,141 +1531,176 @@
                                       "locked": false,
                                       "opacity": 1.0,
                                       "content": {
-                                        "kind": "image",
-                                        "asset": "shadow",
-                                        "fit": "stretch"
-                                      },
-                                      "state": "player.stop",
-                                      "cases": [
-                                        {
-                                          "when": "idle",
-                                          "visible": false,
-                                          "opacity": 1.0
-                                        }
-                                      ],
-                                      "ease": 250
-                                    },
-                                    {
-                                      "id": "cover",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
+                                        "kind": "group",
+                                        "items": [
                                           {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "grid",
-                                        "dock": {
-                                          "version": 1,
-                                          "center": {
-                                            "panel_name": "StackPanel",
-                                            "children": [
+                                            "id": "cover-shadow",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                10.0,
+                                                -2.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1.12
+                                                },
+                                                {
+                                                  "stage": 1.12
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "image",
+                                              "asset": "shadow",
+                                              "fit": "stretch"
+                                            },
+                                            "state": "player.stop",
+                                            "cases": [
                                               {
-                                                "panel_name": "TabPanel",
-                                                "children": [
-                                                  {
-                                                    "panel_name": "cover art",
-                                                    "children": [],
-                                                    "info": {
-                                                      "panel": {
-                                                        "theme": {
-                                                          "rounding": 14.0,
-                                                          "surface_opacity": 0.0
-                                                        },
-                                                        "source": "playing",
-                                                        "align": "center",
-                                                        "stretch": false
+                                                "when": "idle",
+                                                "visible": false,
+                                                "opacity": 1.0
+                                              }
+                                            ],
+                                            "ease": 250
+                                          },
+                                          {
+                                            "id": "cover",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1
+                                                },
+                                                {
+                                                  "stage": 1
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "grid",
+                                              "dock": {
+                                                "version": 1,
+                                                "center": {
+                                                  "panel_name": "StackPanel",
+                                                  "children": [
+                                                    {
+                                                      "panel_name": "TabPanel",
+                                                      "children": [
+                                                        {
+                                                          "panel_name": "cover art",
+                                                          "children": [],
+                                                          "info": {
+                                                            "panel": {
+                                                              "theme": {
+                                                                "rounding": 14.0,
+                                                                "surface_opacity": 0.7
+                                                              },
+                                                              "source": "playing",
+                                                              "align": "center",
+                                                              "stretch": false
+                                                            }
+                                                          }
+                                                        }
+                                                      ],
+                                                      "info": {
+                                                        "tabs": {
+                                                          "active_index": 0
+                                                        }
                                                       }
                                                     }
-                                                  }
-                                                ],
-                                                "info": {
-                                                  "tabs": {
-                                                    "active_index": 0
+                                                  ],
+                                                  "info": {
+                                                    "stack": {
+                                                      "sizes": [],
+                                                      "axis": 1
+                                                    }
                                                   }
                                                 }
                                               }
-                                            ],
-                                            "info": {
-                                              "stack": {
-                                                "sizes": [],
-                                                "axis": 1
-                                              }
                                             }
-                                          }
-                                        }
-                                      }
-                                    },
-                                    {
-                                      "id": "cover-gloss",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          2.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
                                           },
                                           {
-                                            "stage": 1
+                                            "id": "cover-gloss",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                2.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1
+                                                },
+                                                {
+                                                  "stage": 1
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "image",
+                                              "asset": "cover_gloss",
+                                              "fit": "stretch"
+                                            }
                                           }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "cover_gloss",
-                                        "fit": "stretch"
+                                        ]
                                       }
                                     },
                                     {
                                       "id": "lines",
                                       "name": "Lines",
                                       "place": {
-                                        "anchor": "bottom",
+                                        "anchor": "center",
                                         "position": [
                                           0.0,
-                                          126.0,
+                                          0.0,
                                           0.0
                                         ],
                                         "size": [
                                           {
-                                            "stage": 1.15
+                                            "stage": 1
                                           },
                                           {
-                                            "units": 104
+                                            "stage": 0.05,
+                                            "units": 110
                                           }
                                         ],
                                         "rotation": [
@@ -1685,7 +1723,7 @@
                                               "anchor": "center",
                                               "position": [
                                                 0.0,
-                                                -34.0,
+                                                0.0,
                                                 0.0
                                               ],
                                               "size": [
@@ -1722,7 +1760,7 @@
                                               "anchor": "center",
                                               "position": [
                                                 0.0,
-                                                2.0,
+                                                0.0,
                                                 0.0
                                               ],
                                               "size": [
@@ -1759,7 +1797,7 @@
                                               "anchor": "center",
                                               "position": [
                                                 0.0,
-                                                30.0,
+                                                0.0,
                                                 0.0
                                               ],
                                               "size": [
@@ -1790,872 +1828,898 @@
                                             }
                                           }
                                         ]
+                                      },
+                                      "state": "player.stop",
+                                      "cases": [
+                                        {
+                                          "when": "idle",
+                                          "visible": false,
+                                          "opacity": 1.0
+                                        }
+                                      ],
+                                      "stack": {
+                                        "axis": "y",
+                                        "gap": 2,
+                                        "align": "center",
+                                        "justify": "center"
+                                      }
+                                    },
+                                    {
+                                      "id": "seek",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 1,
+                                            "units": 16
+                                          },
+                                          {
+                                            "units": 42
+                                          }
+                                        ],
+                                        "max_size": [
+                                          480.0,
+                                          null
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "grid",
+                                        "dock": {
+                                          "version": 1,
+                                          "center": {
+                                            "panel_name": "StackPanel",
+                                            "children": [
+                                              {
+                                                "panel_name": "TabPanel",
+                                                "children": [
+                                                  {
+                                                    "panel_name": "seek",
+                                                    "children": [],
+                                                    "info": {
+                                                      "panel": {
+                                                        "theme": {
+                                                          "surface_opacity": 0.0
+                                                        },
+                                                        "show_total": false,
+                                                        "thickness": 6.0,
+                                                        "rounding": 6.0,
+                                                        "playhead_max": 16.0,
+                                                        "items": [
+                                                          "elapsed",
+                                                          "strip",
+                                                          "ending"
+                                                        ]
+                                                      }
+                                                    }
+                                                  }
+                                                ],
+                                                "info": {
+                                                  "tabs": {
+                                                    "active_index": 0
+                                                  }
+                                                }
+                                              }
+                                            ],
+                                            "info": {
+                                              "stack": {
+                                                "sizes": [],
+                                                "axis": 1
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "id": "buttons",
+                                      "name": "Buttons",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 1,
+                                            "units": 16
+                                          },
+                                          {
+                                            "units": 92
+                                          }
+                                        ],
+                                        "max_size": [
+                                          400.0,
+                                          null
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "group",
+                                        "items": [
+                                          {
+                                            "id": "shuffle",
+                                            "name": "Shuffle",
+                                            "place": {
+                                              "anchor": "left",
+                                              "position": [
+                                                0.0,
+                                                4.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.14
+                                                },
+                                                {
+                                                  "units": 44
+                                                }
+                                              ],
+                                              "max_size": [
+                                                44.0,
+                                                null
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "shuffle-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_clear",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.shuffle_on",
+                                                  "cases": [
+                                                    {
+                                                      "when": "on",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green",
+                                                      "hover": {
+                                                        "asset": "gel_round_green_lit"
+                                                      },
+                                                      "pressed": {
+                                                        "asset": "gel_round_green_down"
+                                                      }
+                                                    }
+                                                  ],
+                                                  "hover": {
+                                                    "asset": "gel_round_clear_lit"
+                                                  },
+                                                  "pressed": {
+                                                    "asset": "gel_round_clear_down"
+                                                  },
+                                                  "hit": "picture"
+                                                },
+                                                {
+                                                  "id": "shuffle-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_shuffle",
+                                                    "fit": "contain"
+                                                  },
+                                                  "pressed": {
+                                                    "opacity": 0.8
+                                                  },
+                                                  "hit": false
+                                                }
+                                              ]
+                                            },
+                                            "action": "toggle_shuffle"
+                                          },
+                                          {
+                                            "id": "previous",
+                                            "name": "Previous",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                {
+                                                  "stage": -0.25
+                                                },
+                                                2.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.17
+                                                },
+                                                {
+                                                  "units": 54
+                                                }
+                                              ],
+                                              "max_size": [
+                                                54.0,
+                                                null
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "previous-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_aqua",
+                                                    "fit": "contain"
+                                                  },
+                                                  "hover": {
+                                                    "asset": "gel_round_aqua_lit"
+                                                  },
+                                                  "pressed": {
+                                                    "asset": "gel_round_aqua_down"
+                                                  },
+                                                  "hit": "picture"
+                                                },
+                                                {
+                                                  "id": "previous-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_prev",
+                                                    "fit": "contain"
+                                                  },
+                                                  "pressed": {
+                                                    "opacity": 0.8
+                                                  },
+                                                  "hit": false
+                                                }
+                                              ]
+                                            },
+                                            "action": "previous_track"
+                                          },
+                                          {
+                                            "id": "play",
+                                            "name": "Play",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.26
+                                                },
+                                                {
+                                                  "units": 84
+                                                }
+                                              ],
+                                              "max_size": [
+                                                84.0,
+                                                null
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "play-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_aqua",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.playback",
+                                                  "cases": [
+                                                    {
+                                                      "when": "playing",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green",
+                                                      "hover": {
+                                                        "asset": "gel_round_green_lit"
+                                                      },
+                                                      "pressed": {
+                                                        "asset": "gel_round_green_down"
+                                                      }
+                                                    }
+                                                  ],
+                                                  "hover": {
+                                                    "asset": "gel_round_aqua_lit"
+                                                  },
+                                                  "pressed": {
+                                                    "asset": "gel_round_aqua_down"
+                                                  },
+                                                  "hit": "picture"
+                                                },
+                                                {
+                                                  "id": "play-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_play",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.playback",
+                                                  "cases": [
+                                                    {
+                                                      "when": "playing",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "glyph_pause"
+                                                    }
+                                                  ],
+                                                  "pressed": {
+                                                    "opacity": 0.8
+                                                  },
+                                                  "hit": false,
+                                                  "ease": 0
+                                                }
+                                              ]
+                                            },
+                                            "action": "toggle_playback"
+                                          },
+                                          {
+                                            "id": "next",
+                                            "name": "Next",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                {
+                                                  "stage": 0.25
+                                                },
+                                                2.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.17
+                                                },
+                                                {
+                                                  "units": 54
+                                                }
+                                              ],
+                                              "max_size": [
+                                                54.0,
+                                                null
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "next-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_aqua",
+                                                    "fit": "contain"
+                                                  },
+                                                  "hover": {
+                                                    "asset": "gel_round_aqua_lit"
+                                                  },
+                                                  "pressed": {
+                                                    "asset": "gel_round_aqua_down"
+                                                  },
+                                                  "hit": "picture"
+                                                },
+                                                {
+                                                  "id": "next-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_next",
+                                                    "fit": "contain"
+                                                  },
+                                                  "pressed": {
+                                                    "opacity": 0.8
+                                                  },
+                                                  "hit": false
+                                                }
+                                              ]
+                                            },
+                                            "action": "next_track"
+                                          },
+                                          {
+                                            "id": "repeat",
+                                            "name": "Repeat",
+                                            "place": {
+                                              "anchor": "right",
+                                              "position": [
+                                                0.0,
+                                                4.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 0.14
+                                                },
+                                                {
+                                                  "units": 44
+                                                }
+                                              ],
+                                              "max_size": [
+                                                44.0,
+                                                null
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "group",
+                                              "items": [
+                                                {
+                                                  "id": "repeat-body",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 1
+                                                      },
+                                                      {
+                                                        "stage": 1
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "gel_round_clear",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.repeat",
+                                                  "cases": [
+                                                    {
+                                                      "when": "all",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green",
+                                                      "hover": {
+                                                        "asset": "gel_round_green_lit"
+                                                      },
+                                                      "pressed": {
+                                                        "asset": "gel_round_green_down"
+                                                      }
+                                                    },
+                                                    {
+                                                      "when": "one",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "gel_round_green",
+                                                      "hover": {
+                                                        "asset": "gel_round_green_lit"
+                                                      },
+                                                      "pressed": {
+                                                        "asset": "gel_round_green_down"
+                                                      }
+                                                    }
+                                                  ],
+                                                  "hover": {
+                                                    "asset": "gel_round_clear_lit"
+                                                  },
+                                                  "pressed": {
+                                                    "asset": "gel_round_clear_down"
+                                                  },
+                                                  "hit": "picture"
+                                                },
+                                                {
+                                                  "id": "repeat-glyph",
+                                                  "name": "",
+                                                  "place": {
+                                                    "anchor": "center",
+                                                    "position": [
+                                                      0.0,
+                                                      0.0,
+                                                      1.0
+                                                    ],
+                                                    "size": [
+                                                      {
+                                                        "stage": 0.6
+                                                      },
+                                                      {
+                                                        "stage": 0.6
+                                                      }
+                                                    ],
+                                                    "rotation": [
+                                                      0.0,
+                                                      0.0,
+                                                      0.0
+                                                    ],
+                                                    "scale": 1.0
+                                                  },
+                                                  "visible": true,
+                                                  "locked": false,
+                                                  "opacity": 1.0,
+                                                  "content": {
+                                                    "kind": "image",
+                                                    "asset": "glyph_repeat",
+                                                    "fit": "contain"
+                                                  },
+                                                  "state": "player.repeat",
+                                                  "cases": [
+                                                    {
+                                                      "when": "one",
+                                                      "visible": true,
+                                                      "opacity": 1.0,
+                                                      "asset": "glyph_repeat1"
+                                                    }
+                                                  ],
+                                                  "pressed": {
+                                                    "opacity": 0.8
+                                                  },
+                                                  "hit": false,
+                                                  "ease": 0
+                                                }
+                                              ]
+                                            },
+                                            "action": "cycle_loop"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    {
+                                      "id": "volume",
+                                      "name": "",
+                                      "place": {
+                                        "anchor": "center",
+                                        "position": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "size": [
+                                          {
+                                            "stage": 0.9
+                                          },
+                                          {
+                                            "units": 40
+                                          }
+                                        ],
+                                        "max_size": [
+                                          420.0,
+                                          null
+                                        ],
+                                        "rotation": [
+                                          0.0,
+                                          0.0,
+                                          0.0
+                                        ],
+                                        "scale": 1.0
+                                      },
+                                      "visible": true,
+                                      "locked": false,
+                                      "opacity": 1.0,
+                                      "content": {
+                                        "kind": "grid",
+                                        "dock": {
+                                          "version": 1,
+                                          "center": {
+                                            "panel_name": "StackPanel",
+                                            "children": [
+                                              {
+                                                "panel_name": "TabPanel",
+                                                "children": [
+                                                  {
+                                                    "panel_name": "volume",
+                                                    "children": [],
+                                                    "info": {
+                                                      "panel": {
+                                                        "theme": {
+                                                          "surface_opacity": 0.0
+                                                        },
+                                                        "align": "center",
+                                                        "stretch": true,
+                                                        "items": [
+                                                          "icon",
+                                                          "slider",
+                                                          "percent"
+                                                        ]
+                                                      }
+                                                    }
+                                                  }
+                                                ],
+                                                "info": {
+                                                  "tabs": {
+                                                    "active_index": 0
+                                                  }
+                                                }
+                                              }
+                                            ],
+                                            "info": {
+                                              "stack": {
+                                                "sizes": [],
+                                                "axis": 1
+                                              }
+                                            }
+                                          }
+                                        }
                                       }
                                     }
                                   ]
-                                }
-                              },
-                              {
-                                "id": "seek",
-                                "name": "",
-                                "place": {
-                                  "anchor": "bottom",
-                                  "position": [
-                                    0.0,
-                                    -172.0,
-                                    0.0
-                                  ],
-                                  "size": [
-                                    {
-                                      "stage": 0.8
-                                    },
-                                    {
-                                      "units": 30
-                                    }
-                                  ],
-                                  "rotation": [
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                  ],
-                                  "scale": 1.0
                                 },
-                                "visible": true,
-                                "locked": false,
-                                "opacity": 1.0,
-                                "content": {
-                                  "kind": "grid",
-                                  "dock": {
-                                    "version": 1,
-                                    "center": {
-                                      "panel_name": "StackPanel",
-                                      "children": [
-                                        {
-                                          "panel_name": "TabPanel",
-                                          "children": [
-                                            {
-                                              "panel_name": "seek",
-                                              "children": [],
-                                              "info": {
-                                                "panel": {
-                                                  "theme": {
-                                                    "surface_opacity": 0.0
-                                                  },
-                                                  "show_total": false,
-                                                  "thickness": 6.0,
-                                                  "rounding": 6.0,
-                                                  "playhead_max": 16.0,
-                                                  "items": [
-                                                    "elapsed",
-                                                    "strip",
-                                                    "ending"
-                                                  ]
-                                                }
-                                              }
-                                            }
-                                          ],
-                                          "info": {
-                                            "tabs": {
-                                              "active_index": 0
-                                            }
-                                          }
-                                        }
-                                      ],
-                                      "info": {
-                                        "stack": {
-                                          "sizes": [],
-                                          "axis": 1
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              },
-                              {
-                                "id": "buttons",
-                                "name": "Buttons",
-                                "place": {
-                                  "anchor": "bottom",
-                                  "position": [
-                                    0.0,
-                                    -74.0,
-                                    0.0
-                                  ],
-                                  "size": [
-                                    {
-                                      "stage": 0.8
-                                    },
-                                    {
-                                      "units": 92
-                                    }
-                                  ],
-                                  "max_size": [
-                                    400.0,
-                                    null
-                                  ],
-                                  "rotation": [
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                  ],
-                                  "scale": 1.0
-                                },
-                                "visible": true,
-                                "locked": false,
-                                "opacity": 1.0,
-                                "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "shuffle",
-                                      "name": "Shuffle",
-                                      "place": {
-                                        "anchor": "left",
-                                        "position": [
-                                          0.0,
-                                          4.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.14
-                                          },
-                                          {
-                                            "units": 44
-                                          }
-                                        ],
-                                        "max_size": [
-                                          44.0,
-                                          null
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "group",
-                                        "items": [
-                                          {
-                                            "id": "shuffle-body",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_round_clear",
-                                              "fit": "contain"
-                                            },
-                                            "state": "player.shuffle_on",
-                                            "cases": [
-                                              {
-                                                "when": "on",
-                                                "visible": true,
-                                                "opacity": 1.0,
-                                                "asset": "gel_round_green",
-                                                "hover": {
-                                                  "asset": "gel_round_green_lit"
-                                                },
-                                                "pressed": {
-                                                  "asset": "gel_round_green_down"
-                                                }
-                                              }
-                                            ],
-                                            "hover": {
-                                              "asset": "gel_round_clear_lit"
-                                            },
-                                            "pressed": {
-                                              "asset": "gel_round_clear_down"
-                                            },
-                                            "hit": "picture"
-                                          },
-                                          {
-                                            "id": "shuffle-glyph",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                1.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 0.6
-                                                },
-                                                {
-                                                  "stage": 0.6
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "glyph_shuffle",
-                                              "fit": "contain"
-                                            },
-                                            "pressed": {
-                                              "opacity": 0.8
-                                            },
-                                            "hit": false
-                                          }
-                                        ]
-                                      },
-                                      "action": "toggle_shuffle"
-                                    },
-                                    {
-                                      "id": "previous",
-                                      "name": "Previous",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          {
-                                            "stage": -0.25
-                                          },
-                                          2.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.17
-                                          },
-                                          {
-                                            "units": 54
-                                          }
-                                        ],
-                                        "max_size": [
-                                          54.0,
-                                          null
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "group",
-                                        "items": [
-                                          {
-                                            "id": "previous-body",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_round_aqua",
-                                              "fit": "contain"
-                                            },
-                                            "hover": {
-                                              "asset": "gel_round_aqua_lit"
-                                            },
-                                            "pressed": {
-                                              "asset": "gel_round_aqua_down"
-                                            },
-                                            "hit": "picture"
-                                          },
-                                          {
-                                            "id": "previous-glyph",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                1.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 0.6
-                                                },
-                                                {
-                                                  "stage": 0.6
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "glyph_prev",
-                                              "fit": "contain"
-                                            },
-                                            "pressed": {
-                                              "opacity": 0.8
-                                            },
-                                            "hit": false
-                                          }
-                                        ]
-                                      },
-                                      "action": "previous_track"
-                                    },
-                                    {
-                                      "id": "play",
-                                      "name": "Play",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.26
-                                          },
-                                          {
-                                            "units": 84
-                                          }
-                                        ],
-                                        "max_size": [
-                                          84.0,
-                                          null
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "group",
-                                        "items": [
-                                          {
-                                            "id": "play-body",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_round_aqua",
-                                              "fit": "contain"
-                                            },
-                                            "state": "player.playback",
-                                            "cases": [
-                                              {
-                                                "when": "playing",
-                                                "visible": true,
-                                                "opacity": 1.0,
-                                                "asset": "gel_round_green",
-                                                "hover": {
-                                                  "asset": "gel_round_green_lit"
-                                                },
-                                                "pressed": {
-                                                  "asset": "gel_round_green_down"
-                                                }
-                                              }
-                                            ],
-                                            "hover": {
-                                              "asset": "gel_round_aqua_lit"
-                                            },
-                                            "pressed": {
-                                              "asset": "gel_round_aqua_down"
-                                            },
-                                            "hit": "picture"
-                                          },
-                                          {
-                                            "id": "play-glyph",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                1.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 0.6
-                                                },
-                                                {
-                                                  "stage": 0.6
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "glyph_play",
-                                              "fit": "contain"
-                                            },
-                                            "state": "player.playback",
-                                            "cases": [
-                                              {
-                                                "when": "playing",
-                                                "visible": true,
-                                                "opacity": 1.0,
-                                                "asset": "glyph_pause"
-                                              }
-                                            ],
-                                            "pressed": {
-                                              "opacity": 0.8
-                                            },
-                                            "hit": false,
-                                            "ease": 0
-                                          }
-                                        ]
-                                      },
-                                      "action": "toggle_playback"
-                                    },
-                                    {
-                                      "id": "next",
-                                      "name": "Next",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          {
-                                            "stage": 0.25
-                                          },
-                                          2.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.17
-                                          },
-                                          {
-                                            "units": 54
-                                          }
-                                        ],
-                                        "max_size": [
-                                          54.0,
-                                          null
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "group",
-                                        "items": [
-                                          {
-                                            "id": "next-body",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_round_aqua",
-                                              "fit": "contain"
-                                            },
-                                            "hover": {
-                                              "asset": "gel_round_aqua_lit"
-                                            },
-                                            "pressed": {
-                                              "asset": "gel_round_aqua_down"
-                                            },
-                                            "hit": "picture"
-                                          },
-                                          {
-                                            "id": "next-glyph",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                1.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 0.6
-                                                },
-                                                {
-                                                  "stage": 0.6
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "glyph_next",
-                                              "fit": "contain"
-                                            },
-                                            "pressed": {
-                                              "opacity": 0.8
-                                            },
-                                            "hit": false
-                                          }
-                                        ]
-                                      },
-                                      "action": "next_track"
-                                    },
-                                    {
-                                      "id": "repeat",
-                                      "name": "Repeat",
-                                      "place": {
-                                        "anchor": "right",
-                                        "position": [
-                                          0.0,
-                                          4.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.14
-                                          },
-                                          {
-                                            "units": 44
-                                          }
-                                        ],
-                                        "max_size": [
-                                          44.0,
-                                          null
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "group",
-                                        "items": [
-                                          {
-                                            "id": "repeat-body",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_round_clear",
-                                              "fit": "contain"
-                                            },
-                                            "state": "player.repeat",
-                                            "cases": [
-                                              {
-                                                "when": "all",
-                                                "visible": true,
-                                                "opacity": 1.0,
-                                                "asset": "gel_round_green",
-                                                "hover": {
-                                                  "asset": "gel_round_green_lit"
-                                                },
-                                                "pressed": {
-                                                  "asset": "gel_round_green_down"
-                                                }
-                                              },
-                                              {
-                                                "when": "one",
-                                                "visible": true,
-                                                "opacity": 1.0,
-                                                "asset": "gel_round_green",
-                                                "hover": {
-                                                  "asset": "gel_round_green_lit"
-                                                },
-                                                "pressed": {
-                                                  "asset": "gel_round_green_down"
-                                                }
-                                              }
-                                            ],
-                                            "hover": {
-                                              "asset": "gel_round_clear_lit"
-                                            },
-                                            "pressed": {
-                                              "asset": "gel_round_clear_down"
-                                            },
-                                            "hit": "picture"
-                                          },
-                                          {
-                                            "id": "repeat-glyph",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                1.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 0.6
-                                                },
-                                                {
-                                                  "stage": 0.6
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "glyph_repeat",
-                                              "fit": "contain"
-                                            },
-                                            "state": "player.repeat",
-                                            "cases": [
-                                              {
-                                                "when": "one",
-                                                "visible": true,
-                                                "opacity": 1.0,
-                                                "asset": "glyph_repeat1"
-                                              }
-                                            ],
-                                            "pressed": {
-                                              "opacity": 0.8
-                                            },
-                                            "hit": false,
-                                            "ease": 0
-                                          }
-                                        ]
-                                      },
-                                      "action": "cycle_loop"
-                                    }
-                                  ]
-                                }
-                              },
-                              {
-                                "id": "volume",
-                                "name": "",
-                                "place": {
-                                  "anchor": "bottom",
-                                  "position": [
-                                    0.0,
-                                    -40.0,
-                                    0.0
-                                  ],
-                                  "size": [
-                                    {
-                                      "stage": 0.72
-                                    },
-                                    {
-                                      "units": 28
-                                    }
-                                  ],
-                                  "max_size": [
-                                    420.0,
-                                    null
-                                  ],
-                                  "rotation": [
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                  ],
-                                  "scale": 1.0
-                                },
-                                "visible": true,
-                                "locked": false,
-                                "opacity": 1.0,
-                                "content": {
-                                  "kind": "grid",
-                                  "dock": {
-                                    "version": 1,
-                                    "center": {
-                                      "panel_name": "StackPanel",
-                                      "children": [
-                                        {
-                                          "panel_name": "TabPanel",
-                                          "children": [
-                                            {
-                                              "panel_name": "volume",
-                                              "children": [],
-                                              "info": {
-                                                "panel": {
-                                                  "theme": {
-                                                    "surface_opacity": 0.0
-                                                  },
-                                                  "align": "center",
-                                                  "stretch": true,
-                                                  "items": [
-                                                    "icon",
-                                                    "slider",
-                                                    "percent"
-                                                  ]
-                                                }
-                                              }
-                                            }
-                                          ],
-                                          "info": {
-                                            "tabs": {
-                                              "active_index": 0
-                                            }
-                                          }
-                                        }
-                                      ],
-                                      "info": {
-                                        "stack": {
-                                          "sizes": [],
-                                          "axis": 1
-                                        }
-                                      }
-                                    }
-                                  }
+                                "stack": {
+                                  "axis": "y",
+                                  "gap": 0,
+                                  "align": "center",
+                                  "justify": "center"
                                 }
                               },
                               {
@@ -2664,8 +2728,8 @@
                                 "place": {
                                   "anchor": "top_right",
                                   "position": [
-                                    -50.0,
-                                    54.0,
+                                    -26.0,
+                                    30.0,
                                     4.0
                                   ],
                                   "size": [
@@ -2711,22 +2775,25 @@
                             "anchor": "right",
                             "position": [
                               {
-                                "stage": -0.018
+                                "stage": -0.018,
+                                "units": -24
                               },
                               8.0,
                               0.0
                             ],
                             "size": [
                               {
-                                "stage": 0.635
+                                "stage": 0.635,
+                                "units": -48
                               },
                               {
-                                "stage": 0.9
+                                "stage": 0.9,
+                                "units": -48
                               }
                             ],
                             "min_size": [
-                              540.0,
-                              560.0
+                              492.0,
+                              512.0
                             ],
                             "rotation": [
                               0.0,
@@ -2753,10 +2820,12 @@
                                   ],
                                   "size": [
                                     {
-                                      "stage": 1
+                                      "stage": 1,
+                                      "units": 48
                                     },
                                     {
-                                      "stage": 1
+                                      "stage": 1,
+                                      "units": 48
                                     }
                                   ],
                                   "rotation": [
@@ -2788,8 +2857,7 @@
                                     "opacity": 1.0,
                                     "asset": "glass_pane_night"
                                   }
-                                ],
-                                "ease": 120
+                                ]
                               },
                               {
                                 "id": "shimmer",
@@ -2853,15 +2921,17 @@
                                   "anchor": "top",
                                   "position": [
                                     0.0,
-                                    48.0,
+                                    24.0,
                                     0.0
                                   ],
                                   "size": [
                                     {
-                                      "stage": 0.9
+                                      "stage": 1,
+                                      "units": -48
                                     },
                                     {
-                                      "stage": 0.55
+                                      "stage": 0.69,
+                                      "units": -72
                                     }
                                   ],
                                   "rotation": [
@@ -2969,15 +3039,16 @@
                                   "anchor": "bottom",
                                   "position": [
                                     0.0,
-                                    -44.0,
+                                    -24.0,
                                     0.0
                                   ],
                                   "size": [
                                     {
-                                      "stage": 0.9
+                                      "stage": 1,
+                                      "units": -48
                                     },
                                     {
-                                      "stage": 0.29
+                                      "stage": 0.31
                                     }
                                   ],
                                   "min_size": [
@@ -3040,10 +3111,12 @@
                                               ],
                                               "size": [
                                                 {
-                                                  "stage": 1
+                                                  "stage": 1,
+                                                  "units": 12
                                                 },
                                                 {
-                                                  "stage": 1
+                                                  "stage": 1,
+                                                  "units": 12
                                                 }
                                               ],
                                               "rotation": [
@@ -3075,8 +3148,7 @@
                                                 "opacity": 1.0,
                                                 "asset": "glass_well_night"
                                               }
-                                            ],
-                                            "ease": 120
+                                            ]
                                           },
                                           {
                                             "id": "spectrum",
@@ -3090,10 +3162,12 @@
                                               ],
                                               "size": [
                                                 {
-                                                  "stage": 0.95
+                                                  "stage": 1,
+                                                  "units": -20
                                                 },
                                                 {
-                                                  "stage": 0.84
+                                                  "stage": 1,
+                                                  "units": -40
                                                 }
                                               ],
                                               "rotation": [
@@ -3170,13 +3244,14 @@
                                       "place": {
                                         "anchor": "right",
                                         "position": [
-                                          -16.0,
+                                          -24.0,
                                           0.0,
                                           24.0
                                         ],
                                         "size": [
                                           {
-                                            "stage": 0.35
+                                            "stage": 0.38,
+                                            "units": -40
                                           },
                                           {
                                             "stage": 0.96
@@ -3207,10 +3282,12 @@
                                               ],
                                               "size": [
                                                 {
-                                                  "stage": 1.07
+                                                  "stage": 1,
+                                                  "units": 32
                                                 },
                                                 {
-                                                  "stage": 1.1
+                                                  "stage": 1,
+                                                  "units": 32
                                                 }
                                               ],
                                               "rotation": [
@@ -3242,8 +3319,7 @@
                                                 "opacity": 1.0,
                                                 "asset": "glass_screen_night"
                                               }
-                                            ],
-                                            "ease": 120
+                                            ]
                                           },
                                           {
                                             "id": "renderer",
@@ -3296,10 +3372,12 @@
                                               ],
                                               "size": [
                                                 {
-                                                  "stage": 0.95
+                                                  "stage": 1,
+                                                  "units": 32
                                                 },
                                                 {
-                                                  "stage": 0.92
+                                                  "stage": 1,
+                                                  "units": 32
                                                 }
                                               ],
                                               "rotation": [
@@ -3311,21 +3389,28 @@
                                             },
                                             "visible": true,
                                             "locked": false,
-                                            "opacity": 0.55,
+                                            "opacity": 0.8,
                                             "content": {
                                               "kind": "image",
-                                              "asset": "cover_gloss",
-                                              "fit": "stretch"
+                                              "asset": "glass_screen_gloss",
+                                              "fit": "stretch",
+                                              "slice": [
+                                                48,
+                                                106,
+                                                48,
+                                                52
+                                              ]
                                             },
                                             "state": "app.theme",
                                             "cases": [
                                               {
                                                 "when": "dark",
                                                 "visible": true,
-                                                "opacity": 0.4
+                                                "opacity": 1.0,
+                                                "asset": "glass_screen_gloss_night"
                                               }
                                             ],
-                                            "ease": 120
+                                            "hit": false
                                           }
                                         ]
                                       },
@@ -4695,15 +4780,29 @@
       "id": "glass_screen",
       "file": "glass_screen.png",
       "kind": "image",
-      "sha256": "c91569d39b339f9ae1cc97cfb7bdbc45ce89f5f3c7135c0bbe8206b279342855",
-      "bytes": 7739
+      "sha256": "6f2baa73b4dc233ad90538e8080af820e30db9ae2d59318ed2f6b10b88bac9f0",
+      "bytes": 4957
+    },
+    {
+      "id": "glass_screen_gloss",
+      "file": "glass_screen_gloss.png",
+      "kind": "image",
+      "sha256": "5393c7f6204bf62f214dc9433be21ba9e8905270c42dd2d9b285a8ce00c78455",
+      "bytes": 3499
+    },
+    {
+      "id": "glass_screen_gloss_night",
+      "file": "glass_screen_gloss_night.png",
+      "kind": "image",
+      "sha256": "c1578c9cb300798e4a5a6c6fc484921b9bdb7477deb9be9aaf4b5212bd8ccab7",
+      "bytes": 3095
     },
     {
       "id": "glass_screen_night",
       "file": "glass_screen_night.png",
       "kind": "image",
-      "sha256": "b6b5d39fe4ccfe053dc364a5a41044eb25d0de961d9b8b0814c2e05533828460",
-      "bytes": 9820
+      "sha256": "f820448b0ebda8244ff3d8c40f8036dabbbace7a2652366d61ef4398fae7af39",
+      "bytes": 5332
     },
     {
       "id": "glass_shard",
@@ -4829,7 +4928,7 @@
     "author": "zealsprince",
     "description": "A sunny sky-blue morning drawn on one canvas: glass panels over clouds and green hills, gel buttons that light up under the pointer, bubbles drifting up past the glass, an aurora that breathes with the mids and a sun that flares on the beat. Dark mode turns it to night.",
     "created": "2026-11-26",
-    "updated": "2026-11-26"
+    "updated": "2026-11-27"
   },
   "appearance": {
     "surface_opacity": 0.0,
@@ -4842,6 +4941,7 @@
     },
     "seams": false,
     "keep_theme": true,
+    "theme_ease": 600,
     "art_theming": false,
     "hide_menubar": true,
     "os_decorations": false

@@ -1263,9 +1263,8 @@ impl CanvasPanel {
                     }
                 });
             },
-        )
-        .absolute()
-        .size_full();
+        );
+        let watch = pinned(watch);
 
         if active {
             shader_item::absorb_hot(self, cx);
@@ -1982,9 +1981,7 @@ impl CanvasPanel {
             .map(|shape| self.resize_handles(&shape, cx))
             .unwrap_or_default();
 
-        div()
-            .absolute()
-            .size_full()
+        pinned(div())
             .child(canvas)
             .children(strips)
             .children(handles)
@@ -3356,7 +3353,7 @@ impl CanvasPanel {
         let me_id = cx.entity_id();
         let pointing = self.pointing.clone();
 
-        canvas(
+        let clicks = canvas(
             |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
             move |bounds, hitbox, window, _| {
                 if pointing.get() {
@@ -3494,10 +3491,8 @@ impl CanvasPanel {
                     .ok();
                 });
             },
-        )
-        .absolute()
-        .size_full()
-        .into_any_element()
+        );
+        pinned(clicks).into_any_element()
     }
 
     fn hit_at(&self, local: [f32; 2]) -> Hit {
@@ -3607,6 +3602,15 @@ fn edge_band(bounds: Bounds<Pixels>, at: Point<Pixels>, left: bool) -> bool {
         x >= width - EDGE_REACH
     };
     near && (y - middle).abs() <= EDGE_BAND / 2.
+}
+
+/// Pins a layer that takes the pointer or reads the canvas's bounds to the
+/// corner the drawn layers measure from. A drawn layer is placed by its
+/// insets, which count from the padding box. Left at its static position a
+/// layer sits inside a framed panel's padding, and every hit, the parallax
+/// and the outlines land that far off what's drawn.
+fn pinned<E: Styled>(element: E) -> E {
+    element.absolute().top_0().left_0().size_full()
 }
 
 fn local_point(position: Point<Pixels>, origin: Point<Pixels>) -> [f32; 2] {
@@ -4027,6 +4031,41 @@ mod tests {
                 "info": { "stack": { "sizes": [480.0], "axis": 1 } },
             },
         })
+    }
+
+    /// A framed panel pads the canvas's body, and the bounds every hit is
+    /// measured in have to start where the layers draw anyway.
+    #[gpui::test]
+    fn the_watched_bounds_start_where_the_layers_draw(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let watched = Rc::new(Cell::new(Bounds::default()));
+        let drawn = Rc::new(Cell::new(Bounds::default()));
+        let (watch, layer) = (watched.clone(), drawn.clone());
+
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(200.), px(100.)),
+            move |_, _| {
+                div()
+                    .relative()
+                    .size_full()
+                    .p(px(2.))
+                    .child(pinned(canvas(
+                        move |bounds, _, _| watch.set(bounds),
+                        |_, _, _, _| {},
+                    )))
+                    .child(
+                        canvas(move |bounds, _, _| layer.set(bounds), |_, _, _, _| {})
+                            .absolute()
+                            .left(px(0.))
+                            .top(px(0.))
+                            .size(px(10.)),
+                    )
+            },
+        );
+
+        assert_eq!(watched.get().origin, drawn.get().origin);
+        assert_eq!(watched.get().size, gpui::size(px(200.), px(100.)));
     }
 
     #[test]

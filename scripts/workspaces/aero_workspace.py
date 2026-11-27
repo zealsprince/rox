@@ -23,6 +23,15 @@ ASSETS = os.path.join(SHIPPED, "Aero", "assets")
 # Pool signal ids.
 LOW, MID, HIGH, LEVEL, BEAT = range(1, 6)
 
+# How long case changes take, in ms. The scenery behind the glass turns to
+# night slowly. The glass cuts almost with the panels and the text on it,
+# which switch theme at once: a slow pane leaves dark rows and light text
+# on light glass for the length of the fade. The play and pause glyphs cut,
+# since two white glyphs crossfading read as both at once.
+SCENE_EASE = 600
+PANE_EASE = 120
+GLYPH_EASE = 0
+
 
 # ── Items ──
 
@@ -41,7 +50,7 @@ def _axis(v):
 
 def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), rot=(0, 0, 0),
          scale=1.0, opacity=1.0, sway=None, action="", state="", cases=None, name="", min_size=None,
-         max_size=None, hover=None, pressed=None):
+         max_size=None, aspect=None, hover=None, pressed=None, hit=None, ease=None):
     place = {
         "anchor": anchor,
         "position": [_axis(pos[0]), _axis(pos[1]), float(pos[2])],
@@ -51,6 +60,8 @@ def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), 
         place["min_size"] = [None if v is None else float(v) for v in min_size]
     if max_size:
         place["max_size"] = [None if v is None else float(v) for v in max_size]
+    if aspect:
+        place["aspect"] = float(aspect)
     place["rotation"] = [float(v) for v in rot]
     place["scale"] = scale
 
@@ -77,15 +88,23 @@ def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), 
         out["hover"] = hover
     if pressed:
         out["pressed"] = pressed
+    if hit is not None:
+        out["hit"] = hit
+    if ease is not None:
+        out["ease"] = ease
     return out
 
 
-def case(when, visible=True, opacity=1.0, asset="", color=""):
+def case(when, visible=True, opacity=1.0, asset="", color="", hover=None, pressed=None):
     out = {"when": when, "visible": visible, "opacity": opacity}
     if asset:
         out["asset"] = asset
     if color:
         out["color"] = color
+    if hover:
+        out["hover"] = hover
+    if pressed:
+        out["pressed"] = pressed
     return out
 
 
@@ -107,9 +126,9 @@ def group(items):
     return {"kind": "group", "items": items}
 
 
-def themed(night):
+def themed(night, ease=None):
     """Follows the theme: the night picture in dark mode."""
-    return dict(state="app.theme", cases=[case("dark", asset=night)])
+    return dict(state="app.theme", cases=[case("dark", asset=night)], ease=ease)
 
 
 def tabs(*panels, active=0):
@@ -157,8 +176,8 @@ def route(target, signal, lo, hi):
 def drift(target, period, shape="sine", phase=0.0, lo=0.0, hi=1.0, curve=None):
     """A route on the canvas's own clock. It reads no signal, so it moves at
     rest too, and while one is on the canvas draws every frame it shows.
-    A route reads from 0 up, never below, so anything meant to swing both
-    ways sits half its sway back from where it should centre."""
+    Every route on one field counts, so a drift and a music route on the
+    same item add, and a span from -1 to 1 swings the sway round home."""
     out = {"enabled": True, "signal": 0, "target": target, "from": lo, "to": hi,
            "time": {"period": float(period), "shape": shape, "phase": float(phase)}}
     if curve:
@@ -173,38 +192,34 @@ def scenery():
     sky = item(
         "sky-box",
         group([
-            item("sky", image("sky_day", "cover"), size=(S(1), S(1)), **themed("sky_night")),
+            item("sky", image("sky_day", "cover"), size=(S(1), S(1)), **themed("sky_night", SCENE_EASE)),
             item("rays", shader("Aero Rays", [slot(MID, 0), slot(LEVEL, 1)]), size=(S(1), S(1)),
                  pos=(0, 0, 1)),
-            # The sun sits at (0.33, 0.03) of the sky picture: a box from the
-            # corner to twice that has its centre there at any window size.
-            item("sun", group([
-                item("flare", image("flare", "contain"), size=(U(820), U(820)), opacity=0.6, pos=(0, 0, 2),
-                     sway={"rotation": (0, 0, 360)}),
-            ]), anchor="top_left", size=(S(0.66), S(0.06)), state="app.theme",
-                cases=[case("dark", opacity=0.3)]),
+            # The sun sits at (0.33, 0.03) of the sky picture, which from the
+            # middle is 0.17 of the width left and 0.47 of the height up.
+            item("flare", image("flare", "contain"), pos=(S(-0.17), S(-0.47), 2), size=(U(820), U(820)),
+                 opacity=0.6, sway={"rotation": (0, 0, 360)}, state="app.theme",
+                 cases=[case("dark", opacity=0.3)], ease=SCENE_EASE),
         ]),
         name="Sky",
-        pos=(0, -40, 0),
+        # A group paints at its own depth, so the depth sits here and not on
+        # the sky inside it.
+        pos=(0, -40, -420),
         # Wide enough to cover the window at 420 units deep however short it
         # is, with room left for the pan and the music's sway.
         size=(S(1.5), S(1.5)),
-        sway={"position": (18, 6, 0)},
+        sway={"position": (60, 6, 0)},
     )
-    route("sky-box.x", MID, 0.0, 1.0)
+    # Two minutes there and back across 60 units: felt more than seen. The
+    # music's nudge of 18 units rides the same sway.
+    drift("sky-box.x", 130, "sine", 0.25, -0.5, 0.5)
+    route("sky-box.x", MID, 0.0, 0.3)
     route("sky-box.y", LOW, 0.0, 1.0)
     route("flare.opacity", BEAT, 1.0, 1.65)
     route("flare.scale", BEAT, 1.0, 1.18)
     # The rays turn once in four minutes. A saw on a whole turn wraps where
     # the picture is the same, so it never jumps.
     drift("flare.rz", 240, "saw")
-
-    # The music moves the sky box, so the slow pan rides a box around it.
-    # Two minutes there and back across 60 units: felt more than seen. The
-    # depth sits on the outer box, since a group paints at its own depth.
-    drifting_sky = item("sky-drift", group([sky]), name="Sky drift", pos=(-30, 0, -420), size=(S(1), S(1)),
-                        sway={"position": (60, 0, 0)})
-    drift("sky-drift.x", 130, "sine", 0.25)
 
     aurora = item(
         "aurora",
@@ -215,24 +230,26 @@ def scenery():
                  opacity=0.5, sway={"position": (-50, 0, 0)}),
         ]),
         name="Aurora",
-        pos=(-24, 0, -340),
+        pos=(0, 0, -340),
         size=(S(1.2), S(1.2)),
-        sway={"position": (48, 0, 0)},
+        sway={"position": (24, 0, 0)},
         state="app.theme",
         cases=[case("light", opacity=0.45), case("dark", opacity=1.0)],
+        ease=SCENE_EASE,
     )
     for ribbon in ("aurora-a", "aurora-b"):
         route(f"{ribbon}.opacity", MID, 1.0, 1.9)
         route(f"{ribbon}.scale", MID, 1.0, 1.07)
         route(f"{ribbon}.x", MID, 0.0, 1.0)
-    drift("aurora.x", 70, "sine", 0.6)
+    # The ribbons share one slow sway, so it stays on the group around them.
+    drift("aurora.x", 70, "sine", 0.6, -1.0, 1.0)
     drift("aurora.opacity", 26, "sine", 0.1, 0.7, 1.0)
 
     hills = [
         item("hills-back", image("hills_back"), anchor="bottom", pos=(0, 110, -230),
-             size=(S(1.34), S(0.40)), name="Far hills", **themed("hills_back_night")),
+             size=(S(1.34), S(0.40)), name="Far hills", **themed("hills_back_night", SCENE_EASE)),
         item("hills-front", image("hills_front"), anchor="bottom", pos=(0, 90, -120),
-             size=(S(1.24), S(0.30)), name="Near hills", **themed("hills_front_night")),
+             size=(S(1.24), S(0.30)), name="Near hills", **themed("hills_front_night", SCENE_EASE)),
     ]
 
     bokeh = []
@@ -248,17 +265,19 @@ def scenery():
         ("ghost-2", "ghost", "center", (0.04, 0.13, -160), 46, 0.5, (20, 16), (36, 63)),
     ]
     for n, (id, asset, anchor, (fx, fy, z), size, opacity, (wx, wy), (px, py)) in enumerate(spots):
+        # The sway is half the wander, swung both ways round home.
         bokeh.append(item(id, image(asset, "contain"), anchor=anchor, pos=(S(fx), S(fy), z),
-                          size=(U(size), U(size)), opacity=opacity, sway={"position": (wx, wy, 0)}))
+                          size=(U(size), U(size)), opacity=opacity, sway={"position": (wx / 2, wy / 2, 0)}))
         route(f"{id}.opacity", BEAT if id.startswith("ghost") else HIGH, 1.0, 1.8)
         # Two unrelated periods per spot trace a slow loop that never repeats
         # in step with its neighbours.
-        drift(f"{id}.x", px, "sine", round(n * 0.37 % 1.0, 3))
-        drift(f"{id}.y", py, "sine", round((n * 0.61 + 0.2) % 1.0, 3))
+        drift(f"{id}.x", px, "sine", round(n * 0.37 % 1.0, 3), -1.0, 1.0)
+        drift(f"{id}.y", py, "sine", round((n * 0.61 + 0.2) % 1.0, 3), -1.0, 1.0)
 
     bubbles = []
     # (id, picture, x as a stage fraction from the middle, depth, size, rise
-    #  in units, seconds to rise, phase, wobble in units, music drift)
+    #  in units, seconds to rise, phase, wobble in units, music drift in
+    #  units, its sign the way it leans)
     floats = [
         ("bubble-1", "bubble_l", -0.44, -60, 150, 1250, 64, 0.05, 34, 36),
         ("bubble-2", "bubble_s", -0.30, -140, 56, 1150, 47, 0.62, 18, -24),
@@ -270,24 +289,30 @@ def scenery():
         ("bubble-8", "bubble_m", 0.41, -150, 70, 1200, 61, 0.92, 22, -26),
         ("bubble-9", "bubble_s", -0.05, -40, 34, 1050, 38, 0.27, 10, 16),
     ]
-    for id, asset, fx, z, size, rise, period, phase, wobble, sway in floats:
-        # The rise is a saw on the outer box: up the window, then back to the
-        # bottom on the wrap. The fade shares its period and phase, a triangle
-        # read four times over so the bubble is solid for the middle three
-        # quarters and clear at both ends, which hides the wrap.
-        ball = item(f"{id}-ball", image(asset, "contain"), size=(S(1), S(1)), opacity=0.95,
-                    sway={"position": (sway, -40, 0)})
-        bubbles.append(item(id, group([ball]), anchor="bottom", pos=(S(fx), round(size * 0.6), z),
-                            size=(U(size), U(size)), sway={"position": (wobble, -rise, 0)}))
+    for id, asset, fx, z, size, rise, period, phase, wobble, lean in floats:
+        # One sway serves the drift and the music on each axis: x reaches as
+        # far as the music leans, and y the whole rise.
+        reach = abs(lean)
+        bubbles.append(item(id, image(asset, "contain"), anchor="bottom", pos=(S(fx), round(size * 0.6), z),
+                            size=(U(size), U(size)), sway={"position": (reach, -rise, 0)}))
+
+        # The rise is a saw: up the window, then back to the bottom on the
+        # wrap. The fade shares its period and phase, a triangle read four
+        # times over so the bubble is solid for the middle three quarters and
+        # clear at both ends, which hides the wrap.
         drift(f"{id}.y", period, "saw", phase)
         drift(f"{id}.opacity", period, "triangle", phase, 0.0, 4.0)
-        drift(f"{id}.x", round(period / 6.3, 1), "sine", round(phase * 3.1 % 1.0, 3))
-        route(f"{id}-ball.y", LOW, 0.0, 1.0)
-        route(f"{id}-ball.x", MID, 0.0, 1.0)
-        route(f"{id}-ball.scale", LOW, 1.0, 1.16)
+        drift(f"{id}.x", round(period / 6.3, 1), "sine", round(phase * 3.1 % 1.0, 3),
+              round(-wobble / 2 / reach, 4), round(wobble / 2 / reach, 4))
+
+        # The music lifts each bubble 40 units on the bass and leans it on
+        # the mids.
+        route(f"{id}.y", LOW, 0.0, round(40 / rise, 5))
+        route(f"{id}.x", MID, 0.0, 1.0 if lean > 0 else -1.0)
+        route(f"{id}.scale", LOW, 1.0, 1.16)
 
     return [
-        drifting_sky,
+        sky,
         aurora,
         item("air", group(bokeh), name="Bokeh", size=(S(1), S(1))),
         *hills,
@@ -298,65 +323,77 @@ def scenery():
 # ── Deck: what's playing and the buttons ──
 
 
-# The click layer's looks: the overlays aero_assets.py draws to the gel's own
-# outline, so hovering brightens and pressing sinks without anything moving.
-LIT = {"opacity": 1.0, "asset": "gel_lit"}
-DOWN = {"opacity": 1.0, "asset": "gel_down"}
+def gel(hue, **case_args):
+    """A gel's picture with the copies its hover and pressed looks swap in,
+    as a case or as the item's own."""
+    return dict(asset=f"gel_round_{hue}", hover={"asset": f"gel_round_{hue}_lit"},
+                pressed={"asset": f"gel_round_{hue}_down"}, **case_args)
 
 
-def gel_button(id, action, width, side, pos, glyph, *, anchor="center", body="gel_round_aqua", body_state=None,
+def gel_button(id, action, width, side, pos, glyph, *, anchor="center", hue="aqua", state="", lit_in=(),
                glyph_state=None, name=""):
-    """A gel, its glyph and a clear cap over both that takes the click. The
-    cap carries the command and the looks because a look only reaches the
-    item the pointer hits, and only swaps that item's own image: on the
-    group it could fade the button, never light it. The body and glyph
-    still follow their states under it.
+    """One group: it takes the click, and hovering it lights the gel inside.
+    The gel takes the pointer only where it's drawn, and the glyph lets it
+    through, so the box's corners stay dead. In each case of `state` named
+    in `lit_in` the gel turns green, with green looks.
 
     The box's width is a share of the row, held to `side`, and its height is
     `side`: a narrow deck shrinks the buttons rather than overlapping them,
     and every picture fits the box's shorter side."""
-    body_item = item(f"{id}-body", image(body, "contain"), size=(S(1), S(1)), **(body_state or {}))
+    own = gel(hue)
+    body = item(f"{id}-body", image(own["asset"], "contain"), size=(S(1), S(1)), hover=own["hover"],
+                pressed=own["pressed"], hit="picture", state=state,
+                cases=[case(when, **gel("green")) for when in lit_in])
     glyph_item = item(f"{id}-glyph", image(glyph, "contain"), size=(S(0.6), S(0.6)), pos=(0, 0, 1),
-                      **(glyph_state or {}))
-    cap = item(f"{id}-cap", image("gel_cap", "contain"), size=(S(1), S(1)), pos=(0, 0, 2), action=action,
-               hover=LIT, pressed=DOWN, name=name)
-    return item(id, group([body_item, glyph_item, cap]), anchor=anchor, pos=pos, size=(S(width), U(side)),
-                max_size=(side, None), name=name)
+                      pressed={"opacity": 0.8}, hit=False, **(glyph_state or {}))
+    return item(id, group([body, glyph_item]), anchor=anchor, pos=pos, size=(S(width), U(side)),
+                max_size=(side, None), action=action, name=name)
+
+
+# The cover and its lines: the gap between them, and how far above the
+# deck's middle the cover's centre sits. The glass above the seek bar runs
+# from 24 units down to 190 off the bottom, so its middle is 83 above the
+# deck's. The cover's centre sits half the gap and the lines' 104 above that,
+# which centres the pair on the glass at any cover size.
+COVER_GAP = 22
+COVER_RISE = -83 - (COVER_GAP + 104) / 2
 
 
 def deck():
     # The deck's box takes in the pane's shadow, 24 units each side, so the
-    # glass shows 24 units in from every edge.
+    # glass shows 24 units in from every edge. The seek bar, the buttons and
+    # the volume are fixed in units off its bottom, and the cover with the
+    # lines hung under it sits in the middle of the glass above them.
+    lines = item("lines", group([
+        item("title", text("%title%", 26, "text_bright"), pos=(0, -34, 0), size=(S(1), U(38))),
+        item("artist", text("%artist%", 19, "text"), pos=(0, 2, 0), size=(S(1), U(28))),
+        item("album", text("%album% - %year%", 15, "text_dim"), pos=(0, 30, 0), size=(S(1), U(24))),
+    ]), anchor="bottom", pos=(0, COVER_GAP + 104, 0), size=(S(1.15), U(104)), name="Lines")
+
     cover = item(
         "cover-box",
         group([
-            item("cover-shadow", image("shadow"), size=(S(0.74), S(0.96)), max_size=(520, 520),
-                 pos=(0, 10, -2)),
-            # Its width follows the window's width and its height the
-            # window's height, and the canvas has no aspect lock, so the box
-            # is only square near 16:9. The art letterboxes inside it rather
-            # than stretch.
+            # With nothing loaded the art panel shows only a placeholder
+            # note, and a shadow under it reads as a dark blot in the glass.
+            item("cover-shadow", image("shadow"), size=(S(1.12), S(1.12)), pos=(0, 10, -2), state="player.stop",
+                 cases=[case("idle", visible=False)], ease=250),
             item("cover", grid(panel("cover art", {
                 "theme": {"rounding": 14.0, "surface_opacity": 0.0},
                 "source": "playing", "align": "center", "stretch": False,
-            })), size=(S(0.66), S(0.86)), max_size=(460, 460)),
-            item("cover-gloss", image("cover_gloss"), size=(S(0.66), S(0.86)), max_size=(460, 460),
-                 pos=(0, 0, 2)),
+            })), size=(S(1), S(1))),
+            item("cover-gloss", image("cover_gloss"), size=(S(1), S(1)), pos=(0, 0, 2)),
+            lines,
         ]),
-        anchor="top",
-        pos=(0, 48, 0),
-        size=(S(1), S(0.46)),
+        # Square at any window shape: the deck's width or its height,
+        # whichever is shorter, gives the side. The width keeps it inside the
+        # glass at the deck's narrowest, and the height leaves the lines room
+        # above the seek bar at its shortest.
+        size=(S(0.74), S(0.40)),
+        max_size=(540, 540),
+        aspect=1.0,
+        pos=(0, COVER_RISE, 0),
         name="Cover",
     )
-
-    # The seek bar, the buttons and the volume are fixed in units off the
-    # bottom of the deck. The lines ride a fraction of its height, which
-    # keeps them between the cover and the seek bar from 560 units up.
-    line = item("lines", group([
-        item("title", text("%title%", 26, "text_bright"), pos=(0, -34, 0), size=(S(0.86), U(38))),
-        item("artist", text("%artist%", 19, "text"), pos=(0, 2, 0), size=(S(0.86), U(28))),
-        item("album", text("%album% - %year%", 15, "text_dim"), pos=(0, 30, 0), size=(S(0.86), U(24))),
-    ]), pos=(0, S(0.09), 0), size=(S(1), U(104)), name="Lines")
 
     seek = item("seek", grid(panel("seek", {
         "theme": {"surface_opacity": 0.0},
@@ -364,24 +401,21 @@ def deck():
         "items": ["elapsed", "strip", "ending"],
     })), anchor="bottom", pos=(0, -172, 0), size=(S(0.8), U(30)))
 
-    playing = dict(state="player.playback", cases=[case("playing", asset="gel_round_green")])
-    pause = dict(state="player.playback", cases=[case("playing", asset="glyph_pause")])
-    shuffle_lit = dict(state="player.shuffle_on", cases=[case("on", asset="gel_round_green")])
-    repeat_lit = dict(state="player.repeat",
-                      cases=[case("all", asset="gel_round_green"), case("one", asset="gel_round_green")])
-    repeat_one = dict(state="player.repeat", cases=[case("one", asset="glyph_repeat1")])
+    pause = dict(state="player.playback", cases=[case("playing", asset="glyph_pause")], ease=GLYPH_EASE)
+    repeat_one = dict(state="player.repeat", cases=[case("one", asset="glyph_repeat1")], ease=GLYPH_EASE)
 
     buttons = item(
         "buttons",
         group([
             gel_button("shuffle", "toggle_shuffle", 0.14, 44, (0, 4, 0), "glyph_shuffle", anchor="left",
-                       body="gel_round_clear", body_state=shuffle_lit, name="Shuffle"),
+                       hue="clear", state="player.shuffle_on", lit_in=("on",), name="Shuffle"),
             gel_button("previous", "previous_track", 0.17, 54, (S(-0.25), 2, 0), "glyph_prev", name="Previous"),
-            gel_button("play", "toggle_playback", 0.26, 84, (0, 0, 0), "glyph_play", body_state=playing,
-                       glyph_state=pause, name="Play"),
+            gel_button("play", "toggle_playback", 0.26, 84, (0, 0, 0), "glyph_play", state="player.playback",
+                       lit_in=("playing",), glyph_state=pause, name="Play"),
             gel_button("next", "next_track", 0.17, 54, (S(0.25), 2, 0), "glyph_next", name="Next"),
             gel_button("repeat", "cycle_loop", 0.14, 44, (0, 4, 0), "glyph_repeat", anchor="right",
-                       body="gel_round_clear", body_state=repeat_lit, glyph_state=repeat_one, name="Repeat"),
+                       hue="clear", state="player.repeat", lit_in=("all", "one"), glyph_state=repeat_one,
+                       name="Repeat"),
         ]),
         anchor="bottom",
         pos=(0, -74, 0),
@@ -398,12 +432,12 @@ def deck():
 
     droplet = item("droplet", image("droplet", "contain"), anchor="top_right", pos=(-50, 54, 4),
                    size=(U(30), U(40)), opacity=0.9, state="player.playback",
-                   cases=[case("playing", visible=False)], name="Paused drop")
+                   cases=[case("playing", visible=False)], ease=300, name="Paused drop")
 
     frame = item("deck-frame", sliced("glass_pane"), size=(S(1), S(1)), pos=(0, 0, -4),
-                 **themed("glass_pane_night"))
+                 **themed("glass_pane_night", PANE_EASE))
 
-    return item("deck", group([frame, cover, line, seek, buttons, volume, droplet]), anchor="left",
+    return item("deck", group([frame, cover, seek, buttons, volume, droplet]), anchor="left",
                 pos=(S(0.018), 8, 0), size=(S(0.31), S(0.90)), min_size=(290, 560), name="Deck")
 
 
@@ -413,7 +447,7 @@ def deck():
 def sheet():
     # Like the deck, the box takes in the pane's 24-unit shadow.
     frame = item("sheet-frame", sliced("glass_pane"), size=(S(1), S(1)), pos=(0, 0, -4),
-                 **themed("glass_pane_night"))
+                 **themed("glass_pane_night", PANE_EASE))
     shimmer = item("shimmer", shader("Aero Shimmer", [slot(HIGH, 0), slot(LOW, 1)]), size=(S(1), S(1)),
                    pos=(0, 0, -3))
 
@@ -431,7 +465,7 @@ def sheet():
     ), anchor="top", pos=(0, 48, 0), size=(S(0.9), S(0.55)), name="Library")
 
     well = item("well", group([
-        item("well-frame", sliced("glass_well"), size=(S(1), S(1)), **themed("glass_well_night")),
+        item("well-frame", sliced("glass_well"), size=(S(1), S(1)), **themed("glass_well_night", PANE_EASE)),
         item("spectrum", grid(panel("spectrum", {
             "theme": {"surface_opacity": 0.0},
             "style": "bars", "orientation": "bottom", "symmetry": "none",
@@ -443,18 +477,18 @@ def sheet():
 
     screen = item("screen", group([
         item("screen-frame", sliced("glass_screen"), size=(S(1.07), S(1.1)), opacity=0.8,
-             **themed("glass_screen_night")),
+             **themed("glass_screen_night", PANE_EASE)),
         # It follows the pane, whose shape changes with the window. It doesn't rest with the
         # music: a renderer says so itself if it wants to.
         item("renderer", {"kind": "target", "owner": "", "width": 560, "height": 400, "rests": False,
                           "sizing": "follow", "fit": "cover", "config": None}, size=(S(0.93), S(0.88)), pos=(0, 0, 1), name="Render target"),
         item("screen-gloss", image("cover_gloss"), size=(S(0.95), S(0.92)), pos=(0, 0, 2), opacity=0.55,
-             state="app.theme", cases=[case("dark", opacity=0.4)]),
-    ]), anchor="right", pos=(-16, 0, 24), size=(S(0.35), S(0.96)), rot=(-1.5, -12, 0),
-        sway={"rotation": (3, 4, 0)}, name="Screen")
+             state="app.theme", cases=[case("dark", opacity=0.4)], ease=PANE_EASE),
+    ]), anchor="right", pos=(-16, 0, 24), size=(S(0.35), S(0.96)), rot=(0, -12, 0),
+        sway={"rotation": (1.5, 4, 0)}, name="Screen")
     route("screen.ry", MID, 0.0, 1.0)
     # A slow nod, as if the pane hung in moving air.
-    drift("screen.rx", 41, "sine", 0.4, curve="ease_in_out")
+    drift("screen.rx", 41, "sine", 0.4, -1.0, 1.0, curve="ease_in_out")
 
     lower = item("lower", group([well, screen]), anchor="bottom", pos=(0, -44, 0),
                  size=(S(0.9), S(0.29)), min_size=(None, 180), name="Lower")
@@ -469,10 +503,10 @@ def shard():
     brings the sheet up against the deck tucks it away instead of laying it
     over the cover."""
     out = item("shard", image("glass_shard"), anchor="top_left", pos=(S(0.30), S(0.005), -40),
-               size=(S(0.216), S(0.306)), rot=(10, -24, -9), opacity=0.75, sway={"rotation": (0, 5, 4)},
+               size=(S(0.216), S(0.306)), rot=(10, -24, -7), opacity=0.75, sway={"rotation": (0, 5, 2)},
                name="Glass shard")
     route("shard.ry", MID, 0.0, 1.0)
-    drift("shard.rz", 37, "sine", 0.8, curve="ease_in_out")
+    drift("shard.rz", 37, "sine", 0.8, -1.0, 1.0, curve="ease_in_out")
     return out
 
 

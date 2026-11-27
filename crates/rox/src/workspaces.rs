@@ -1775,12 +1775,46 @@ mod tests {
             }
             buttons += 1;
             assert!(
-                item.hover.is_some() && item.pressed.is_some(),
-                "{} has no hover or pressed look",
+                crate::canvas::looks::worn(item),
+                "{} shows no look under the pointer",
                 item.id
             );
+            aero_swaps_in_every_case(item);
         });
         assert!(buttons > 0);
+    }
+
+    /// A picture swapped under the pointer has to be swapped in every case
+    /// that gives the item another picture, or a green gel lights aqua. It
+    /// takes the pointer only where it's drawn, so a button's corners stay
+    /// dead.
+    fn aero_swaps_in_every_case(item: &rox_canvas::CanvasItem) {
+        let swaps = |look: &Option<rox_canvas::Look>| {
+            look.as_ref().is_some_and(|look| !look.asset.is_empty())
+        };
+
+        if swaps(&item.hover) || swaps(&item.pressed) {
+            assert!(
+                swaps(&item.hover) && swaps(&item.pressed),
+                "{} swaps its picture for only one look",
+                item.id
+            );
+            assert_eq!(item.hit, rox_canvas::Hit::Picture, "{}", item.id);
+            for case in item.cases.iter().filter(|case| !case.asset.is_empty()) {
+                assert!(
+                    swaps(&case.hover) && swaps(&case.pressed),
+                    "{} lights the wrong picture in {}",
+                    item.id,
+                    case.when
+                );
+            }
+        }
+
+        if let rox_canvas::Content::Group { items } = &item.content {
+            for child in items.iter().filter(|child| child.action.is_empty()) {
+                aero_swaps_in_every_case(child);
+            }
+        }
     }
 
     #[test]

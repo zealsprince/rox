@@ -498,6 +498,11 @@ def bubble(size):
         return (1.0, 1.0, 1.0, s) if s > 0.004 else None
 
     img.add(gleam)
+
+    # The bubble's 0.95 is drawn in rather than set on the item: the fade
+    # that hides its wrap reads past full, and an item's opacity share stops
+    # only once the item itself is fully opaque.
+    img.px = [v * 0.95 for v in img.px]
     return img
 
 
@@ -682,7 +687,9 @@ def glass(w, h, radius, pad, night, well=False):
 # Nine-sliced panes: radius, shadow pad, gloss band height and whether it's a
 # shadowless well, all in pixels. Each also ships a `_night` copy.
 PANES = {
-    "glass_pane": (26, 24, 110, False),
+    # The deck and the sheet run 560 to 1300 units tall, so a band this deep
+    # reads as gloss on the tall ones without filling the short ones.
+    "glass_pane": (26, 24, 210, False),
     "glass_well": (18, 6, 64, True),
     "glass_screen": (18, 16, 80, False),
 }
@@ -763,7 +770,7 @@ def pane(radius, pad, gloss, night, well=False):
         s = (1.0 - smooth(0.0, 1.0, t)) * gloss_a + gloss_a * 0.25
         s *= 1.0 - smooth(line - 2, line + 2, y_px)
         s *= smooth(0.0, 6.0, -d)
-        return (1.0, 1.0, 1.0, s * 0.55)
+        return (1.0, 1.0, 1.0, s * 0.7)
 
     img.paint(shine)
 
@@ -835,9 +842,11 @@ GELS = {
 }
 
 
-def gel(w, h, hue, pill):
+def gel(w, h, hue, pill, look=None):
     """A gel button: a saturated body lit from below, a top-half gloss
-    under a curve, a dark hairline and a soft glow beneath."""
+    under a curve, a dark hairline and a soft glow beneath. `look` draws
+    the copy a button swaps in under the pointer ("lit") or while pressed
+    ("down")."""
     light, mid, deep = (hexc(c) for c in GELS[hue])
     img = Image(w, h)
     pad = h * 0.12
@@ -887,34 +896,50 @@ def gel(w, h, hue, pill):
         return (1.0, 1.0, 1.0, s * 0.8)
 
     img.paint(shine)
+    if look:
+        gel_look(img, look == "lit", clear)
     return img
 
 
-def gel_look(w, h, lit):
-    """Laid over a round gel of the same size and its glyph, while the pointer
-    is over it (`lit`) or pressing it. A look can swap only the image of the
-    item the pointer hits, and that has to sit in front of the glyph, so these
-    work over every hue the case gives: lit adds a brighter gloss, a bloom at
-    the bottom and a glow ringing the outline; pressed shades the body, sinks
-    a shadow under the top rim and lights the lower one. Both keep the gel's
-    outline, so nothing moves."""
-    img = Image(w, h)
+def gel_look(img, lit, clear):
+    """Paints a round gel's hover or pressed look into its own copy: lit
+    adds a brighter gloss, a bloom at the bottom and a glow ringing the
+    outline; pressed shades the body, sinks a shadow under the top rim and
+    lights the lower one. Both keep the gel's outline, so the button's
+    picture hit test and the swap leave nothing moving."""
+    w, h = img.w, img.h
     pad = h * 0.12
     r = min(w / 2 - pad, h / 2 - pad)
+
+    if lit and clear:
+        # The clear gel is half see-through, and the white light below reads
+        # as milk on it, so its lit copy takes an aqua wash first.
+        def wash(x, y):
+            px, py = x * w - w / 2, y * h - h / 2
+            d = math.hypot(px, py) - r
+            if d > 0.0:
+                return None
+            cover = 1.0 - smooth(-1.2, 0.0, d)
+            depth = (py + r) / (2 * r)
+            return (0.42, 0.86, 1.0, (0.30 + 0.25 * depth) * cover)
+
+        img.paint(wash)
 
     def shade(x, y):
         px, py = x * w - w / 2, y * h - h / 2
         d = math.hypot(px, py) - r
         if lit:
             if d > 0.0:
-                glow = math.exp(-((d / (pad * 0.45)) ** 2)) * 0.75
-                return (0.78, 0.97, 1.0, glow) if glow > 0.003 else None
+                # Cyan rather than white, so the glow still shows on the pale
+                # glass of the light theme.
+                glow = math.exp(-((d / (pad * 0.5)) ** 2)) * 0.75
+                return (0.30, 0.82, 1.0, glow) if glow > 0.003 else None
             cover = 1.0 - smooth(-1.2, 0.0, d)
             ring = math.exp(-((d + 2.6) / 1.4) ** 2) * 0.55
             gloss = 0.0
             if py < -r * 0.06:
                 t = (py + r) / (r * 0.94)
-                gloss = (0.32 - 0.24 * t) * smooth(0.0, 4.0, -d - 2.0)
+                gloss = (0.18 - 0.12 * t) * smooth(0.0, 4.0, -d - 2.0)
             bloom = math.exp(-(((py - r * 0.62) / (r * 0.42)) ** 2) - (px / (r * 0.7)) ** 2) * 0.5
             s = min(ring + gloss + bloom, 1.0)
             # Tinted toward the bloom's cyan so lit reads as more light, not milk.
@@ -942,8 +967,6 @@ def gel_look(w, h, lit):
             return (0.75, 0.95, 1.0, lip) if lip > 0.003 else None
 
         img.paint(under)
-
-    return img
 
 
 def glyph(size, kind):
@@ -1064,14 +1087,11 @@ def main():
     save("cover_gloss.png", cover_gloss(512, 14))
     save("shadow.png", shadow(160, 160, 40, 28))
 
+    # Each gel with the whole copies its hover and pressed looks swap in.
     for hue in ("aqua", "green", "clear"):
         save(f"gel_round_{hue}.png", gel(208, 208, hue, False))
-
-    # The click layer over each button: clear at rest, so its hover and
-    # pressed looks can swap in the lit and pressed overlays.
-    save("gel_cap.png", Image(4, 4))
-    save("gel_lit.png", gel_look(208, 208, True))
-    save("gel_down.png", gel_look(208, 208, False))
+        save(f"gel_round_{hue}_lit.png", gel(208, 208, hue, False, "lit"))
+        save(f"gel_round_{hue}_down.png", gel(208, 208, hue, False, "down"))
     for kind in ("play", "pause", "next", "prev", "shuffle", "repeat", "repeat1"):
         save(f"glyph_{kind}.png", glyph(128, kind))
 

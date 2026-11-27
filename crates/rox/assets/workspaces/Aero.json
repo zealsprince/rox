@@ -29,21 +29,21 @@
                       },
                       "items": [
                         {
-                          "id": "sky-drift",
-                          "name": "Sky drift",
+                          "id": "sky-box",
+                          "name": "Sky",
                           "place": {
                             "anchor": "center",
                             "position": [
-                              -30.0,
                               0.0,
+                              -40.0,
                               -420.0
                             ],
                             "size": [
                               {
-                                "stage": 1
+                                "stage": 1.5
                               },
                               {
-                                "stage": 1
+                                "stage": 1.5
                               }
                             ],
                             "rotation": [
@@ -60,21 +60,21 @@
                             "kind": "group",
                             "items": [
                               {
-                                "id": "sky-box",
-                                "name": "Sky",
+                                "id": "sky",
+                                "name": "",
                                 "place": {
                                   "anchor": "center",
                                   "position": [
                                     0.0,
-                                    -40.0,
+                                    0.0,
                                     0.0
                                   ],
                                   "size": [
                                     {
-                                      "stage": 1.5
+                                      "stage": 1
                                     },
                                     {
-                                      "stage": 1.5
+                                      "stage": 1
                                     }
                                   ],
                                   "rotation": [
@@ -88,215 +88,141 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "sky",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "sky_day",
-                                        "fit": "cover"
-                                      },
-                                      "state": "app.theme",
-                                      "cases": [
-                                        {
-                                          "when": "dark",
-                                          "visible": true,
-                                          "opacity": 1.0,
-                                          "asset": "sky_night"
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "id": "rays",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          1.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "shader",
-                                        "shader": {
-                                          "enabled": true,
-                                          "source": "",
-                                          "name": "Aero Rays",
-                                          "path": null,
-                                          "routes": [
-                                            {
-                                              "enabled": true,
-                                              "signal": 2,
-                                              "target": "slot0",
-                                              "from": 0.0,
-                                              "to": 1.0
-                                            },
-                                            {
-                                              "enabled": true,
-                                              "signal": 4,
-                                              "target": "slot1",
-                                              "from": 0.0,
-                                              "to": 1.0
-                                            }
-                                          ],
-                                          "run_when_idle": false
-                                        }
-                                      }
-                                    },
-                                    {
-                                      "id": "sun",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "top_left",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.66
-                                          },
-                                          {
-                                            "stage": 0.06
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "group",
-                                        "items": [
-                                          {
-                                            "id": "flare",
-                                            "name": "",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                2.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "units": 820
-                                                },
-                                                {
-                                                  "units": 820
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 0.6,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "flare",
-                                              "fit": "contain"
-                                            },
-                                            "sway": {
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                360.0
-                                              ]
-                                            }
-                                          }
-                                        ]
-                                      },
-                                      "state": "app.theme",
-                                      "cases": [
-                                        {
-                                          "when": "dark",
-                                          "visible": true,
-                                          "opacity": 0.3
-                                        }
-                                      ]
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "sky_day",
+                                  "fit": "cover"
                                 },
-                                "sway": {
+                                "state": "app.theme",
+                                "cases": [
+                                  {
+                                    "when": "dark",
+                                    "visible": true,
+                                    "opacity": 1.0,
+                                    "asset": "sky_night"
+                                  }
+                                ],
+                                "ease": 600
+                              },
+                              {
+                                "id": "rays",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
                                   "position": [
-                                    18.0,
-                                    6.0,
-                                    0.0
+                                    0.0,
+                                    0.0,
+                                    1.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "stage": 1
+                                    },
+                                    {
+                                      "stage": 1
+                                    }
                                   ],
                                   "rotation": [
                                     0.0,
                                     0.0,
                                     0.0
-                                  ]
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 1.0,
+                                "content": {
+                                  "kind": "shader",
+                                  "shader": {
+                                    "enabled": true,
+                                    "source": "",
+                                    "name": "Aero Rays",
+                                    "path": null,
+                                    "routes": [
+                                      {
+                                        "enabled": true,
+                                        "signal": 2,
+                                        "target": "slot0",
+                                        "from": 0.0,
+                                        "to": 1.0
+                                      },
+                                      {
+                                        "enabled": true,
+                                        "signal": 4,
+                                        "target": "slot1",
+                                        "from": 0.0,
+                                        "to": 1.0
+                                      }
+                                    ],
+                                    "run_when_idle": false
+                                  }
                                 }
+                              },
+                              {
+                                "id": "flare",
+                                "name": "",
+                                "place": {
+                                  "anchor": "center",
+                                  "position": [
+                                    {
+                                      "stage": -0.17
+                                    },
+                                    {
+                                      "stage": -0.47
+                                    },
+                                    2.0
+                                  ],
+                                  "size": [
+                                    {
+                                      "units": 820
+                                    },
+                                    {
+                                      "units": 820
+                                    }
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "scale": 1.0
+                                },
+                                "visible": true,
+                                "locked": false,
+                                "opacity": 0.6,
+                                "content": {
+                                  "kind": "image",
+                                  "asset": "flare",
+                                  "fit": "contain"
+                                },
+                                "sway": {
+                                  "position": [
+                                    0.0,
+                                    0.0,
+                                    0.0
+                                  ],
+                                  "rotation": [
+                                    0.0,
+                                    0.0,
+                                    360.0
+                                  ]
+                                },
+                                "state": "app.theme",
+                                "cases": [
+                                  {
+                                    "when": "dark",
+                                    "visible": true,
+                                    "opacity": 0.3
+                                  }
+                                ],
+                                "ease": 600
                               }
                             ]
                           },
                           "sway": {
                             "position": [
                               60.0,
-                              0.0,
+                              6.0,
                               0.0
                             ],
                             "rotation": [
@@ -312,7 +238,7 @@
                           "place": {
                             "anchor": "center",
                             "position": [
-                              -24.0,
+                              0.0,
                               0.0,
                               -340.0
                             ],
@@ -437,7 +363,7 @@
                           },
                           "sway": {
                             "position": [
-                              48.0,
+                              24.0,
                               0.0,
                               0.0
                             ],
@@ -459,7 +385,8 @@
                               "visible": true,
                               "opacity": 1.0
                             }
-                          ]
+                          ],
+                          "ease": 600
                         },
                         {
                           "id": "air",
@@ -531,8 +458,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    40.0,
-                                    26.0,
+                                    20.0,
+                                    13.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -581,8 +508,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    30.0,
-                                    20.0,
+                                    15.0,
+                                    10.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -631,8 +558,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    36.0,
-                                    24.0,
+                                    18.0,
+                                    12.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -681,8 +608,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    28.0,
-                                    30.0,
+                                    14.0,
+                                    15.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -731,8 +658,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    32.0,
-                                    22.0,
+                                    16.0,
+                                    11.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -781,8 +708,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    24.0,
-                                    18.0,
+                                    12.0,
+                                    9.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -831,8 +758,8 @@
                                 },
                                 "sway": {
                                   "position": [
-                                    20.0,
-                                    16.0,
+                                    10.0,
+                                    8.0,
                                     0.0
                                   ],
                                   "rotation": [
@@ -886,7 +813,8 @@
                               "opacity": 1.0,
                               "asset": "hills_back_night"
                             }
-                          ]
+                          ],
+                          "ease": 600
                         },
                         {
                           "id": "hills-front",
@@ -929,7 +857,8 @@
                               "opacity": 1.0,
                               "asset": "hills_front_night"
                             }
-                          ]
+                          ],
+                          "ease": 600
                         },
                         {
                           "id": "bubbles",
@@ -993,59 +922,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-1-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_l",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          36.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_l",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    34.0,
+                                    36.0,
                                     -1250.0,
                                     0.0
                                   ],
@@ -1087,59 +970,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-2-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_s",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          -24.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    18.0,
+                                    24.0,
                                     -1150.0,
                                     0.0
                                   ],
@@ -1181,59 +1018,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-3-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_m",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          30.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_m",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    26.0,
+                                    30.0,
                                     -1200.0,
                                     0.0
                                   ],
@@ -1275,59 +1066,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-4-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_s",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          -18.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    14.0,
+                                    18.0,
                                     -1100.0,
                                     0.0
                                   ],
@@ -1369,59 +1114,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-5-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_l",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          28.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_l",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    30.0,
+                                    28.0,
                                     -1300.0,
                                     0.0
                                   ],
@@ -1463,59 +1162,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-6-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_m",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          -30.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_m",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    24.0,
+                                    30.0,
                                     -1250.0,
                                     0.0
                                   ],
@@ -1557,59 +1210,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-7-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_s",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          20.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    12.0,
+                                    20.0,
                                     -1100.0,
                                     0.0
                                   ],
@@ -1651,59 +1258,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-8-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_m",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          -26.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_m",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    22.0,
+                                    26.0,
                                     -1200.0,
                                     0.0
                                   ],
@@ -1745,59 +1306,13 @@
                                 "locked": false,
                                 "opacity": 1.0,
                                 "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "bubble-9-ball",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 1
-                                          },
-                                          {
-                                            "stage": 1
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 0.95,
-                                      "content": {
-                                        "kind": "image",
-                                        "asset": "bubble_s",
-                                        "fit": "contain"
-                                      },
-                                      "sway": {
-                                        "position": [
-                                          16.0,
-                                          -40.0,
-                                          0.0
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ]
-                                      }
-                                    }
-                                  ]
+                                  "kind": "image",
+                                  "asset": "bubble_s",
+                                  "fit": "contain"
                                 },
                                 "sway": {
                                   "position": [
-                                    10.0,
+                                    16.0,
                                     -1050.0,
                                     0.0
                                   ],
@@ -1836,7 +1351,7 @@
                             "rotation": [
                               10.0,
                               -24.0,
-                              -9.0
+                              -7.0
                             ],
                             "scale": 1.0
                           },
@@ -1857,7 +1372,7 @@
                             "rotation": [
                               0.0,
                               5.0,
-                              4.0
+                              2.0
                             ]
                           }
                         },
@@ -1932,7 +1447,7 @@
                                   "fit": "stretch",
                                   "slice": [
                                     64,
-                                    144,
+                                    244,
                                     64,
                                     68
                                   ]
@@ -1945,26 +1460,32 @@
                                     "opacity": 1.0,
                                     "asset": "glass_pane_night"
                                   }
-                                ]
+                                ],
+                                "ease": 120
                               },
                               {
                                 "id": "cover-box",
                                 "name": "Cover",
                                 "place": {
-                                  "anchor": "top",
+                                  "anchor": "center",
                                   "position": [
                                     0.0,
-                                    48.0,
+                                    -146.0,
                                     0.0
                                   ],
                                   "size": [
                                     {
-                                      "stage": 1
+                                      "stage": 0.74
                                     },
                                     {
-                                      "stage": 0.46
+                                      "stage": 0.4
                                     }
                                   ],
+                                  "max_size": [
+                                    540.0,
+                                    540.0
+                                  ],
+                                  "aspect": 1.0,
                                   "rotation": [
                                     0.0,
                                     0.0,
@@ -1990,15 +1511,11 @@
                                         ],
                                         "size": [
                                           {
-                                            "stage": 0.74
+                                            "stage": 1.12
                                           },
                                           {
-                                            "stage": 0.96
+                                            "stage": 1.12
                                           }
-                                        ],
-                                        "max_size": [
-                                          520.0,
-                                          520.0
                                         ],
                                         "rotation": [
                                           0.0,
@@ -2014,7 +1531,16 @@
                                         "kind": "image",
                                         "asset": "shadow",
                                         "fit": "stretch"
-                                      }
+                                      },
+                                      "state": "player.stop",
+                                      "cases": [
+                                        {
+                                          "when": "idle",
+                                          "visible": false,
+                                          "opacity": 1.0
+                                        }
+                                      ],
+                                      "ease": 250
                                     },
                                     {
                                       "id": "cover",
@@ -2028,15 +1554,11 @@
                                         ],
                                         "size": [
                                           {
-                                            "stage": 0.66
+                                            "stage": 1
                                           },
                                           {
-                                            "stage": 0.86
+                                            "stage": 1
                                           }
-                                        ],
-                                        "max_size": [
-                                          460.0,
-                                          460.0
                                         ],
                                         "rotation": [
                                           0.0,
@@ -2103,15 +1625,11 @@
                                         ],
                                         "size": [
                                           {
-                                            "stage": 0.66
+                                            "stage": 1
                                           },
                                           {
-                                            "stage": 0.86
+                                            "stage": 1
                                           }
-                                        ],
-                                        "max_size": [
-                                          460.0,
-                                          460.0
                                         ],
                                         "rotation": [
                                           0.0,
@@ -2128,59 +1646,23 @@
                                         "asset": "cover_gloss",
                                         "fit": "stretch"
                                       }
-                                    }
-                                  ]
-                                }
-                              },
-                              {
-                                "id": "lines",
-                                "name": "Lines",
-                                "place": {
-                                  "anchor": "center",
-                                  "position": [
-                                    0.0,
-                                    {
-                                      "stage": 0.09
-                                    },
-                                    0.0
-                                  ],
-                                  "size": [
-                                    {
-                                      "stage": 1
                                     },
                                     {
-                                      "units": 104
-                                    }
-                                  ],
-                                  "rotation": [
-                                    0.0,
-                                    0.0,
-                                    0.0
-                                  ],
-                                  "scale": 1.0
-                                },
-                                "visible": true,
-                                "locked": false,
-                                "opacity": 1.0,
-                                "content": {
-                                  "kind": "group",
-                                  "items": [
-                                    {
-                                      "id": "title",
-                                      "name": "",
+                                      "id": "lines",
+                                      "name": "Lines",
                                       "place": {
-                                        "anchor": "center",
+                                        "anchor": "bottom",
                                         "position": [
                                           0.0,
-                                          -34.0,
+                                          126.0,
                                           0.0
                                         ],
                                         "size": [
                                           {
-                                            "stage": 0.86
+                                            "stage": 1.15
                                           },
                                           {
-                                            "units": 38
+                                            "units": 104
                                           }
                                         ],
                                         "rotation": [
@@ -2194,86 +1676,120 @@
                                       "locked": false,
                                       "opacity": 1.0,
                                       "content": {
-                                        "kind": "text",
-                                        "text": "%title%",
-                                        "font": null,
-                                        "size": 26,
-                                        "color": "text_bright",
-                                        "align": "center"
-                                      }
-                                    },
-                                    {
-                                      "id": "artist",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          2.0,
-                                          0.0
-                                        ],
-                                        "size": [
+                                        "kind": "group",
+                                        "items": [
                                           {
-                                            "stage": 0.86
+                                            "id": "title",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                -34.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1
+                                                },
+                                                {
+                                                  "units": 38
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "text",
+                                              "text": "%title%",
+                                              "font": null,
+                                              "size": 26,
+                                              "color": "text_bright",
+                                              "align": "center"
+                                            }
                                           },
                                           {
-                                            "units": 28
-                                          }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "text",
-                                        "text": "%artist%",
-                                        "font": null,
-                                        "size": 19,
-                                        "color": "text",
-                                        "align": "center"
-                                      }
-                                    },
-                                    {
-                                      "id": "album",
-                                      "name": "",
-                                      "place": {
-                                        "anchor": "center",
-                                        "position": [
-                                          0.0,
-                                          30.0,
-                                          0.0
-                                        ],
-                                        "size": [
-                                          {
-                                            "stage": 0.86
+                                            "id": "artist",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                2.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1
+                                                },
+                                                {
+                                                  "units": 28
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "text",
+                                              "text": "%artist%",
+                                              "font": null,
+                                              "size": 19,
+                                              "color": "text",
+                                              "align": "center"
+                                            }
                                           },
                                           {
-                                            "units": 24
+                                            "id": "album",
+                                            "name": "",
+                                            "place": {
+                                              "anchor": "center",
+                                              "position": [
+                                                0.0,
+                                                30.0,
+                                                0.0
+                                              ],
+                                              "size": [
+                                                {
+                                                  "stage": 1
+                                                },
+                                                {
+                                                  "units": 24
+                                                }
+                                              ],
+                                              "rotation": [
+                                                0.0,
+                                                0.0,
+                                                0.0
+                                              ],
+                                              "scale": 1.0
+                                            },
+                                            "visible": true,
+                                            "locked": false,
+                                            "opacity": 1.0,
+                                            "content": {
+                                              "kind": "text",
+                                              "text": "%album% - %year%",
+                                              "font": null,
+                                              "size": 15,
+                                              "color": "text_dim",
+                                              "align": "center"
+                                            }
                                           }
-                                        ],
-                                        "rotation": [
-                                          0.0,
-                                          0.0,
-                                          0.0
-                                        ],
-                                        "scale": 1.0
-                                      },
-                                      "visible": true,
-                                      "locked": false,
-                                      "opacity": 1.0,
-                                      "content": {
-                                        "kind": "text",
-                                        "text": "%album% - %year%",
-                                        "font": null,
-                                        "size": 15,
-                                        "color": "text_dim",
-                                        "align": "center"
+                                        ]
                                       }
                                     }
                                   ]
@@ -2464,9 +1980,22 @@
                                                 "when": "on",
                                                 "visible": true,
                                                 "opacity": 1.0,
-                                                "asset": "gel_round_green"
+                                                "asset": "gel_round_green",
+                                                "hover": {
+                                                  "asset": "gel_round_green_lit"
+                                                },
+                                                "pressed": {
+                                                  "asset": "gel_round_green_down"
+                                                }
                                               }
-                                            ]
+                                            ],
+                                            "hover": {
+                                              "asset": "gel_round_clear_lit"
+                                            },
+                                            "pressed": {
+                                              "asset": "gel_round_clear_down"
+                                            },
+                                            "hit": "picture"
                                           },
                                           {
                                             "id": "shuffle-glyph",
@@ -2500,53 +2029,15 @@
                                               "kind": "image",
                                               "asset": "glyph_shuffle",
                                               "fit": "contain"
-                                            }
-                                          },
-                                          {
-                                            "id": "shuffle-cap",
-                                            "name": "Shuffle",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                2.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_cap",
-                                              "fit": "contain"
-                                            },
-                                            "action": "toggle_shuffle",
-                                            "hover": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_lit"
                                             },
                                             "pressed": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_down"
-                                            }
+                                              "opacity": 0.8
+                                            },
+                                            "hit": false
                                           }
                                         ]
-                                      }
+                                      },
+                                      "action": "toggle_shuffle"
                                     },
                                     {
                                       "id": "previous",
@@ -2617,7 +2108,14 @@
                                               "kind": "image",
                                               "asset": "gel_round_aqua",
                                               "fit": "contain"
-                                            }
+                                            },
+                                            "hover": {
+                                              "asset": "gel_round_aqua_lit"
+                                            },
+                                            "pressed": {
+                                              "asset": "gel_round_aqua_down"
+                                            },
+                                            "hit": "picture"
                                           },
                                           {
                                             "id": "previous-glyph",
@@ -2651,53 +2149,15 @@
                                               "kind": "image",
                                               "asset": "glyph_prev",
                                               "fit": "contain"
-                                            }
-                                          },
-                                          {
-                                            "id": "previous-cap",
-                                            "name": "Previous",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                2.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_cap",
-                                              "fit": "contain"
-                                            },
-                                            "action": "previous_track",
-                                            "hover": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_lit"
                                             },
                                             "pressed": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_down"
-                                            }
+                                              "opacity": 0.8
+                                            },
+                                            "hit": false
                                           }
                                         ]
-                                      }
+                                      },
+                                      "action": "previous_track"
                                     },
                                     {
                                       "id": "play",
@@ -2773,9 +2233,22 @@
                                                 "when": "playing",
                                                 "visible": true,
                                                 "opacity": 1.0,
-                                                "asset": "gel_round_green"
+                                                "asset": "gel_round_green",
+                                                "hover": {
+                                                  "asset": "gel_round_green_lit"
+                                                },
+                                                "pressed": {
+                                                  "asset": "gel_round_green_down"
+                                                }
                                               }
-                                            ]
+                                            ],
+                                            "hover": {
+                                              "asset": "gel_round_aqua_lit"
+                                            },
+                                            "pressed": {
+                                              "asset": "gel_round_aqua_down"
+                                            },
+                                            "hit": "picture"
                                           },
                                           {
                                             "id": "play-glyph",
@@ -2818,53 +2291,16 @@
                                                 "opacity": 1.0,
                                                 "asset": "glyph_pause"
                                               }
-                                            ]
-                                          },
-                                          {
-                                            "id": "play-cap",
-                                            "name": "Play",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                2.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_cap",
-                                              "fit": "contain"
-                                            },
-                                            "action": "toggle_playback",
-                                            "hover": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_lit"
-                                            },
+                                            ],
                                             "pressed": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_down"
-                                            }
+                                              "opacity": 0.8
+                                            },
+                                            "hit": false,
+                                            "ease": 0
                                           }
                                         ]
-                                      }
+                                      },
+                                      "action": "toggle_playback"
                                     },
                                     {
                                       "id": "next",
@@ -2935,7 +2371,14 @@
                                               "kind": "image",
                                               "asset": "gel_round_aqua",
                                               "fit": "contain"
-                                            }
+                                            },
+                                            "hover": {
+                                              "asset": "gel_round_aqua_lit"
+                                            },
+                                            "pressed": {
+                                              "asset": "gel_round_aqua_down"
+                                            },
+                                            "hit": "picture"
                                           },
                                           {
                                             "id": "next-glyph",
@@ -2969,53 +2412,15 @@
                                               "kind": "image",
                                               "asset": "glyph_next",
                                               "fit": "contain"
-                                            }
-                                          },
-                                          {
-                                            "id": "next-cap",
-                                            "name": "Next",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                2.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_cap",
-                                              "fit": "contain"
-                                            },
-                                            "action": "next_track",
-                                            "hover": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_lit"
                                             },
                                             "pressed": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_down"
-                                            }
+                                              "opacity": 0.8
+                                            },
+                                            "hit": false
                                           }
                                         ]
-                                      }
+                                      },
+                                      "action": "next_track"
                                     },
                                     {
                                       "id": "repeat",
@@ -3091,15 +2496,34 @@
                                                 "when": "all",
                                                 "visible": true,
                                                 "opacity": 1.0,
-                                                "asset": "gel_round_green"
+                                                "asset": "gel_round_green",
+                                                "hover": {
+                                                  "asset": "gel_round_green_lit"
+                                                },
+                                                "pressed": {
+                                                  "asset": "gel_round_green_down"
+                                                }
                                               },
                                               {
                                                 "when": "one",
                                                 "visible": true,
                                                 "opacity": 1.0,
-                                                "asset": "gel_round_green"
+                                                "asset": "gel_round_green",
+                                                "hover": {
+                                                  "asset": "gel_round_green_lit"
+                                                },
+                                                "pressed": {
+                                                  "asset": "gel_round_green_down"
+                                                }
                                               }
-                                            ]
+                                            ],
+                                            "hover": {
+                                              "asset": "gel_round_clear_lit"
+                                            },
+                                            "pressed": {
+                                              "asset": "gel_round_clear_down"
+                                            },
+                                            "hit": "picture"
                                           },
                                           {
                                             "id": "repeat-glyph",
@@ -3142,53 +2566,16 @@
                                                 "opacity": 1.0,
                                                 "asset": "glyph_repeat1"
                                               }
-                                            ]
-                                          },
-                                          {
-                                            "id": "repeat-cap",
-                                            "name": "Repeat",
-                                            "place": {
-                                              "anchor": "center",
-                                              "position": [
-                                                0.0,
-                                                0.0,
-                                                2.0
-                                              ],
-                                              "size": [
-                                                {
-                                                  "stage": 1
-                                                },
-                                                {
-                                                  "stage": 1
-                                                }
-                                              ],
-                                              "rotation": [
-                                                0.0,
-                                                0.0,
-                                                0.0
-                                              ],
-                                              "scale": 1.0
-                                            },
-                                            "visible": true,
-                                            "locked": false,
-                                            "opacity": 1.0,
-                                            "content": {
-                                              "kind": "image",
-                                              "asset": "gel_cap",
-                                              "fit": "contain"
-                                            },
-                                            "action": "cycle_loop",
-                                            "hover": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_lit"
-                                            },
+                                            ],
                                             "pressed": {
-                                              "opacity": 1.0,
-                                              "asset": "gel_down"
-                                            }
+                                              "opacity": 0.8
+                                            },
+                                            "hit": false,
+                                            "ease": 0
                                           }
                                         ]
-                                      }
+                                      },
+                                      "action": "cycle_loop"
                                     }
                                   ]
                                 }
@@ -3311,7 +2698,8 @@
                                     "visible": false,
                                     "opacity": 1.0
                                   }
-                                ]
+                                ],
+                                "ease": 300
                               }
                             ]
                           }
@@ -3387,7 +2775,7 @@
                                   "fit": "stretch",
                                   "slice": [
                                     64,
-                                    144,
+                                    244,
                                     64,
                                     68
                                   ]
@@ -3400,7 +2788,8 @@
                                     "opacity": 1.0,
                                     "asset": "glass_pane_night"
                                   }
-                                ]
+                                ],
+                                "ease": 120
                               },
                               {
                                 "id": "shimmer",
@@ -3686,7 +3075,8 @@
                                                 "opacity": 1.0,
                                                 "asset": "glass_well_night"
                                               }
-                                            ]
+                                            ],
+                                            "ease": 120
                                           },
                                           {
                                             "id": "spectrum",
@@ -3793,7 +3183,7 @@
                                           }
                                         ],
                                         "rotation": [
-                                          -1.5,
+                                          0.0,
                                           -12.0,
                                           0.0
                                         ],
@@ -3852,7 +3242,8 @@
                                                 "opacity": 1.0,
                                                 "asset": "glass_screen_night"
                                               }
-                                            ]
+                                            ],
+                                            "ease": 120
                                           },
                                           {
                                             "id": "renderer",
@@ -3933,7 +3324,8 @@
                                                 "visible": true,
                                                 "opacity": 0.4
                                               }
-                                            ]
+                                            ],
+                                            "ease": 120
                                           }
                                         ]
                                       },
@@ -3944,7 +3336,7 @@
                                           0.0
                                         ],
                                         "rotation": [
-                                          3.0,
+                                          1.5,
                                           4.0,
                                           0.0
                                         ]
@@ -4104,10 +3496,22 @@
                       "routes": [
                         {
                           "enabled": true,
+                          "signal": 0,
+                          "target": "sky-box.x",
+                          "from": -0.5,
+                          "to": 0.5,
+                          "time": {
+                            "period": 130.0,
+                            "shape": "sine",
+                            "phase": 0.25
+                          }
+                        },
+                        {
+                          "enabled": true,
                           "signal": 2,
                           "target": "sky-box.x",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.3
                         },
                         {
                           "enabled": true,
@@ -4140,18 +3544,6 @@
                             "period": 240.0,
                             "shape": "saw",
                             "phase": 0.0
-                          }
-                        },
-                        {
-                          "enabled": true,
-                          "signal": 0,
-                          "target": "sky-drift.x",
-                          "from": 0.0,
-                          "to": 1.0,
-                          "time": {
-                            "period": 130.0,
-                            "shape": "sine",
-                            "phase": 0.25
                           }
                         },
                         {
@@ -4200,7 +3592,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "aurora.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 70.0,
@@ -4231,7 +3623,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-1.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 47.0,
@@ -4243,7 +3635,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-1.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 61.0,
@@ -4262,7 +3654,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-2.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 39.0,
@@ -4274,7 +3666,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-2.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 53.0,
@@ -4293,7 +3685,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-3.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 57.0,
@@ -4305,7 +3697,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-3.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 43.0,
@@ -4324,7 +3716,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-4.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 34.0,
@@ -4336,7 +3728,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-4.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 49.0,
@@ -4355,7 +3747,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-5.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 51.0,
@@ -4367,7 +3759,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bokeh-5.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 37.0,
@@ -4386,7 +3778,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "ghost-1.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 44.0,
@@ -4398,7 +3790,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "ghost-1.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 58.0,
@@ -4417,7 +3809,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "ghost-2.x",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 36.0,
@@ -4429,7 +3821,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "ghost-2.y",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 63.0,
@@ -4465,8 +3857,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-1.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.4722,
+                          "to": 0.4722,
                           "time": {
                             "period": 10.2,
                             "shape": "sine",
@@ -4476,21 +3868,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-1-ball.y",
+                          "target": "bubble-1.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.032
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-1-ball.x",
+                          "target": "bubble-1.x",
                           "from": 0.0,
                           "to": 1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-1-ball.scale",
+                          "target": "bubble-1.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4522,8 +3914,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-2.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.375,
+                          "to": 0.375,
                           "time": {
                             "period": 7.5,
                             "shape": "sine",
@@ -4533,21 +3925,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-2-ball.y",
+                          "target": "bubble-2.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.03478
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-2-ball.x",
+                          "target": "bubble-2.x",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": -1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-2-ball.scale",
+                          "target": "bubble-2.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4579,8 +3971,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-3.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.4333,
+                          "to": 0.4333,
                           "time": {
                             "period": 8.7,
                             "shape": "sine",
@@ -4590,21 +3982,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-3-ball.y",
+                          "target": "bubble-3.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.03333
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-3-ball.x",
+                          "target": "bubble-3.x",
                           "from": 0.0,
                           "to": 1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-3-ball.scale",
+                          "target": "bubble-3.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4636,8 +4028,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-4.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.3889,
+                          "to": 0.3889,
                           "time": {
                             "period": 6.5,
                             "shape": "sine",
@@ -4647,21 +4039,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-4-ball.y",
+                          "target": "bubble-4.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.03636
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-4-ball.x",
+                          "target": "bubble-4.x",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": -1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-4-ball.scale",
+                          "target": "bubble-4.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4693,8 +4085,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-5.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.5357,
+                          "to": 0.5357,
                           "time": {
                             "period": 11.3,
                             "shape": "sine",
@@ -4704,21 +4096,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-5-ball.y",
+                          "target": "bubble-5.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.03077
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-5-ball.x",
+                          "target": "bubble-5.x",
                           "from": 0.0,
                           "to": 1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-5-ball.scale",
+                          "target": "bubble-5.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4750,8 +4142,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-6.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.4,
+                          "to": 0.4,
                           "time": {
                             "period": 9.2,
                             "shape": "sine",
@@ -4761,21 +4153,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-6-ball.y",
+                          "target": "bubble-6.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.032
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-6-ball.x",
+                          "target": "bubble-6.x",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": -1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-6-ball.scale",
+                          "target": "bubble-6.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4807,8 +4199,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-7.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.3,
+                          "to": 0.3,
                           "time": {
                             "period": 7.0,
                             "shape": "sine",
@@ -4818,21 +4210,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-7-ball.y",
+                          "target": "bubble-7.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.03636
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-7-ball.x",
+                          "target": "bubble-7.x",
                           "from": 0.0,
                           "to": 1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-7-ball.scale",
+                          "target": "bubble-7.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4864,8 +4256,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-8.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.4231,
+                          "to": 0.4231,
                           "time": {
                             "period": 9.7,
                             "shape": "sine",
@@ -4875,21 +4267,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-8-ball.y",
+                          "target": "bubble-8.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.03333
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-8-ball.x",
+                          "target": "bubble-8.x",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": -1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-8-ball.scale",
+                          "target": "bubble-8.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4921,8 +4313,8 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "bubble-9.x",
-                          "from": 0.0,
-                          "to": 1.0,
+                          "from": -0.3125,
+                          "to": 0.3125,
                           "time": {
                             "period": 6.0,
                             "shape": "sine",
@@ -4932,21 +4324,21 @@
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-9-ball.y",
+                          "target": "bubble-9.y",
                           "from": 0.0,
-                          "to": 1.0
+                          "to": 0.0381
                         },
                         {
                           "enabled": true,
                           "signal": 2,
-                          "target": "bubble-9-ball.x",
+                          "target": "bubble-9.x",
                           "from": 0.0,
                           "to": 1.0
                         },
                         {
                           "enabled": true,
                           "signal": 1,
-                          "target": "bubble-9-ball.scale",
+                          "target": "bubble-9.scale",
                           "from": 1.0,
                           "to": 1.16
                         },
@@ -4961,7 +4353,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "shard.rz",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 37.0,
@@ -4988,7 +4380,7 @@
                           "enabled": true,
                           "signal": 0,
                           "target": "screen.rx",
-                          "from": 0.0,
+                          "from": -1.0,
                           "to": 1.0,
                           "time": {
                             "period": 41.0,
@@ -5177,22 +4569,22 @@
       "id": "bubble_l",
       "file": "bubble_l.png",
       "kind": "image",
-      "sha256": "d6cde8e6f46bb0b9692efb7f40ef111e8af4fbb1cc74adfa52972188e201921c",
-      "bytes": 48939
+      "sha256": "7574762dcd1ec28e027a7bfbbe1502e8bb289ed9fbd5694f9f25ce3abbd0db6e",
+      "bytes": 48306
     },
     {
       "id": "bubble_m",
       "file": "bubble_m.png",
       "kind": "image",
-      "sha256": "10f924dd885e19d0d7d020275e79852791a2248a82d5e7346c2c5af50a46fbae",
-      "bytes": 26186
+      "sha256": "def836a25a5400d7b89224d106d2c7bf93cdd52b882644d2c817c57668277848",
+      "bytes": 25916
     },
     {
       "id": "bubble_s",
       "file": "bubble_s.png",
       "kind": "image",
-      "sha256": "c1bdc06d475481cc2ea47afd2e9c7a702bdbcc20fffa12c7912f933198f32636",
-      "bytes": 13227
+      "sha256": "ec7d2d254b27b8323ae82eacbb5fc47f1097afcdf799111fd1cc5bb4c1c1f4ad",
+      "bytes": 13038
     },
     {
       "id": "cover_gloss",
@@ -5216,32 +4608,25 @@
       "bytes": 104820
     },
     {
-      "id": "gel_cap",
-      "file": "gel_cap.png",
-      "kind": "image",
-      "sha256": "f164334dc3985e3b8d95b71e59462c9c4f6d80c7ede23238c8759d9c4495a6db",
-      "bytes": 69
-    },
-    {
-      "id": "gel_down",
-      "file": "gel_down.png",
-      "kind": "image",
-      "sha256": "a368d85a44a076ea849473bc7cd61cec3e87f93e7be29c3ea2c78c59f495c1b5",
-      "bytes": 9254
-    },
-    {
-      "id": "gel_lit",
-      "file": "gel_lit.png",
-      "kind": "image",
-      "sha256": "da2d1765b239a9e35b47f2267852ee3ef42f5404bf4f82fd045e5558d8dfefd4",
-      "bytes": 15672
-    },
-    {
       "id": "gel_round_aqua",
       "file": "gel_round_aqua.png",
       "kind": "image",
       "sha256": "705d658f6cd4d9a90f3c22e7fc1b3a62bea7a5316320ef1d20e4f59a25ab3419",
       "bytes": 17112
+    },
+    {
+      "id": "gel_round_aqua_down",
+      "file": "gel_round_aqua_down.png",
+      "kind": "image",
+      "sha256": "c1950e56cd64d0bda90a73687b22913dad225311c6d0294c26bf7b18c88f222d",
+      "bytes": 22331
+    },
+    {
+      "id": "gel_round_aqua_lit",
+      "file": "gel_round_aqua_lit.png",
+      "kind": "image",
+      "sha256": "0987177e9f5ec3fcd0f22d1d4da5e7c3f9d4822f8d17ce696124eb6bfb9e8527",
+      "bytes": 31145
     },
     {
       "id": "gel_round_clear",
@@ -5251,11 +4636,39 @@
       "bytes": 16249
     },
     {
+      "id": "gel_round_clear_down",
+      "file": "gel_round_clear_down.png",
+      "kind": "image",
+      "sha256": "6cce9b08e162c1ab32357fe20b08f79c632e359644d7a3d23f2a234f711ff88a",
+      "bytes": 23859
+    },
+    {
+      "id": "gel_round_clear_lit",
+      "file": "gel_round_clear_lit.png",
+      "kind": "image",
+      "sha256": "b27810d0aa28fdd9efc39e2889afbf996fba4bfc7806154ed3dcfc9d3e5a97fb",
+      "bytes": 29306
+    },
+    {
       "id": "gel_round_green",
       "file": "gel_round_green.png",
       "kind": "image",
       "sha256": "d3d6cfb69a0efbbf430c5410d64cb3a46a656049bb822ae74d9e563592badd03",
       "bytes": 17842
+    },
+    {
+      "id": "gel_round_green_down",
+      "file": "gel_round_green_down.png",
+      "kind": "image",
+      "sha256": "c5cde588fdbf5cab9e913096aa548c25c679b7ec4985670ef3c6a06a5c75bf6e",
+      "bytes": 22867
+    },
+    {
+      "id": "gel_round_green_lit",
+      "file": "gel_round_green_lit.png",
+      "kind": "image",
+      "sha256": "ae7674507a610c1ef84dc1482703029eba712a50490a471939290add5fbbaee0",
+      "bytes": 32156
     },
     {
       "id": "ghost",
@@ -5268,29 +4681,29 @@
       "id": "glass_pane",
       "file": "glass_pane.png",
       "kind": "image",
-      "sha256": "59497e69a5e7306f0bc7a79d63238303e01aa5b53b3d71a61d8f96539bc99df5",
-      "bytes": 11131
+      "sha256": "15ef4c4c625323f4cb9a1109e0dc59cbf48f03c78b19013ffde46aca6e63f2d0",
+      "bytes": 13888
     },
     {
       "id": "glass_pane_night",
       "file": "glass_pane_night.png",
       "kind": "image",
-      "sha256": "3512c98d6f81d491b66b7da3d4804d49d32e97b27560aa0cd7aea1db0853cbbd",
-      "bytes": 13808
+      "sha256": "33591933da623156f65c7b0db49424aefd7b6008c24f21feda08dbb435ad9b97",
+      "bytes": 17454
     },
     {
       "id": "glass_screen",
       "file": "glass_screen.png",
       "kind": "image",
-      "sha256": "2d9a10b8a7fa999c2662bd0fbfc4c8ea3ac341947b7ba2a17626d437bbbc68e5",
-      "bytes": 7672
+      "sha256": "c91569d39b339f9ae1cc97cfb7bdbc45ce89f5f3c7135c0bbe8206b279342855",
+      "bytes": 7739
     },
     {
       "id": "glass_screen_night",
       "file": "glass_screen_night.png",
       "kind": "image",
-      "sha256": "372fa27305cd4894093e05895727111286805e74e0fe056f71417e5c0437c6d8",
-      "bytes": 9756
+      "sha256": "b6b5d39fe4ccfe053dc364a5a41044eb25d0de961d9b8b0814c2e05533828460",
+      "bytes": 9820
     },
     {
       "id": "glass_shard",
@@ -5303,15 +4716,15 @@
       "id": "glass_well",
       "file": "glass_well.png",
       "kind": "image",
-      "sha256": "6077ff624b91d46c0780d4c805ee1f02c7f149bbeb4a066c9ef68cb9291b1e7a",
-      "bytes": 5302
+      "sha256": "917237dd6249519f5d7221a7b2d152d1e4a18881f079c8126de1e6ad560516b0",
+      "bytes": 5363
     },
     {
       "id": "glass_well_night",
       "file": "glass_well_night.png",
       "kind": "image",
-      "sha256": "6e318b2a8c86acaa1a8e2792deef5972d7890e108a7a21718fc8816b7358aab0",
-      "bytes": 6931
+      "sha256": "efde17a9274f3d2f5e6bbe8e0fe7e2b7e8f98a294666eb2a8e86d5bae2b27ffc",
+      "bytes": 6890
     },
     {
       "id": "glyph_next",

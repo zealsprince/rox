@@ -1423,7 +1423,7 @@ fn reload_live(file: &Path, seen: &mut LiveSeen, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     fn named_bundle(name: &str) -> WorkspaceBundle {
         WorkspaceBundle {
@@ -1938,57 +1938,246 @@ mod tests {
         assert!(panes >= 4, "{panes} panes");
     }
 
-    /// The card's column fits its glass at every window shape, with and
-    /// without its lines, and its cover stays square. A stack that runs past
-    /// its group says so only in the editor.
-    #[test]
-    fn aero_card_fits_its_glass_at_every_window_shape() {
+    /// Aero's windows: wide ones, tall ones, and two either side of square,
+    /// each with the shapes it can show. The two near square sit inside the
+    /// shape's band, so they show whichever shape the window came from.
+    const AERO_WINDOWS: &[([f32; 2], &[&str])] = &[
+        ([1100., 700.], &["wide"]),
+        ([1440., 900.], &["wide"]),
+        ([1600., 1000.], &["wide"]),
+        ([1920., 1080.], &["wide"]),
+        ([2560., 1440.], &["wide"]),
+        ([1000., 1000.], &["wide", "tall"]),
+        ([1100., 1000.], &["wide", "tall"]),
+        ([900., 1200.], &["tall"]),
+        ([1100., 1400.], &["tall"]),
+        ([800., 1300.], &["tall"]),
+    ];
+
+    /// Aero laid out as the app lays it out: each item placed by its case
+    /// for `shape`, with every track field empty when `idle`, through the
+    /// stacks. Each item's flat box on screen by id, and each stack that runs
+    /// past its group or a child wider across than the group.
+    struct AeroLaid {
+        boxes: HashMap<String, [f32; 4]>,
+        overruns: Vec<String>,
+    }
+
+    fn aero_laid(
+        state: &rox_canvas::CanvasState,
+        window: [f32; 2],
+        shape: &'static str,
+        idle: bool,
+    ) -> AeroLaid {
+        use crate::canvas::states;
+        use rox_canvas::{Frame, Live, Viewport};
+
+        let field = if idle { "empty" } else { "present" };
+        let mut cases = states::Cases::new();
+        cases.insert("canvas.shape", shape);
+        for id in ["track.title", "track.artist", "track.album"] {
+            cases.insert(id, field);
+        }
+
+        let viewport = Viewport {
+            width: window[0],
+            height: window[1],
+        };
+        let mut laid = AeroLaid {
+            boxes: HashMap::new(),
+            overruns: Vec::new(),
+        };
+
+        // Each child as its case places it, and how much room it takes.
+        let placed = |items: &[rox_canvas::CanvasItem]| -> Vec<rox_canvas::CanvasItem> {
+            items
+                .iter()
+                .map(|item| {
+                    states::placed(item, states::resolve(item, &cases, None).case).into_owned()
+                })
+                .collect()
+        };
+        let presence = |item: &rox_canvas::CanvasItem| {
+            if states::resolve(item, &cases, None).visible {
+                1.
+            } else {
+                0.
+            }
+        };
+
+        let mut stack = vec![(
+            state.items.clone(),
+            placed(&state.items),
+            vec![Frame::stage(&state.stage, viewport); state.items.len()],
+        )];
+        while let Some((originals, kids, frames)) = stack.pop() {
+            for ((original, kid), frame) in originals.iter().zip(&kids).zip(&frames) {
+                let Some(shown) = rox_canvas::project(
+                    kid,
+                    frame,
+                    &state.camera,
+                    viewport,
+                    None,
+                    true,
+                    &Live::default(),
+                ) else {
+                    continue;
+                };
+                let [x0, y0] = shown.corners[0];
+                let [x1, y1] = shown.corners[2];
+                laid.boxes.insert(kid.id.clone(), [x0, y0, x1, y1]);
+
+                let rox_canvas::Content::Group { items } = &original.content else {
+                    continue;
+                };
+                let inner = placed(items);
+                let group = rox_canvas::child_frame(kid, frame, &Live::default());
+                let child_frames = rox_canvas::child_frames(kid, &group, &inner, presence);
+
+                if let Some(how) = &kid.stack {
+                    let entries = rox_canvas::stack::entries(how, &inner, group.size, presence);
+                    let (cells, run) = rox_canvas::stack::cells(how, group.size, &entries);
+                    let room = how.inner(group.size);
+                    let (along, across) = (how.axis.along(), how.axis.across());
+                    // The seek bar and the buttons reach 8 units past the
+                    // column on each side on purpose.
+                    let past = cells.iter().zip(&entries).any(|(cell, entry)| {
+                        entry.presence > 0.
+                            && (cell.size[across] > room[across] + 16.5 || cell.at[along] < -0.5)
+                    });
+                    if run > room[along] + 0.5 || past {
+                        laid.overruns
+                            .push(format!("{} runs {run} in {room:?}: {cells:?}", kid.id));
+                    }
+                }
+
+                stack.push((items.clone(), inner, child_frames));
+            }
+        }
+        laid
+    }
+
+    fn aero_state() -> rox_canvas::CanvasState {
         let (_, canvas) = aero();
-        let state: rox_canvas::CanvasState = serde_json::from_value(canvas).unwrap();
-        let deck = state.find("deck").expect("a deck");
+        serde_json::from_value(canvas).unwrap()
+    }
+
+    /// The card fits its glass in both arrangements at every window shape,
+    /// playing and with nothing loaded, and its cover stays square. A stack
+    /// that runs past its group says so only in the editor.
+    #[test]
+    fn aero_card_fits_its_glass_in_both_arrangements() {
+        let state = aero_state();
         let card = state.find("card").expect("a card");
-        let stack = card.stack.expect("the card stacks");
         let rox_canvas::Content::Group { items } = &card.content else {
             panic!("the card is a group");
         };
-        assert!(items.iter().any(|child| child.id == "lines"));
+        assert!(items.iter().any(|child| child.id == "controls"));
 
-        // The stage takes the window's size, so the deck's glass is its place
-        // in the window and the card's room its place in the glass.
-        let windows = [
-            [800., 600.],
-            [1100., 700.],
-            [1600., 1000.],
-            [1920., 1080.],
-            [2560., 1440.],
-            [900., 1200.],
-            [1100., 1400.],
-        ];
-        for window in windows {
-            let glass = deck.place.size_in(window);
-            let room = card.place.size_in(glass);
+        let inside = |inner: [f32; 4], outer: [f32; 4]| {
+            inner[0] >= outer[0] - 0.5
+                && inner[1] >= outer[1] - 0.5
+                && inner[2] <= outer[2] + 0.5
+                && inner[3] <= outer[3] + 0.5
+        };
 
-            for idle in [false, true] {
-                let entries = rox_canvas::stack::entries(&stack, items, room, |child| {
-                    if idle && child.id == "lines" { 0. } else { 1. }
-                });
-                let (cells, run) = rox_canvas::stack::cells(&stack, room, &entries);
-                assert!(
-                    run <= room[1] + 0.5,
-                    "at {window:?} the card runs {run} in {}",
-                    room[1]
-                );
-                assert!(cells.iter().all(|cell| cell.at[1] >= -0.5), "{cells:?}");
+        for &(window, shapes) in AERO_WINDOWS {
+            for &shape in shapes {
+                for idle in [false, true] {
+                    let laid = aero_laid(&state, window, shape, idle);
+                    let at = format!("at {window:?} {shape}{}", if idle { " idle" } else { "" });
+
+                    let card_runs: Vec<&String> = laid
+                        .overruns
+                        .iter()
+                        .filter(|overrun| {
+                            ["card ", "controls ", "panes "]
+                                .iter()
+                                .any(|id| overrun.starts_with(id))
+                        })
+                        .collect();
+                    assert!(card_runs.is_empty(), "{at}: {card_runs:?}");
+
+                    let deck = laid.boxes["deck"];
+                    for id in ["card", "controls", "cover-box", "seek", "buttons", "volume"] {
+                        assert!(inside(laid.boxes[id], deck), "{at}: {id} leaves the deck");
+                    }
+                    let screen = [0., 0., window[0], window[1]];
+                    for id in ["deck", "sheet"] {
+                        assert!(
+                            inside(laid.boxes[id], screen),
+                            "{at}: {id} leaves the window"
+                        );
+                    }
+
+                    let [x0, y0, x1, y1] = laid.boxes["cover-box"];
+                    let cover = [x1 - x0, y1 - y0];
+                    assert!((cover[0] - cover[1]).abs() < 0.01, "{at}: {cover:?}");
+                    assert!(cover[0] >= 150., "{at}: the cover is {cover:?}");
+                }
+            }
+        }
+    }
+
+    /// Two panels docked over each other take each other's clicks. Each grid
+    /// sits apart from every other in both arrangements.
+    #[test]
+    fn aero_grids_never_overlap() {
+        let state = aero_state();
+        let mut grids = Vec::new();
+        state.walk(&mut |item, _| {
+            if matches!(item.content, rox_canvas::Content::Grid { .. }) {
+                grids.push(item.id.clone());
+            }
+        });
+        assert!(grids.len() >= 6, "{grids:?}");
+
+        for &(window, shapes) in AERO_WINDOWS {
+            for &shape in shapes {
+                let laid = aero_laid(&state, window, shape, false);
+                for (ix, a) in grids.iter().enumerate() {
+                    for b in &grids[ix + 1..] {
+                        let (p, q) = (laid.boxes[a], laid.boxes[b]);
+                        let w = p[2].min(q[2]) - p[0].max(q[0]);
+                        let h = p[3].min(q[3]) - p[1].max(q[1]);
+                        assert!(
+                            w <= 0.5 || h <= 0.5,
+                            "at {window:?} {shape} {a} {p:?} overlaps {b} {q:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// An item following the canvas's shape with no tall case of its own
+    /// stays where the wide look put it, and nothing else says so.
+    #[test]
+    fn aero_moves_every_item_that_follows_the_shape() {
+        let state = aero_state();
+        let mut followers = 0;
+        state.walk(&mut |item, _| {
+            if item.state != "canvas.shape" {
+                return;
             }
 
-            let cover = items
-                .iter()
-                .find(|child| child.id == "cover-box")
-                .expect("a cover")
-                .place
-                .size_in(room);
-            assert!((cover[0] - cover[1]).abs() < 0.01, "{cover:?}");
-            assert!(cover[0] >= 150., "at {window:?} the cover is {cover:?}");
+            followers += 1;
+            assert!(
+                item.cases
+                    .iter()
+                    .any(|case| case.when == "tall" && case.moves()),
+                "{} follows the shape and doesn't move",
+                item.id
+            );
+        });
+        assert!(followers > 0);
+
+        for id in ["panes", "deck", "sheet", "card", "controls", "cover-box"] {
+            assert_eq!(
+                state.find(id).map(|item| item.state.as_str()),
+                Some("canvas.shape"),
+                "{id}"
+            );
         }
     }
 

@@ -56,20 +56,25 @@ def _axis(v):
 
 def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), rot=(0, 0, 0),
          scale=1.0, opacity=1.0, sway=None, action="", state="", cases=None, name="", min_size=None,
-         max_size=None, aspect=None, hover=None, pressed=None, hit=None, ease=None, stack=None):
+         max_size=None, aspect=None, hover=None, pressed=None, hit=None, ease=None, stack=None, grow=0,
+         margin=None):
     place = {
         "anchor": anchor,
         "position": [_axis(pos[0]), _axis(pos[1]), float(pos[2])],
         "size": list(size),
     }
     if min_size:
-        place["min_size"] = [None if v is None else float(v) for v in min_size]
+        place["min_size"] = _limits(min_size)
     if max_size:
-        place["max_size"] = [None if v is None else float(v) for v in max_size]
+        place["max_size"] = _limits(max_size)
     if aspect:
         place["aspect"] = float(aspect)
     place["rotation"] = [float(v) for v in rot]
     place["scale"] = scale
+    if grow:
+        place["grow"] = float(grow)
+    if margin:
+        place["margin"] = [float(v) for v in margin]
 
     out = {
         "id": id,
@@ -103,7 +108,11 @@ def item(id, content, *, anchor="center", pos=(0, 0, 0), size=(U(100), U(100)), 
     return out
 
 
-def case(when, visible=True, opacity=1.0, asset="", color="", hover=None, pressed=None):
+def _limits(limits):
+    return [None if v is None else float(v) for v in limits]
+
+
+def case(when, visible=True, opacity=1.0, asset="", color="", hover=None, pressed=None, place=None, stack=None):
     out = {"when": when, "visible": visible, "opacity": opacity}
     if asset:
         out["asset"] = asset
@@ -113,7 +122,38 @@ def case(when, visible=True, opacity=1.0, asset="", color="", hover=None, presse
         out["hover"] = hover
     if pressed:
         out["pressed"] = pressed
+    if place:
+        out["place"] = place
+    if stack:
+        out["stack"] = stack
     return out
+
+
+def moved(anchor=None, pos=None, size=None, min_size=None, max_size=None, aspect=None):
+    """A case's own place: each field given stands in for the item's, and
+    the rest stay the item's. A stack's grow and margins can't be set here,
+    so they're the item's in every case."""
+    out = {}
+    if anchor:
+        out["anchor"] = anchor
+    if pos:
+        out["position"] = [_axis(pos[0]), _axis(pos[1]), float(pos[2])]
+    if size:
+        out["size"] = list(size)
+    if min_size:
+        out["min_size"] = _limits(min_size)
+    if max_size:
+        out["max_size"] = _limits(max_size)
+    if aspect is not None:
+        out["aspect"] = float(aspect)
+    return out
+
+
+def tall(place=None, stack=None):
+    """Follows the canvas's own shape: the item as it is while wide, and
+    `place` and `stack` while tall. A shape case cuts, so nothing trails a
+    window being dragged."""
+    return dict(state="canvas.shape", cases=[case("tall", place=place, stack=stack)])
 
 
 def image(asset, fit="stretch"):
@@ -134,9 +174,17 @@ def glass(id, asset, **args):
     return item(id, sliced(asset), size=(M(1, margin), M(1, margin)), **args)
 
 
-def column(gap=0, align="center", justify="center"):
+def column(gap=0, align="center", justify="center", padding=None):
     """A stack running down the group."""
-    return {"axis": "y", "gap": gap, "align": align, "justify": justify}
+    out = {"axis": "y", "gap": gap, "align": align, "justify": justify}
+    if padding:
+        out["padding"] = [float(v) for v in padding]
+    return out
+
+
+def row(gap=0, align="center", justify="center", padding=None):
+    """A stack running across the group."""
+    return dict(column(gap, align, justify, padding), axis="x")
 
 
 def text(line, size, color, align="center"):
@@ -210,6 +258,13 @@ def drift(target, period, shape="sine", phase=0.0, lo=0.0, hi=1.0, curve=None):
 # ── Scenery ──
 
 
+# The sky picture's width over height, which a tall sky keeps.
+SKY_ASPECT = 16 / 9
+
+# Each range's shape at 1920x1080, where they were drawn to sit.
+HILLS_ASPECT = (1.34 * 1920 / (0.40 * 1080), 1.24 * 1920 / (0.30 * 1080))
+
+
 def scenery():
     sky = item(
         "sky-box",
@@ -231,6 +286,11 @@ def scenery():
         # is, with room left for the pan and the music's sway.
         size=(S(1.5), S(1.5)),
         sway={"position": (60, 6, 0)},
+        # A tall box would crop the picture's sides and leave the rays and
+        # the flare, placed as shares of the box, off the sun drawn in it. So
+        # a tall sky is the picture's own shape, as high as it has to be to
+        # cover the window, and pushed right so the sun stays in the corner.
+        **tall(moved(pos=(S(0.22), -40, -420), size=(S(9), S(1.35)), aspect=SKY_ASPECT)),
     )
     # Two minutes there and back across 60 units: felt more than seen. The
     # music's nudge of 18 units rides the same sway.
@@ -252,8 +312,14 @@ def scenery():
                  opacity=0.5, sway={"position": (-50, 0, 0)}),
         ]),
         name="Aurora",
-        pos=(0, 0, -340),
-        size=(S(1.2), S(1.2)),
+        # The ribbons keep their drawn shape at any window shape: the box is
+        # the stage's width and a 16:9 share of it, hung from the top, so a
+        # tall window shows them over its upper half rather than stretched
+        # down the whole height.
+        anchor="top",
+        pos=(0, S(-0.1), -340),
+        size=(S(1.2), S(9)),
+        aspect=16 / 9,
         sway={"position": (24, 0, 0)},
         state="app.theme",
         cases=[case("light", opacity=0.45), case("dark", opacity=1.0)],
@@ -266,11 +332,14 @@ def scenery():
     drift("aurora.x", 70, "sine", 0.6, -1.0, 1.0)
     drift("aurora.opacity", 26, "sine", 0.1, 0.7, 1.0)
 
+    # Each range keeps its shape and takes its height from the window's
+    # width, so a tall window doesn't stretch it up the glass. They follow
+    # the theme, so a shape case can't move them, and they don't need one.
     hills = [
         item("hills-back", image("hills_back"), anchor="bottom", pos=(0, 110, -230),
-             size=(S(1.34), S(0.40)), name="Far hills", **themed("hills_back_night")),
+             size=(S(1.34), S(9)), aspect=HILLS_ASPECT[0], name="Far hills", **themed("hills_back_night")),
         item("hills-front", image("hills_front"), anchor="bottom", pos=(0, 90, -120),
-             size=(S(1.24), S(0.30)), name="Near hills", **themed("hills_front_night")),
+             size=(S(1.24), S(9)), aspect=HILLS_ASPECT[1], name="Near hills", **themed("hills_front_night")),
     ]
 
     # A group paints at its own depth, so this one sits behind the far hills
@@ -375,62 +444,79 @@ def gel_button(id, action, width, side, pos, glyph, *, anchor="center", hue="aqu
                 max_size=(side, None), action=action, name=name)
 
 
-# The card is one column centred in the deck's glass: the cover, the lines,
-# the seek bar, the buttons and the volume. Each keeps its own height, and
-# the cover takes what's left, so the column fills a short card and sits as
-# one block in the middle of a tall one. A tall window can't widen the deck,
-# whose width is a share of the window's, so the cover stops at the card's
-# width and the glass shows above and below the block.
+# The card is the cover and a column of everything else: the lines, the seek
+# bar, the buttons and the volume. On a wide window the two stack down the
+# deck's glass, and on a tall one they sit side by side across it. The cover
+# grows square into whatever room the column leaves, held to its maximum, and
+# margins carry the air between the rows.
 #
-# The rows' heights carry the air between them, since a stack has one gap.
-# The lines take a share of the card's height on top of their own, so a tall
-# card spreads the block a little rather than leaving it all at the ends.
-CARD_MARGIN = 20
-LINES = (0.05, 110)
-SEEK_H = 42
-BUTTONS_H = 92
-VOLUME_H = 40
-COVER_ROOM = M(1 - LINES[0], -(LINES[1] + SEEK_H + BUTTONS_H + VOLUME_H))
+# A group can't take its height from what it holds, so the column keeps the
+# lines' room while they're hidden. On a wide card it runs from the top, so
+# with nothing loaded the seek bar closes up under the cover and the room
+# left over sits below the volume.
+TITLE_H, ARTIST_H, ALBUM_H = 36, 28, 24
+SEEK_H, BUTTONS_H, VOLUME_H = 30, 84, 28
+SEEK_MARGIN, BUTTONS_MARGIN, VOLUME_MARGIN = (14, 4), (4, 4), (4, 0)
+CONTROLS_H = (TITLE_H + 2 + ARTIST_H + 2 + ALBUM_H + SEEK_H + sum(SEEK_MARGIN) + BUTTONS_H
+              + sum(BUTTONS_MARGIN) + VOLUME_H + sum(VOLUME_MARGIN))
+
+# A tall deck runs across the top of the window, this share of its height
+# held between the two limits: the lower one keeps the column whole, the
+# upper one keeps the library the larger pane.
+TALL_DECK = (0.30, 340, 460)
 
 
 def deck():
-    # With nothing loaded the lines are empty, so they give their room up
-    # and the cover closes on the seek bar.
-    lines = item("lines", group([
-        item("title", text("%title%", 26, "text_bright"), size=(S(1), U(38))),
-        item("artist", text("%artist%", 19, "text"), size=(S(1), U(28))),
-        item("album", text("%album% - %year%", 15, "text_dim"), size=(S(1), U(24))),
-    ]), size=(S(1), M(*LINES)), stack=column(gap=2), state="player.stop",
-        cases=[case("idle", visible=False)], name="Lines")
+    # Each line gives its room up when its field is empty, so a track with
+    # no album closes the gap, and with nothing loaded every field is empty
+    # and the seek bar comes up under the cover. The title and the artist
+    # are never empty while something plays: rox names the file and an
+    # unknown artist where the tags say nothing.
+    def line(id, field, size, color, height, after):
+        return item(id, text(f"%{field}%", size, color), size=(S(1), U(height)), margin=(0, after),
+                    state=f"track.{field}", cases=[case("empty", visible=False)])
+
+    # The year alone says little without the album it dates, so the line
+    # follows the album and closes with it.
+    lines = [
+        line("title", "title", 26, "text_bright", TITLE_H, 2),
+        line("artist", "artist", 19, "text", ARTIST_H, 2),
+        item("album", text("%album% - %year%", 15, "text_dim"), size=(S(1), U(ALBUM_H)), state="track.album",
+             cases=[case("empty", visible=False)]),
+    ]
 
     cover = item(
         "cover-box",
         group([
-            # With nothing loaded the art panel shows only a placeholder
-            # note, and a shadow under it reads as a dark blot in the glass.
-            item("cover-shadow", image("shadow"), size=(S(1.12), S(1.12)), pos=(0, 10, -2), state="player.stop",
-                 cases=[case("idle", visible=False)], ease=250),
-            # A track with no art shows the panel's own surface, frosted
-            # enough to keep the shadow from showing through it.
+            # Only a cover casts the shadow: the art panel's frosted surface
+            # under a track with none reads as a dark blot with one under it.
+            item("cover-shadow", image("shadow"), size=(S(1.12), S(1.12)), pos=(0, 10, -2), state="player.art",
+                 cases=[case("none", visible=False)], ease=250),
+            # A track with no art shows the panel's own surface, frosted.
             item("cover", grid(panel("cover art", {
                 "theme": {"rounding": 14.0, "surface_opacity": 0.7},
                 "source": "playing", "align": "center", "stretch": False,
             })), size=(S(1), S(1))),
             item("cover-gloss", image("cover_gloss"), size=(S(1), S(1)), pos=(0, 0, 2)),
         ]),
-        size=(M(0.8, 40), COVER_ROOM),
+        # Its own length along the card's axis is nothing: it's all growth,
+        # as large a square as the room left and the side across allow.
+        size=(M(0.8, 40), U(0)),
         max_size=(540, 540),
         aspect=1.0,
+        grow=1,
+        margin=(0, 14),
         name="Cover",
+        **tall(moved(size=(U(0), S(1)))),
     )
 
-    # The transport reaches a little past the card on both sides, since
+    # The transport reaches a little past the column on both sides, since
     # its buttons shrink with the row.
     seek = item("seek", grid(panel("seek", {
         "theme": {"surface_opacity": 0.0},
         "show_total": False, "thickness": 6.0, "rounding": 6.0, "playhead_max": 16.0,
         "items": ["elapsed", "strip", "ending"],
-    })), size=(M(1, 16), U(SEEK_H)), max_size=(480, None))
+    })), size=(M(1, 16), U(SEEK_H)), max_size=(480, None), margin=SEEK_MARGIN)
 
     pause = dict(state="player.playback", cases=[case("playing", asset="glyph_pause")], ease=GLYPH_EASE)
     repeat_one = dict(state="player.repeat", cases=[case("one", asset="glyph_repeat1")], ease=GLYPH_EASE)
@@ -450,6 +536,7 @@ def deck():
         ]),
         size=(M(1, 16), U(BUTTONS_H)),
         max_size=(400, None),
+        margin=BUTTONS_MARGIN,
         name="Buttons",
     )
     route("play.scale", BEAT, 1.0, 1.06)
@@ -457,10 +544,20 @@ def deck():
     volume = item("volume", grid(panel("volume", {
         "theme": {"surface_opacity": 0.0},
         "align": "center", "stretch": True, "items": ["icon", "slider", "percent"],
-    })), size=(S(0.9), U(VOLUME_H)), max_size=(420, None))
+    })), size=(S(0.9), U(VOLUME_H)), max_size=(420, None), margin=VOLUME_MARGIN)
 
-    card = item("card", group([cover, lines, seek, buttons, volume]),
-                size=(M(1, -2 * CARD_MARGIN), M(1, -2 * CARD_MARGIN)), stack=column(), name="Card")
+    controls = item(
+        "controls", group([*lines, seek, buttons, volume]),
+        size=(S(1), U(CONTROLS_H)),
+        stack=column(justify="start"),
+        name="Controls",
+        # Beside the cover it's the card's height and centres what it holds,
+        # and its width is a share of the card's, so the cover keeps the rest.
+        **tall(moved(size=(S(0.55), S(1)), min_size=(280, None), max_size=(500, None)), column()),
+    )
+
+    card = item("card", group([cover, controls]), size=(S(1), S(1)), stack=column(padding=(20, 20, 20, 20)),
+                name="Card", **tall(stack=row(gap=24, padding=(28, 20, 28, 20))))
 
     droplet = item("droplet", image("droplet", "contain"), anchor="top_right", pos=(-26, 30, 4),
                    size=(U(30), U(40)), opacity=0.9, state="player.playback",
@@ -468,10 +565,12 @@ def deck():
 
     frame = glass("deck-frame", "glass_pane", pos=(0, 0, -4), **themed("glass_pane_night"))
 
-    # The box is the glass: its share of the window less the pane's 24-unit
-    # shadow on every side.
-    return item("deck", group([frame, card, droplet]), anchor="left", pos=(M(0.018, 24), 8, 0),
-                size=(M(0.31, -48), M(0.90, -48)), min_size=(242, 512), name="Deck")
+    # The box is the glass: a share of the panes' row less the pane's 24-unit
+    # shadow on every side. Tall, it spans the window under the controls.
+    share, low, high = TALL_DECK
+    return item("deck", group([frame, card, droplet]), pos=(0, 8, 0), size=(M(0.33, -48), M(0.90, -48)),
+                min_size=(242, 512), name="Deck",
+                **tall(moved(pos=(0, 0, 0), size=(S(1), S(share)), min_size=(None, low), max_size=(None, high))))
 
 
 # ── Sheet: library, queue and playlists, the spectrum and the screen ──
@@ -536,9 +635,19 @@ def sheet():
     lower = item("lower", group([well, screen]), anchor="bottom", pos=(0, -SHEET_INSET, 0),
                  size=(M(1, -2 * SHEET_INSET), S(LOWER_SHARE)), min_size=(None, 180), name="Lower")
 
-    # Like the deck, the box is the glass.
-    return item("sheet", group([frame, shimmer, library, lower]), anchor="right", pos=(M(-0.018, -24), 8, 0),
-                size=(M(0.635, -48), M(0.90, -48)), min_size=(492, 512), name="Sheet")
+    # Like the deck, the box is the glass. It takes whatever the deck leaves
+    # in the panes' stack, beside it or under it.
+    return item("sheet", group([frame, shimmer, library, lower]), pos=(0, 8, 0), size=(U(0), M(0.90, -48)),
+                min_size=(492, 512), grow=1, name="Sheet",
+                **tall(moved(pos=(0, 0, 0), size=(S(1), U(0)), min_size=(None, 420))))
+
+
+def panes():
+    """The deck and the sheet in one stack: side by side on a wide window,
+    the deck across the top of a tall one. The sheet grows into what the
+    deck leaves, so the two never overlap however the deck's limits hold."""
+    return item("panes", group([deck(), sheet()]), size=(S(1), S(1)), stack=row(gap=72, padding=(56, 0, 56, 0)),
+                name="Panes", **tall(stack=column(gap=48, padding=(40, 64, 40, 40))))
 
 
 def shard():
@@ -548,7 +657,12 @@ def shard():
     over the cover."""
     out = item("shard", image("glass_shard"), anchor="top_left", pos=(S(0.30), S(0.005), -40),
                size=(S(0.216), S(0.306)), rot=(10, -24, -7), opacity=0.75, sway={"rotation": (0, 5, 2)},
-               name="Glass shard")
+               name="Glass shard",
+               # Tall, the deck covers the top, so it leans in from past the
+               # window's right edge across the gap between the panes, where
+               # the glass on both sides is clear, sized by the width alone.
+               **tall(moved(anchor="top_right", pos=(S(0.07), S(0.27), -40), size=(S(0.26), S(9)),
+                            aspect=1.26)))
     route("shard.ry", MID, 0.0, 1.0)
     drift("shard.rz", 37, "sine", 0.8, -1.0, 1.0, curve="ease_in_out")
     return out
@@ -690,7 +804,7 @@ DARK = {
 
 def bundle():
     ROUTES.clear()
-    items = [*scenery(), shard(), deck(), sheet(), *chrome()]
+    items = [*scenery(), shard(), panes(), *chrome()]
     canvas = {
         "version": 1,
         "stage": {"width": 1920.0, "height": 1080.0, "fit": "anchor"},

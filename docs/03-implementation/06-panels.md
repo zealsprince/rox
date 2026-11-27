@@ -357,13 +357,16 @@ embedded through `rox_design::assets`, and applying one checks each file against
 table entry the way an archive's are checked. Aero is the one written by a script rather
 than exported: a single canvas filling the window, generated with its images by
 `scripts/workspaces/aero_workspace.py` and `aero_assets.py`. It draws every canvas item
-kind, follows playback, whether anything is loaded, shuffle, repeat and the theme through
-cases, lights its buttons through hover and pressed looks, stacks its now-playing card,
-sizes its panes as their glass plus a fixed shadow, and routes a beat, three bands, the
-level and the canvas's clock, so it doubles as the canvas's test bed, with tests in
-`workspaces.rs` holding it to one canvas, its assets, a beat, buttons that light, the
-weight limits, one theme fade, panes whose boxes are their glass and a card that fits at
-every window shape.
+kind, follows playback, shuffle, repeat, the theme, the playing track's fields, whether
+it has a cover and the canvas's shape through cases, lights its buttons through hover and
+pressed looks, stacks its panes and its now-playing card with a growing cover, sizes its
+panes as their glass plus a fixed shadow, and routes a beat, three bands, the level and
+the canvas's clock, so it doubles as the canvas's test bed. On a tall window its deck goes
+across the top as a row, the cover beside the lines and the transport, with the library
+under it. Tests in `workspaces.rs` hold it to one canvas, its assets, a beat, buttons that
+light, the weight limits, one theme fade, panes whose boxes are their glass, a tall case
+on every item that follows the shape, grids that never overlap, and a card that fits in
+both arrangements at every window shape.
 
 ## Panel presets
 

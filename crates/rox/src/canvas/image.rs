@@ -31,7 +31,7 @@ use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_design::palette;
 
-use crate::canvas::fades::{self, Mix};
+use crate::canvas::fades::{self, Coverage, Mix};
 use crate::canvas::slice::{self, Slices};
 use crate::canvas::{Placing, bbox, on_stage};
 use crate::panels::canvas::CanvasPanel;
@@ -57,11 +57,6 @@ const MAX_ANIMATION_BYTES: u64 = 128 << 20;
 const SHORT_FRAME: Duration = Duration::from_millis(20);
 const SHORT_FRAME_AS: Duration = Duration::from_millis(100);
 
-/// Below this share of fully opaque pixels among the ones that show, a
-/// picture crossfades as glass (`fades::mix_draws`). Aero's glass panes hold
-/// under 1%, its gels and glyphs 14 to 54%.
-const OPAQUE_SHARE: f32 = 0.1;
-
 enum Slot {
     /// Started against this store revision.
     Loading(u64),
@@ -82,8 +77,8 @@ pub(crate) enum Look {
 pub(crate) struct Images {
     rev: u64,
     slots: HashMap<String, Slot>,
-    /// Each translucent picture's body alpha, by asset id.
-    bodies: HashMap<String, f32>,
+    /// Each landed picture's coverage, by asset id, for the crossfade.
+    covers: HashMap<String, Coverage>,
     /// By item id, so two items on one animation play apart.
     clocks: HashMap<String, Clock>,
     /// The earliest frame due among the animations placed this render.
@@ -160,7 +155,7 @@ impl Images {
     }
 
     pub(crate) fn clear(&mut self, window: &mut Window) {
-        self.bodies.clear();
+        self.covers.clear();
         for (_, slot) in self.slots.drain() {
             if let Slot::Ready(image) = slot {
                 window.drop_image(image).ok();
@@ -225,10 +220,9 @@ impl Images {
         }
     }
 
-    /// The body alpha of a translucent picture that has landed. None for an
-    /// opaque one, and for one still decoding.
-    pub(crate) fn body(&self, id: &str) -> Option<f32> {
-        self.bodies.get(id).copied()
+    /// The coverage of a picture that has landed. None while it decodes.
+    pub(crate) fn coverage(&self, id: &str) -> Option<&Coverage> {
+        self.covers.get(id)
     }
 
     /// A miss starts one decode and answers Pending until it lands.
@@ -254,7 +248,7 @@ impl Images {
                 .background_executor()
                 .spawn({
                     let id = id.clone();
-                    async move { load(&id).map(|image| (body_alpha(&image), image)) }
+                    async move { load(&id).map(|image| (coverage(&image), image)) }
                 })
                 .await;
 
@@ -275,16 +269,16 @@ impl Images {
         &mut self,
         id: &str,
         rev: u64,
-        decoded: Result<(Option<f32>, Arc<RenderImage>), String>,
+        decoded: Result<(Option<Coverage>, Arc<RenderImage>), String>,
     ) -> bool {
         if !matches!(self.slots.get(id), Some(Slot::Loading(started)) if *started == rev) {
             return false;
         }
 
         let slot = match decoded {
-            Ok((body, image)) => {
-                if let Some(body) = body {
-                    self.bodies.insert(id.to_string(), body);
+            Ok((cover, image)) => {
+                if let Some(cover) = cover {
+                    self.covers.insert(id.to_string(), cover);
                 }
                 Slot::Ready(image)
             }
@@ -299,35 +293,13 @@ impl Images {
     }
 }
 
-/// The coverage-weighted mean alpha of frame 0, sum(a^2) / sum(a): of the
-/// stand-ins tried on Aero's glass pairs it came closest to a true mix. None
-/// for a picture opaque enough to crossfade as an opaque one, and for one
-/// with nothing in it.
-fn body_alpha(image: &RenderImage) -> Option<f32> {
+/// Frame 0's coverage. None when the frame's bytes aren't at hand.
+fn coverage(image: &RenderImage) -> Option<Coverage> {
     let bytes = image.as_bytes(0)?;
+    let size = image.size(0);
+    let (width, height) = (size.width.0.max(0) as usize, size.height.0.max(0) as usize);
 
-    let (mut showing, mut opaque) = (0u64, 0u64);
-    let (mut sum, mut squares) = (0f64, 0f64);
-    for pixel in bytes.as_chunks::<4>().0 {
-        let alpha = pixel[3];
-        if alpha == 0 {
-            continue;
-        }
-
-        showing += 1;
-        if alpha >= 250 {
-            opaque += 1;
-        }
-        let alpha = f64::from(alpha) / 255.;
-        sum += alpha;
-        squares += alpha * alpha;
-    }
-
-    if showing == 0 || opaque as f32 >= showing as f32 * OPAQUE_SHARE {
-        return None;
-    }
-
-    Some((squares / sum) as f32)
+    Some(Coverage::of(width, height, bytes))
 }
 
 fn load(id: &str) -> Result<Arc<RenderImage>, String> {
@@ -668,8 +640,9 @@ pub(crate) fn element(
         .iter()
         .map(|(name, _)| shown(*name, own, images, cx))
         .collect();
-    let bodies: Vec<Option<f32>> = assets.iter().map(|asset| images.body(asset)).collect();
-    let draws = fades::mix_draws(pictures, &bodies);
+    let covers: Vec<Option<&Coverage>> =
+        assets.iter().map(|asset| images.coverage(asset)).collect();
+    let draws = fades::mix_draws(pictures, &covers);
 
     for (ix, (asset, weight)) in assets.into_iter().zip(draws).enumerate() {
         // The top picture keeps the item's own clock, so an animation the
@@ -1005,16 +978,17 @@ mod tests {
     }
 
     #[test]
-    fn glass_has_a_body_alpha_and_an_opaque_picture_has_none() {
-        let glass = decode(&png(4, 4, [200, 220, 240, 112])).expect("decodes");
-        let body = body_alpha(&glass).expect("translucent");
-        assert!((body - 112. / 255.).abs() < 1e-4, "{body}");
+    fn a_picture_is_measured_for_the_crossfade_as_it_decodes() {
+        let solid = coverage(&decode(&png(4, 4, [200, 220, 240, 255])).expect("decodes"));
+        let glass = coverage(&decode(&png(4, 4, [200, 220, 240, 112])).expect("decodes"));
+        let (solid, glass) = (solid.expect("measured"), glass.expect("measured"));
 
-        let solid = decode(&png(4, 4, [200, 220, 240, 255])).expect("decodes");
-        assert_eq!(body_alpha(&solid), None);
-
-        let clear = decode(&png(4, 4, [0, 0, 0, 0])).expect("decodes");
-        assert_eq!(body_alpha(&clear), None, "nothing shows");
+        // Glass over a solid picture covers it at the glass's alpha.
+        let mut pictures = Mix::one(Some("solid"));
+        pictures.blend(Some("glass"), 0.5);
+        let draws = fades::mix_draws(&pictures, &[Some(&solid), Some(&glass)]);
+        let expected = 0.5 / (1. - 0.5 * 112. / 255.);
+        assert!((draws[0] - expected).abs() < 1e-5, "{draws:?}");
     }
 
     #[test]

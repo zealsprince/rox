@@ -254,9 +254,34 @@ milliseconds, held to 5000. A look that leaves it out writes nothing new:
 "appearance": { "keep_theme": true, "theme_ease": 600 }
 ```
 
+The ground and the ink fade on two curves (`palette::Tint`). The ground, every surface and
+tint role, eases the whole length with a smoothstep. The ink is every other role: the text
+ladder, the gridline, the borders, the accent and its hover, the highlight and the text on
+accent. It holds its old color while the ground moves toward it, then turns over in one
+short span centred where the moving panel reads as well under the new body text as under
+the old (`ink_turn`). The span is 120 ms (`INK_SPAN`), stretched to 6% of a slow switch so
+the text doesn't flick against a ground that has barely moved (300 ms of a 5 s fade,
+`INK_SLOW_SHARE`), and held to two fifths of a short one (`INK_SHARE`).
+Easing both on one curve would walk dark text on a light ground and light text on a dark
+one into each other: on the stock pair a title spends 94 ms of a 350 ms switch under 3:1
+and 161 ms of a 600 ms one. With the turn it's 49 ms and 57 ms, every one of them inside
+the turn. No continuous path keeps text off its ground all the way, since the ink's
+luminance has to pass the ground's somewhere, so the turn is what keeps that moment to a
+few frames. Body text goes from 116 to 69 ms under 3:1 at 350 ms and from 198 to 86 at
+600 ms. Dim text gains least, 157 to 129 and 269 to 220, because both of its ends sit near
+mid gray and a ground passing between them reads under 3:1 against either one. Song
+theming holds each role's lightness, so a tinted pair, a gray cover's included, measures
+within a millisecond of the stock one at both lengths. A run where the text stays on the
+same side of its ground, a song's tint within one theme or a palette edit, keeps the one
+curve. The stock baseline's light or dark pick
+is read at the ink's pace, so it flips inside the turn, as do the status tones
+(`tone_good` and the rest), which follow the panel at the ink's pace too.
+
 Reduce Motion cuts the switch, and so does the one at launch, which lands before any window
-is open. A second switch mid-fade turns from where the palette visibly is. A song or a
-palette edit eases a tint over 350 ms and lands the base palette at once. Every step
+is open. A second switch mid-fade turns every role from where it visibly is: the ground
+eases back from its color of that frame, and an ink caught mid-turn carries straight on
+over a new span rather than holding on the ground. A song or a palette edit eases a tint
+over 350 ms and lands the base palette at once. Every step
 of the fade re-renders every view in every window, cached ones included, which is the cost
 to weigh against a long `theme_ease`. Measured 2026-11-27 in the release build in a
 headless sway at 1920x1080, design mode off, nothing playing, `theme_ease` 600,
@@ -844,28 +869,36 @@ nothing new:
 
 Opacity blends and a text color blends. Two images crossfade as two draws of the item,
 each with its own fit and nine-slice cut, since a case's image has its own size in texels.
-How the two draws weigh depends on the incoming picture, measured once as it decodes
-(`image::body_alpha`). An opaque one, where at least a tenth of the pixels that show are
-fully opaque, comes in over the first half of the ease while the outgoing one goes over the
-second, so two opaque pictures never dip through each other (`Mix::cross`). A translucent
-one, glass, comes in at the ease's weight `t` while the outgoing one draws at
-`(1 - t) / (1 - t * a)`, with `a` the incoming picture's coverage-weighted mean alpha
-(`fades::mix_draws`). For two panes of one even alpha that's the true mix, so the glass
-keeps its density through the fade, where the opaque rule had both whole at the middle:
-at alpha 0.44 that hides 69% of what's behind instead of 44%. It's one opacity per draw,
-not per pixel: where the incoming picture's alpha runs above its mean the pair shows a
-little less than the mix, and below it a little more. An exact mix would need the lower
-draw to follow the upper picture's alpha pixel by pixel, a quad that samples both images,
-which the image path doesn't have. Aero's left pane, crossfaded day to night over 5 s in
-the release build and sampled over the sky at five points, came within 2.2 RGB levels of
-the true mix at every point; under the opaque rule it was 48 levels off a quarter of the
-way in and 98 at the middle, already near the night pane. The top picture keeps the item's
+The incoming picture draws at the ease's weight `t` and the outgoing one under it at
+`(1 - t) / (1 - t * b)`, `b` the incoming picture's alpha where the outgoing one shows
+(`fades::mix_draws`). Per pixel that's the true mix of the two, each composited alone. One
+opacity per draw can't follow `b` pixel by pixel, so each picture is measured once as it
+decodes into a 32 by 32 grid of mean alpha over its own extent (`fades::Coverage`), and
+the grids laid cell on cell give the incoming picture's alpha averaged over the outgoing
+one's coverage. That stands in for `b`. Two opaque pictures of one shape have it at 1, so
+the outgoing picture draws whole under the incoming one at `t`, the exact mix over the
+whole ease: Aero's sky, day to night, sits on the true mix at every step, where drawing
+the new picture in over the first half had it at its night value by the middle, 82 RGB
+levels off the mix there. Pictures that share nothing have it at 0 and each draws at its
+share, also exact. Two panes of one even alpha have it at that alpha, the true mix again.
+Between those the pair is close. It neither dips at the middle nor holds the outgoing
+picture whole to cut it at the end, which drawing it whole under every pair would do where
+the shapes differ: an outgoing picture half under the incoming one keeps at least four
+fifths of its density where the two lie together and is under a tenth of its draw by the
+last twentieth of the ease. Run through the arithmetic with Aero's own texels (the sky
+day to night, the left pane's glass, a gel button's center going from clear to green), the
+draws land on the true mix for the sky and within 0.6 RGB levels of it for the pane and
+3.7 for the gel at the run's tenth, quarter, middle, three quarters and nine tenths.
+Before, the gel was 65.8 levels off at the middle. An exact mix everywhere would need the
+lower draw to read the upper picture's alpha pixel by pixel, a quad that samples both
+images, which the image path doesn't have. The top picture keeps the item's
 animation clock. A case that hides the item fades it out, and the
 item leaves the click walk as the fade starts: its shape passes the pointer, and a grid's
 panels sit under an occluding blocker for the length of the fade. A case that shows it
 takes the pointer at once and fades in. A change that lands mid-fade carries on from the
-opacity it had reached, starting from whichever look was showing more, so a color or an
-image can step once there. A canvas opens on its cases as they are: an item drawn for the
+opacity it had reached and from the mix of images and colors it showed, which fades out
+as the new look comes in, so a second theme switch turns the scenery back without a step.
+A canvas opens on its cases as they are: an item drawn for the
 first time, or again after its group hid it, cuts.
 
 A grid and a render target ease only their opacity, since a case gives neither an image
@@ -877,17 +910,20 @@ render, so a theme switch is one burst of frames, not one per item.
 A theme switch eases the app's palette (see Workspaces), so the panels inside a grid fade
 with every other panel in the window, and a text color named by a role reads the palette
 as it paints that frame (`palette::eased`), so it fades with them. With the theme cases
-left on the look's theme ease, panes, rows, text and scenery move as one. A grid needs
+left on the look's theme ease, panes, rows and scenery move as one, and role-coloured
+text turns over with the rest of the ink. A grid needs
 nothing of its own for this: its dock renders cached, and the palette's pump refreshes the
 window on every step, which re-renders cached views too, the last step included, so no
 grid keeps a frame of the old theme. A waveform's role-linked bar colors and the
 backdrop's Milkdrop grade read the eased palette too, and the gpui-component tokens a
 fade can see are projected from it: the active tab's label, the primary fill on a linked
 swatch, a selected or hovered button, a focused field's caret, a disabled field and a link.
-What still lands at once: the stock baseline's light or dark pick, which sets which way a
-ghost button's hover shades; the stock text selection color, seen only while text is
-selected; the tokens of widgets rox doesn't use; and the colors a render target is sent,
-which are where the ease will land, sent once.
+The projected foregrounds (labels, carets, links, scrollbar thumbs) are read from ink
+roles and the projected fills from ground roles, so they keep to the same two curves. The
+stock baseline's light or dark pick, which sets which way a ghost button's hover shades,
+flips inside the ink's turn (see Workspaces). What still lands at once: the stock text
+selection color, seen only while text is selected; the tokens of widgets rox doesn't use;
+and the colors a render target is sent, which are where the ease will land, sent once.
 
 An item a click command covers can also carry a `hover` look, for while the pointer is
 over it, and a `pressed` look, for while a left press that landed on it is held and the

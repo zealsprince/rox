@@ -292,7 +292,7 @@ pub(crate) fn over<'a>(
         faded.opacity *= 1. + (opacity - 1.) * weight;
 
         if let Some(asset) = named(&look.asset) {
-            faded.pictures.cross(Some(asset), weight);
+            faded.pictures.blend(Some(asset), weight);
         }
         if let Some(color) = named(&look.color) {
             faded.colors.blend(Some(color), weight);
@@ -783,10 +783,10 @@ mod tests {
         assert_eq!(pressed.opacity, 0.25);
         assert_eq!(pressed.pictures.top(), Some("down"));
 
-        // A quarter in, the look's image is coming in over the item's own,
-        // which still shows whole, and the opacity is on its way.
+        // A quarter in, the look's image holds a quarter of the mix over the
+        // item's own, and the opacity is on its way.
         let early = over(&item, None, rest(), [0.25, 0.]);
-        assert_eq!(early.pictures.parts(), &[(None, 1.), (Some("lit"), 0.5)]);
+        assert_eq!(early.pictures.parts(), &[(None, 0.75), (Some("lit"), 0.25)]);
         assert!((early.opacity - 0.875).abs() < 1e-6);
     }
 

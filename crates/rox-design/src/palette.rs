@@ -247,11 +247,27 @@ pub fn group_key(group: &str) -> String {
     format!("palette-group-{group}")
 }
 
+const INK: Rgba = Rgba {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
+
+const GROUND: Rgba = Rgba {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
+
 /// One line per role defines its [`Palette`] field, default, accessor, and
-/// [`ROLES`] entry. `surfaces` read out at surface opacity;
-/// `tints` draw on a surface that already has the wash, so they read at its
-/// square; `ink` lifts toward `text_bright` as surfaces thin, so contrast
-/// holds. The rest read plain.
+/// [`ROLES`] entry. `surfaces` read out at surface opacity; `tints` draw on
+/// a surface that already has the wash, so they read at its square; `ink`
+/// lifts toward `text_bright` as surfaces thin, so contrast holds. The rest
+/// read plain. Across a theme switch `surfaces` and `tints` are the ground,
+/// easing the whole length, and every other role is ink, which turns over in
+/// a short span once the ground has crossed it ([`Tint`]).
 macro_rules! tokens {
     (
         $( $(#[$doc:meta])* $role:ident: $default:literal; )*
@@ -285,13 +301,23 @@ macro_rules! tokens {
             }
         }
 
+        /// White on every ink role and black on every ground one, so a bare
+        /// field pick can tell [`Tint::role`] which curve its role rides.
+        const INK_MASK: Palette = Palette {
+            $( $role: INK, )*
+            $( $srole: GROUND, )*
+            $( $trole: GROUND, )*
+            $( $irole: INK, )*
+        };
+
         impl Palette {
-            fn mixed(from: &Palette, to: &Palette, t: f32) -> Palette {
+            /// The surfaces and tints at `ground`, every other role at `ink`.
+            fn blended(from: &Palette, to: &Palette, ground: f32, ink: f32) -> Palette {
                 Palette {
-                    $( $role: mix(from.$role, to.$role, t), )*
-                    $( $srole: mix(from.$srole, to.$srole, t), )*
-                    $( $trole: mix(from.$trole, to.$trole, t), )*
-                    $( $irole: mix(from.$irole, to.$irole, t), )*
+                    $( $role: mix(from.$role, to.$role, ink), )*
+                    $( $srole: mix(from.$srole, to.$srole, ground), )*
+                    $( $trole: mix(from.$trole, to.$trole, ground), )*
+                    $( $irole: mix(from.$irole, to.$irole, ink), )*
                 }
             }
 
@@ -1036,6 +1062,35 @@ pub struct Tint {
     eased_at: Instant,
     /// Seconds the run takes. Zero lands at once.
     length: f32,
+    /// The ink's own turn, its start and length in seconds into the run,
+    /// when the ink and the ground pass each other on the way. None moves
+    /// every role on the run's one curve.
+    ink: Option<(f32, f32)>,
+}
+
+/// How long the ink takes to turn over across a theme switch at the usual
+/// paces. Long enough to read as a quick fade rather than a pop, short
+/// enough that the moment the text matches its ground is a frame or two.
+const INK_SPAN: f32 = 0.12;
+
+/// The least of a run the turn takes, so a slow switch turns its text at a
+/// pace that belongs to it: 120 ms in a 5 s fade reads as a flick against a
+/// ground that has barely moved.
+const INK_SLOW_SHARE: f32 = 0.06;
+
+/// The most of a run the ink's turn may take, so a short ease still has a
+/// ground that moves round it.
+const INK_SHARE: f32 = 0.4;
+
+/// Smoothstepped, so changes ease out instead of stopping dead.
+fn smooth(u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// The `u` that [`smooth`] takes to `y`.
+fn unsmooth(y: f32) -> f32 {
+    0.5 - ((1.0 - 2.0 * y.clamp(0.0, 1.0)).asin() / 3.0).sin()
 }
 
 impl Tint {
@@ -1046,21 +1101,47 @@ impl Tint {
             target: palette,
             eased_at: Instant::now(),
             length: EASE_SECS,
+            ink: None,
         }
     }
 
-    /// Smoothstepped, so changes ease out instead of stopping dead.
-    fn progress(&self) -> f32 {
+    fn elapsed(&self) -> f32 {
+        self.eased_at.elapsed().as_secs_f32()
+    }
+
+    /// The ground's progress and the ink's, `at` seconds into the run.
+    fn progress_at(&self, at: f32) -> (f32, f32) {
         if self.length <= 0.0 {
-            return 1.0;
+            return (1.0, 1.0);
         }
 
-        let u = (self.eased_at.elapsed().as_secs_f32() / self.length).min(1.0);
-        u * u * (3.0 - 2.0 * u)
+        let ground = smooth(at / self.length);
+        let ink = match self.ink {
+            Some((start, span)) => smooth((at - start) / span),
+            None => ground,
+        };
+        (ground, ink)
+    }
+
+    /// The ground's, which lands last.
+    fn progress(&self) -> f32 {
+        self.progress_at(self.elapsed()).0
     }
 
     fn role(&self, pick: impl Fn(&Palette) -> Rgba) -> Rgba {
-        let u = self.progress();
+        let (ground, ink) = self.progress_at(self.elapsed());
+        let u = if pick(&INK_MASK).r > 0.5 { ink } else { ground };
+        self.picked(pick, u)
+    }
+
+    /// `pick` on the ink's curve whatever its role, for a choice that has
+    /// to turn with the text.
+    fn ink_paced(&self, pick: impl Fn(&Palette) -> Rgba) -> Rgba {
+        let (_, ink) = self.progress_at(self.elapsed());
+        self.picked(pick, ink)
+    }
+
+    fn picked(&self, pick: impl Fn(&Palette) -> Rgba, u: f32) -> Rgba {
         if u >= 1.0 {
             pick(&self.target)
         } else {
@@ -1068,23 +1149,108 @@ impl Tint {
         }
     }
 
-    fn snapshot(&self) -> Palette {
-        let u = self.progress();
-        if u >= 1.0 {
+    fn snapshot_at(&self, at: f32) -> Palette {
+        let (ground, ink) = self.progress_at(at);
+        if ground >= 1.0 && ink >= 1.0 {
             self.target
         } else {
-            Palette::mixed(&self.from, &self.target, u)
+            Palette::blended(&self.from, &self.target, ground, ink)
         }
     }
 
-    /// Starts from wherever the run visibly is, so nothing snaps.
+    fn snapshot(&self) -> Palette {
+        self.snapshot_at(self.elapsed())
+    }
+
+    /// Whether the widget theme starts from the stock light set: the
+    /// palette's own surfaces decide, read at the ink's pace so the stock
+    /// tokens turn with the text.
+    fn stock_light(&self) -> bool {
+        self.stock_light_at(self.elapsed())
+    }
+
+    fn stock_light_at(&self, at: f32) -> bool {
+        let (_, ink) = self.progress_at(at);
+        Palette::blended(&self.from, &self.target, ink, ink).mean_surface_lightness() > LIGHT_COVER
+    }
+
+    /// Starts from wherever each role visibly is, so nothing snaps.
     fn retarget(&mut self, base: &Base, length: Duration) {
-        self.from = self.snapshot();
+        let at = self.elapsed();
+        let (_, ink) = self.progress_at(at);
+        let turning = self.ink.is_some() && ink > 0.0 && ink < 1.0;
+
+        self.from = self.snapshot_at(at);
         let seed = if base.art_theming { self.seed } else { None };
         self.target = derive(base, seed);
         self.eased_at = Instant::now();
         self.length = length.as_secs_f32();
+        self.ink = ink_turn(&self.from, &self.target, self.length, turning);
     }
+}
+
+/// WCAG relative luminance.
+fn luminance(color: Rgba) -> f32 {
+    0.2126 * srgb_to_linear(color.r)
+        + 0.7152 * srgb_to_linear(color.g)
+        + 0.0722 * srgb_to_linear(color.b)
+}
+
+/// WCAG contrast ratio, 1 to 21.
+fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+fn dark_on_light(palette: &Palette) -> bool {
+    luminance(palette.text) < luminance(palette.bg_panel)
+}
+
+/// Where the ink turns in a run from `from` to `to` over `length` seconds.
+///
+/// A run that takes dark text on a light ground to light text on a dark one
+/// (or back) can't ease the two together: they'd meet halfway and hold there
+/// for a third of the run. The ground eases the whole length and the ink
+/// holds, then turns over [`INK_SPAN`], more in a slow run, centred where the
+/// ground reads as well under the new ink as under the old. Any continuous
+/// path still passes the ground's luminance once; this keeps that to the
+/// span's middle frames.
+/// An ink caught mid-turn (`turning`) turns on at once, so a second switch
+/// never parks it on the ground. A run that crosses nothing, like a song's
+/// tint within one theme, keeps the one curve.
+fn ink_turn(from: &Palette, to: &Palette, length: f32, turning: bool) -> Option<(f32, f32)> {
+    if length <= 0.0 {
+        return None;
+    }
+
+    let span = INK_SPAN
+        .max(length * INK_SLOW_SHARE)
+        .min(length * INK_SHARE);
+    if turning {
+        return Some((0.0, span));
+    }
+    if dark_on_light(from) == dark_on_light(to) {
+        return None;
+    }
+
+    // The old ink's contrast falls as the ground moves and the new one's
+    // rises, so the ground where they meet bisects.
+    let edge = |g: f32| {
+        let ground = mix(from.bg_panel, to.bg_panel, g);
+        contrast(from.text, ground) - contrast(to.text, ground)
+    };
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if edge(mid) > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    let centre = unsmooth((lo + hi) / 2.0) * length;
+    Some(((centre - span / 2.0).clamp(0.0, length - span), span))
 }
 
 /// What a window with no art tint of its own draws: the base palette, eased
@@ -1204,9 +1370,14 @@ pub fn tone_bad() -> Rgba {
 /// `bright` over a dark panel, `deep` over a light one: the bright amber
 /// measures 1.35:1 on the stock light panel, the deep one 4.06:1. Picked by
 /// the panel's own color like [`text_on`], so a tinted panel chooses for
-/// itself.
+/// itself. Across a theme switch the panel is read at the ink's pace, so the
+/// tones turn with the text they sit among.
 fn tone(bright: u32, deep: u32) -> Rgba {
-    if reads_light(active_role(|p| p.bg_panel)) {
+    let panel = TINT_STACK.with(|stack| match stack.borrow().last() {
+        Some(tint) => tint.ink_paced(|p| p.bg_panel),
+        None => base_tint().ink_paced(|p| p.bg_panel),
+    });
+    if reads_light(panel) {
         rgb(deep)
     } else {
         rgb(bright)
@@ -1733,13 +1904,11 @@ fn apply(cx: &mut App) {
             .unwrap()
             .and_then(|id| tints.get(&id).copied())
     };
-    let (palette, opacity) = match focused_tint {
-        Some(tint) => (tint.snapshot(), base.surface_opacity),
-        None => (base_tint().snapshot(), base.surface_opacity),
-    };
+    let tint = focused_tint.unwrap_or_else(base_tint);
+    let (palette, opacity) = (tint.snapshot(), base.surface_opacity);
     // Start from the stock baseline, chosen by the palette's own lightness
     // rather than the theme pick, so unprojected tokens read on it.
-    let light = palette.mean_surface_lightness() > LIGHT_COVER;
+    let light = tint.stock_light();
     let mode = if light {
         ThemeMode::Light
     } else {
@@ -1855,6 +2024,145 @@ mod tests {
         tint.retarget(&base(Mode::Dark), Duration::ZERO);
         assert_eq!(tint.progress(), 1.0);
         assert_eq!(tint.snapshot().bg_root, Palette::default().bg_root);
+    }
+
+    /// Title, body and dim text against the panel through `tint`'s run,
+    /// sampled every 0.2 ms: the least contrast outside the ink's turn, and
+    /// the milliseconds under 3:1 and under 4.5:1.
+    fn read_through(tint: &Tint, pick: fn(&Palette) -> Rgba) -> (f32, f32, f32) {
+        let step = 0.0002;
+        let turn = tint.ink.unwrap_or((0.0, 0.0));
+        let (mut outside, mut under_3, mut under_45) = (f32::MAX, 0.0, 0.0);
+        let mut at = 0.0;
+        while at <= tint.length {
+            let palette = tint.snapshot_at(at);
+            let ratio = contrast(pick(&palette), palette.bg_panel);
+            if at < turn.0 || at > turn.0 + turn.1 {
+                outside = outside.min(ratio);
+            }
+            if ratio < 3.0 {
+                under_3 += step * 1000.0;
+            }
+            if ratio < 4.5 {
+                under_45 += step * 1000.0;
+            }
+            at += step;
+        }
+        (outside, under_3, under_45)
+    }
+
+    fn switch(from: Mode, length: f32) -> Tint {
+        let to = match from {
+            Mode::Dark => Mode::Light,
+            Mode::Light => Mode::Dark,
+        };
+        let mut tint = Tint::settled(*base(from).active());
+        tint.retarget(&base(to), Duration::from_secs_f32(length));
+        tint
+    }
+
+    #[test]
+    fn a_theme_switch_turns_the_text_over_once_the_ground_has_crossed() {
+        for from in [Mode::Dark, Mode::Light] {
+            for length in [0.35, 0.6, 5.0] {
+                let tint = switch(from, length);
+                let (start, span) = tint.ink.expect("dark on light turns to light on dark");
+                assert!(span <= INK_SPAN.max(length * INK_SLOW_SHARE) && start + span <= length);
+
+                // Outside the turn the title reads at 3:1 or better, and
+                // body text never sits on its ground.
+                let (title, title_3, _) = read_through(&tint, |p| p.text_bright);
+                let (body, body_3, _) = read_through(&tint, |p| p.text);
+                assert!(title >= 3.0, "{length}: title {title}");
+                assert!(body >= 2.0, "{length}: body {body}");
+
+                // Titles go under 3:1 for under two thirds of the turn, and
+                // titles and body text far less than on one curve.
+                let mut plain = tint;
+                plain.ink = None;
+                let (_, plain_3, _) = read_through(&plain, |p| p.text_bright);
+                let (_, plain_body_3, _) = read_through(&plain, |p| p.text);
+                assert!(title_3 < span * 1000.0 * 0.65, "{length}: {title_3} ms");
+                assert!(
+                    title_3 < plain_3 * 0.6,
+                    "{length}: {title_3} against {plain_3}"
+                );
+                assert!(
+                    body_3 < plain_body_3 * 0.7,
+                    "{length}: {body_3} against {plain_body_3}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tint_within_one_theme_keeps_the_one_curve() {
+        let seed = Seed {
+            primary: Some(rgb(0xc0392b)),
+            secondary: None,
+            lightness: 0.4,
+        };
+        let mut tint = Tint::settled(Palette::default());
+        tint.seed = Some(seed);
+        let mut themed = base(Mode::Dark);
+        themed.art_theming = true;
+        tint.retarget(&themed, Duration::from_secs_f32(EASE_SECS));
+        assert!(tint.ink.is_none());
+
+        let at = EASE_SECS / 3.0;
+        let u = smooth(at / EASE_SECS);
+        let plain = Palette::blended(&tint.from, &tint.target, u, u);
+        assert_eq!(tint.snapshot_at(at).text, plain.text);
+        assert_eq!(tint.snapshot_at(at).bg_panel, plain.bg_panel);
+    }
+
+    #[test]
+    fn a_second_switch_turns_back_from_where_each_role_is() {
+        let length = 0.6;
+        let (start, span) = switch(Mode::Dark, length).ink.expect("turns");
+
+        for at in [0.1, start + span / 2.0, start + span + 0.05, 0.5] {
+            let mut tint = switch(Mode::Dark, length);
+            tint.eased_at = Instant::now() - Duration::from_secs_f32(at);
+            let before = tint.snapshot();
+
+            tint.retarget(&base(Mode::Dark), Duration::from_secs_f32(length));
+            let after = tint.snapshot_at(0.0);
+            for role in ROLES {
+                let (a, b) = ((role.get)(&before), (role.get)(&after));
+                let off = (a.r - b.r)
+                    .abs()
+                    .max((a.g - b.g).abs())
+                    .max((a.b - b.b).abs());
+                assert!(off < 0.01, "{at}: {} jumped {off}", role.name);
+            }
+
+            // An ink caught mid-turn keeps going, rather than holding on
+            // the ground until a turn of its own.
+            if (start..start + span).contains(&at) {
+                assert_eq!(tint.ink.map(|(start, _)| start), Some(0.0));
+            }
+            assert_eq!(tint.target.text, Palette::default().text);
+        }
+    }
+
+    #[test]
+    fn the_stock_widget_set_flips_inside_the_ink_turn() {
+        for from in [Mode::Dark, Mode::Light] {
+            let tint = switch(from, 0.6);
+            let (start, span) = tint.ink.expect("turns");
+            let starts_light = tint.stock_light_at(0.0);
+
+            let mut at = 0.0;
+            while tint.stock_light_at(at) == starts_light {
+                at += 0.001;
+                assert!(at <= tint.length, "never flipped");
+            }
+            assert!(
+                at >= start && at <= start + span + 0.001,
+                "{at} outside {start}+{span}"
+            );
+        }
     }
 
     #[test]

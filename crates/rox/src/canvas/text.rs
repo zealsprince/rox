@@ -184,8 +184,8 @@ pub(crate) fn line_of<'a, G>(
 
 /// A palette role by name, the way a Custom Controls case reads its color,
 /// or a hex color. Anything else is the text color. A role reads the palette
-/// as it paints this frame, so across a theme switch it eases with the
-/// panels round it.
+/// as it paints this frame, so across a theme switch it turns with the text
+/// of the panels round it.
 pub(crate) fn color(name: &str) -> Rgba {
     if let Some(role) = palette::ROLES.iter().find(|role| role.name == name) {
         return (role.get)(&palette::eased());

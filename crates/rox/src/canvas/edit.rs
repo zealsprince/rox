@@ -377,10 +377,15 @@ pub(crate) fn resized(
     );
     let units = [(right - left) / k, (bottom - top) / k];
 
+    // A side neither edge of which moved keeps its length as saved, which a
+    // child that grows in a stack needs: its box there isn't its own size.
+    let dragged = [edges.left || edges.right, edges.top || edges.bottom];
     let mut next = item.clone();
     for axis in 0..2 {
-        next.place.size[axis] =
-            resized_length(item.place.size[axis], units[axis], parent.size[axis]);
+        if dragged[axis] {
+            next.place.size[axis] =
+                resized_length(item.place.size[axis], units[axis], parent.size[axis]);
+        }
     }
 
     if parent.cell.is_some() {
@@ -1122,8 +1127,12 @@ pub(crate) struct StackDrag {
     /// Where the dragged one sits in its list, or None when it carries
     /// others: a set doesn't reorder, it only moves across the axis.
     pub index: Option<usize>,
-    /// Each sibling's middle along the axis, None for one with no room.
+    /// Each sibling's middle along the axis, None for one with no room,
+    /// turned round in a reversed stack so it runs in list order.
     pub middles: Vec<Option<f32>>,
+    /// -1 in a reversed stack, where a move along the axis runs against the
+    /// list, and 1 otherwise.
+    pub sign: f32,
 }
 
 impl StackDrag {
@@ -1134,7 +1143,9 @@ impl StackDrag {
         viewport: Viewport,
         alone: bool,
     ) -> Option<StackDrag> {
-        let along = stack_of(canvas, id)?.axis.along();
+        let stack = stack_of(canvas, id)?;
+        let along = stack.axis.along();
+        let sign = if stack.reverse { -1. } else { 1. };
         let (frames, index) = sibling_frames(canvas, id, viewport)?;
         let siblings = siblings(&canvas.items, id)?;
 
@@ -1143,9 +1154,9 @@ impl StackDrag {
             .zip(&frames)
             .map(|(item, frame)| {
                 let cell = frame.cell?;
-                let size = item.place.size_in(frame.size);
                 let offset = item.place.position.xy[along].resolve(frame.size[along]);
-                (stack::shown(item) > 0.).then_some(cell[along] + offset + size[along] / 2.)
+                let middle = cell.at[along] + offset + cell.size[along] / 2.;
+                (stack::shown(item) > 0.).then_some(middle * sign)
             })
             .collect();
 
@@ -1153,6 +1164,7 @@ impl StackDrag {
             along,
             index: alone.then_some(index),
             middles,
+            sign,
         })
     }
 
@@ -1161,7 +1173,7 @@ impl StackDrag {
     pub(crate) fn slot(&self, by: f32) -> Option<usize> {
         let index = self.index?;
         let start = self.middles.get(index).copied().flatten()?;
-        Some(stack_slot(&self.middles, index, start + by))
+        Some(stack_slot(&self.middles, index, start + by * self.sign))
     }
 }
 
@@ -1179,6 +1191,28 @@ pub(crate) fn reorder(canvas: &mut CanvasState, id: &str, to: usize) -> bool {
     let item = list.remove(ix);
     list.insert(to, item);
     true
+}
+
+/// Which sides of `id`'s box its stack sets, so a resize can't change them:
+/// the one along the axis for a child that grows, and both for a locked
+/// shape that grows, which can't change one side alone.
+pub(crate) fn held_by_growth(canvas: &CanvasState, id: &str) -> [bool; 2] {
+    let Some(stack) = stack_of(canvas, id) else {
+        return [false; 2];
+    };
+    let Some(item) = canvas.find(id) else {
+        return [false; 2];
+    };
+    if !(item.place.grow.is_finite() && item.place.grow > 0.) {
+        return [false; 2];
+    }
+
+    if item.place.aspect().is_some() {
+        return [true; 2];
+    }
+    let mut held = [false; 2];
+    held[stack.axis.along()] = true;
+    held
 }
 
 /// How many more group levels a canvas `level` deep can hold.
@@ -2173,7 +2207,7 @@ mod tests {
         card.stack = Some(Stack {
             gap: 20.,
             align: rox_canvas::StackAlign::Center,
-            justify: rox_canvas::StackAlign::Center,
+            justify: rox_canvas::StackJustify::Center,
             ..Stack::default()
         });
         card.content = Content::Group {
@@ -2192,9 +2226,9 @@ mod tests {
 
         // 360 + 20 + 24 + 20 + 24 = 448 tall in 600 leaves 76 above.
         let cover = parent_frame(&canvas, "cover", VIEW).unwrap();
-        assert_eq!(cover.cell, Some([220., 76.]));
+        assert_eq!(cover.cell.map(|c| c.at), Some([220., 76.]));
         let artist = parent_frame(&canvas, "artist", VIEW).unwrap();
-        assert_eq!(artist.cell, Some([250., 500.]));
+        assert_eq!(artist.cell.map(|c| c.at), Some([250., 500.]));
         assert_eq!(stack_of(&canvas, "artist").map(|s| s.gap), Some(20.));
         assert!(stack_of(&canvas, "card").is_none());
 
@@ -2202,7 +2236,7 @@ mod tests {
         let mut hidden = canvas.clone();
         hidden.find_mut("title").unwrap().visible = false;
         let artist = parent_frame(&hidden, "artist", VIEW).unwrap();
-        assert_eq!(artist.cell, Some([250., 478.]));
+        assert_eq!(artist.cell.map(|c| c.at), Some([250., 478.]));
     }
 
     #[test]
@@ -2345,7 +2379,94 @@ mod tests {
         assert!(reorder(&mut moved, "cover", 2));
         assert!(!reorder(&mut moved, "cover", 2), "already there");
         let artist = parent_frame(&moved, "artist", VIEW).unwrap();
-        assert_eq!(artist.cell, Some([250., 120.]));
+        assert_eq!(artist.cell.map(|c| c.at), Some([250., 120.]));
+    }
+
+    #[test]
+    fn in_a_reversed_stack_a_drag_reads_the_list_the_other_way() {
+        let mut canvas = card();
+        canvas
+            .find_mut("card")
+            .unwrap()
+            .stack
+            .as_mut()
+            .unwrap()
+            .reverse = true;
+        let drag = StackDrag::at(&canvas, "cover", VIEW, true).unwrap();
+
+        // The cover sits at the bottom now: dragging it up past a line's
+        // middle carries it later in the list.
+        assert_eq!(drag.sign, -1.);
+        assert_eq!(drag.slot(-100.), Some(0));
+        assert_eq!(drag.slot(-220.), Some(1));
+        assert_eq!(drag.slot(-400.), Some(2));
+    }
+
+    /// The card with its cover growing into whatever the lines leave.
+    fn growing_card() -> CanvasState {
+        let mut canvas = card();
+        let cover = canvas.find_mut("cover").unwrap();
+        cover.place.size = [Length::Stage(1.), Length::Units(0.)];
+        cover.place.grow = 1.;
+        cover.place.margin = [0., 30.];
+        canvas
+    }
+
+    #[test]
+    fn a_grown_child_measures_and_drags_by_its_grown_box() {
+        let canvas = growing_card();
+
+        // 600 less two lines, two gaps and the 30 margin leaves 482, and the
+        // card is wider than that, so the cover is 482 square.
+        let cover = parent_frame(&canvas, "cover", VIEW).unwrap();
+        let cell = cover.cell.unwrap();
+        assert_eq!(cell.size, [482., 482.]);
+        assert_eq!(cell.at, [159., 0.]);
+        let title = parent_frame(&canvas, "title", VIEW).unwrap();
+        assert_eq!(title.cell.unwrap().at, [250., 482. + 30. + 20.]);
+
+        let drag = StackDrag::at(&canvas, "cover", VIEW, true).unwrap();
+        assert_eq!(drag.middles[0], Some(241.));
+
+        // The stack sets both its sides, being a locked shape that grows.
+        assert_eq!(held_by_growth(&canvas, "cover"), [true, true]);
+        assert_eq!(held_by_growth(&canvas, "title"), [false, false]);
+        let mut unlocked = canvas.clone();
+        unlocked.find_mut("cover").unwrap().place.aspect = None;
+        assert_eq!(held_by_growth(&unlocked, "cover"), [false, true]);
+    }
+
+    #[test]
+    fn a_resize_across_a_grown_child_leaves_its_base_alone() {
+        let mut canvas = growing_card();
+        canvas.find_mut("cover").unwrap().place.aspect = None;
+        let parent = parent_frame(&canvas, "cover", VIEW).unwrap();
+        let cover = canvas.find("cover").unwrap();
+
+        let place = resized(
+            cover,
+            &parent,
+            &camera(),
+            VIEW,
+            [0., 0., 800., 482.],
+            Edges {
+                right: true,
+                ..Edges::default()
+            },
+            [-80., 0.],
+            [10., 10.],
+            true,
+        );
+        assert_eq!(place.size, [Length::Stage(0.9), Length::Units(0.)]);
+    }
+
+    #[test]
+    fn switching_a_stack_off_keeps_a_grown_child_at_its_grown_size() {
+        let mut canvas = growing_card();
+        let before = on_screen(&canvas, "cover");
+
+        assert!(set_stack(&mut canvas, "card", None, VIEW));
+        assert!(same_corners(&before, &on_screen(&canvas, "cover")));
     }
 
     #[test]

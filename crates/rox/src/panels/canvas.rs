@@ -510,8 +510,8 @@ pub struct CanvasPanel {
     bodies: Vec<Body<Grid>>,
     /// Grids built ahead of the edit that names them.
     spare: HashMap<String, Grid>,
-    /// Canvases and groups this canvas sits inside.
-    level: usize,
+    /// The canvases and groups this canvas sits inside.
+    depth: canvas::Depth,
     images: Images,
     pub(crate) shaders: Shaders,
     /// The texture items' views, by item id.
@@ -693,7 +693,7 @@ impl CanvasPanel {
             config,
             bodies: Vec::new(),
             spare: HashMap::new(),
-            level: canvas::level_here(),
+            depth: canvas::depth_here(),
             images: Images::default(),
             shaders: Shaders::default(),
             textures: HashMap::new(),
@@ -1014,10 +1014,10 @@ impl CanvasPanel {
         let state = self.state.clone();
         self.bodies = canvas::build_bodies(
             &self.config.canvas.items,
-            self.level,
-            &mut |item, dock, level| match keep.remove(&item.id) {
+            self.depth,
+            &mut |item, dock, depth| match keep.remove(&item.id) {
                 Some(grid) => Some(grid),
-                None => grid::restore(&item.id, dock, level, &state, window, cx),
+                None => grid::restore(&item.id, dock, depth, &state, window, cx),
             },
         );
 
@@ -1431,7 +1431,7 @@ impl CanvasPanel {
     /// How many group levels this canvas has left before the cap, counting
     /// the canvases it sits inside.
     pub(crate) fn levels_left(&self) -> usize {
-        edit::levels_left(self.level)
+        edit::levels_left(self.depth.level)
     }
 
     fn is_active(&self, cx: &Context<Self>) -> bool {
@@ -2122,6 +2122,7 @@ impl CanvasPanel {
     fn resize_handles(&self, shape: &Shape, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let [left, top, right, bottom] = shape.edges();
         let mid = [(left + right) / 2., (top + bottom) / 2.];
+        let held = edit::held_by_growth(&self.config.canvas, &shape.id);
 
         Edges::ALL
             .iter()
@@ -2148,15 +2149,31 @@ impl CanvasPanel {
                     _ => CursorStyle::ResizeUpRightDownLeft,
                 };
                 let id = shape.id.clone();
-
-                div()
+                let handle = div()
                     .id(("canvas-resize", ix))
                     .absolute()
                     .left(px(x - HANDLE / 2.))
                     .top(px(y - HANDLE / 2.))
                     .size(px(HANDLE))
                     .bg(palette::bg_panel())
-                    .border_1()
+                    .border_1();
+
+                // A side the stack sets by growth doesn't resize by hand, so
+                // its handles stay put and say why.
+                let moves = [edges.left || edges.right, edges.top || edges.bottom];
+                if (moves[0] && held[0]) || (moves[1] && held[1]) {
+                    return handle
+                        .border_color(palette::text_muted())
+                        .tooltip(|window, cx| {
+                            gpui_component::tooltip::Tooltip::new(rox_i18n::t!(
+                                "canvas-stack-grow-held"
+                            ))
+                            .build(window, cx)
+                        })
+                        .into_any_element();
+                }
+
+                handle
                     .border_color(palette::accent())
                     .cursor(cursor)
                     .on_mouse_down(
@@ -4490,9 +4507,10 @@ mod tests {
                 json!({ "id": "old", "name": "Kept", "content": { "kind": "grid", "dock": dock } });
             let mut state: CanvasState =
                 serde_json::from_value(json!({ "items": [item.clone()] })).expect("parses");
-            let bodies = canvas::build_bodies(&state.items, 0, &mut |_, dock, _| {
-                grid::usable(dock).map(|_| ())
-            });
+            let bodies =
+                canvas::build_bodies(&state.items, canvas::Depth::default(), &mut |_, dock, _| {
+                    grid::usable(dock).map(|_| ())
+                });
             assert!(matches!(bodies[0], Body::Unknown));
 
             canvas::fold_dumps(&mut state.items, &bodies, &|_| Some(json!("fresh")));
@@ -4535,9 +4553,10 @@ mod tests {
             let item = json!({ "id": "empty", "content": { "kind": "grid", "dock": dock } });
             let state: CanvasState =
                 serde_json::from_value(json!({ "items": [item] })).expect("parses");
-            let bodies = canvas::build_bodies(&state.items, 0, &mut |_, dock, _| {
-                grid::usable(dock).map(|_| ())
-            });
+            let bodies =
+                canvas::build_bodies(&state.items, canvas::Depth::default(), &mut |_, dock, _| {
+                    grid::usable(dock).map(|_| ())
+                });
             assert!(matches!(bodies[0], Body::Grid(())), "{dock}");
         }
     }

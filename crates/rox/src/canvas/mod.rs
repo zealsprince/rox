@@ -32,7 +32,7 @@ pub(crate) mod texture;
 use std::cell::Cell;
 use std::collections::HashMap;
 
-use rox_canvas::{Camera, CanvasItem, Content, MAX_DEPTH, Viewport};
+use rox_canvas::{Camera, CanvasItem, Content, MAX_CANVAS_DEPTH, MAX_DEPTH, Viewport};
 use serde_json::Value;
 
 /// What one saved item holds live, at the same index as the item.
@@ -57,19 +57,43 @@ pub(crate) struct Placing {
     pub design: bool,
 }
 
+/// How deep something sits: `level` counts the canvases and groups around
+/// it, and `canvases` only the canvases.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Depth {
+    pub level: usize,
+    pub canvases: usize,
+}
+
+impl Depth {
+    fn in_group(self) -> Depth {
+        Depth {
+            level: self.level + 1,
+            ..self
+        }
+    }
+
+    fn in_canvas(self) -> Depth {
+        Depth {
+            level: self.level + 1,
+            canvases: self.canvases + 1,
+        }
+    }
+}
+
 thread_local! {
-    /// The level of the grid whose dock is restoring right now, if any.
-    static RESTORING: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The depth of the grid whose dock is restoring right now, if any.
+    static RESTORING: Cell<Option<Depth>> = const { Cell::new(None) };
 }
 
 /// Held around a grid's restore, so a canvas the registry builds inside it
 /// knows how deep it sits. Restores the outer value on drop, a panic
 /// included.
-pub(crate) struct Nesting(Option<usize>);
+pub(crate) struct Nesting(Option<Depth>);
 
 impl Nesting {
-    pub(crate) fn enter(level: usize) -> Nesting {
-        Nesting(RESTORING.replace(Some(level)))
+    pub(crate) fn enter(depth: Depth) -> Nesting {
+        Nesting(RESTORING.replace(Some(depth)))
     }
 }
 
@@ -79,20 +103,20 @@ impl Drop for Nesting {
     }
 }
 
-/// The level a canvas built now starts at: 0 on its own, one past the grid
-/// restoring it.
-pub(crate) fn level_here() -> usize {
-    RESTORING.get().map_or(0, |level| level + 1)
+/// The depth a canvas built now starts at: none on its own, one canvas past
+/// the grid restoring it.
+pub(crate) fn depth_here() -> Depth {
+    RESTORING.get().map_or(Depth::default(), Depth::in_canvas)
 }
 
-/// Every item's body. `level` counts the canvases and groups these items sit
-/// inside, and nothing past [`MAX_DEPTH`] is built, so a hand-edited layout
-/// can't nest without end. `grid` builds one grid at the level its item
-/// sits at; None keeps the item as saved.
+/// Every item's body. `depth` is how deep these items sit, and nothing past
+/// [`MAX_DEPTH`] levels or [`MAX_CANVAS_DEPTH`] canvases is built, so a
+/// hand-edited layout can't nest without end. `grid` builds one grid at the
+/// depth its item sits at; None keeps the item as saved.
 pub(crate) fn build_bodies<G>(
     items: &[CanvasItem],
-    level: usize,
-    grid: &mut impl FnMut(&CanvasItem, &Value, usize) -> Option<G>,
+    depth: Depth,
+    grid: &mut impl FnMut(&CanvasItem, &Value, Depth) -> Option<G>,
 ) -> Vec<Body<G>> {
     items
         .iter()
@@ -100,19 +124,20 @@ pub(crate) fn build_bodies<G>(
             Content::Grid { dock } => {
                 // Only a canvas inside the grid opens a level, so a grid of
                 // plain panels still builds at the cap.
-                if level >= MAX_DEPTH && holds_canvas(dock) {
+                let past = depth.level >= MAX_DEPTH || depth.canvases >= MAX_CANVAS_DEPTH;
+                if past && holds_canvas(dock) {
                     log::warn!(
-                        "canvas: grid {} holds a canvas past {MAX_DEPTH} levels, keeping it as saved",
+                        "canvas: grid {} holds a canvas past {MAX_DEPTH} levels or {MAX_CANVAS_DEPTH} canvases, keeping it as saved",
                         item.id
                     );
                     return Body::Unknown;
                 }
 
-                grid(item, dock, level).map_or(Body::Unknown, Body::Grid)
+                grid(item, dock, depth).map_or(Body::Unknown, Body::Grid)
             }
 
             Content::Group { items } => {
-                if level >= MAX_DEPTH {
+                if depth.level >= MAX_DEPTH {
                     log::warn!(
                         "canvas: group {} nests past {MAX_DEPTH} levels, keeping it as saved",
                         item.id
@@ -120,7 +145,7 @@ pub(crate) fn build_bodies<G>(
                     return Body::Unknown;
                 }
 
-                Body::Group(build_bodies(items, level + 1, grid))
+                Body::Group(build_bodies(items, depth.in_group(), grid))
             }
 
             Content::Image { .. } => Body::Image,
@@ -264,7 +289,7 @@ mod tests {
     fn an_unknown_item_survives_a_dump() {
         let text = json!({ "id": "t", "content": { "kind": "hologram", "beam": [1, 2, 3] } });
         let mut state = canvas(json!([text.clone(), grid("a", json!({ "stale": true }))]));
-        let bodies = build_bodies(&state.items, 0, &mut |_, _, _| Some(()));
+        let bodies = build_bodies(&state.items, Depth::default(), &mut |_, _, _| Some(()));
 
         fold_dumps(&mut state.items, &bodies, &|_| {
             Some(json!({ "fresh": true }))
@@ -284,7 +309,7 @@ mod tests {
         let at = |levels| {
             let state = canvas(json!([grouped(levels, grid("deep", nested_canvas_dump()))]));
             let mut built = 0;
-            let bodies = build_bodies(&state.items, 0, &mut |_, _, _| {
+            let bodies = build_bodies(&state.items, Depth::default(), &mut |_, _, _| {
                 built += 1;
                 Some(())
             });
@@ -304,7 +329,7 @@ mod tests {
         let state = canvas(json!([grouped(MAX_DEPTH, grid("deep", plain))]));
         let mut built = 0;
 
-        build_bodies(&state.items, 0, &mut |_, _, _| {
+        build_bodies(&state.items, Depth::default(), &mut |_, _, _| {
             built += 1;
             Some(())
         });
@@ -315,20 +340,62 @@ mod tests {
     #[test]
     fn a_nested_canvas_starts_its_count_where_the_grid_left_it() {
         let state = canvas(json!([grid("a", nested_canvas_dump())]));
-        let bodies = build_bodies(&state.items, MAX_DEPTH, &mut |_, _, _| Some(()));
-        assert!(matches!(bodies[0], Body::Unknown));
+        let at = |level, canvases| {
+            let bodies = build_bodies(&state.items, Depth { level, canvases }, &mut |_, _, _| {
+                Some(())
+            });
+            matches!(bodies[0], Body::Grid(()))
+        };
+        assert!(!at(MAX_DEPTH, 0), "past the levels");
+        assert!(!at(MAX_CANVAS_DEPTH, MAX_CANVAS_DEPTH), "past the canvases");
+        assert!(at(MAX_CANVAS_DEPTH, MAX_CANVAS_DEPTH - 1));
 
-        assert_eq!(level_here(), 0);
+        assert_eq!(depth_here(), Depth::default());
         {
-            let _outer = Nesting::enter(1);
-            assert_eq!(level_here(), 2);
+            let _outer = Nesting::enter(Depth {
+                level: 1,
+                canvases: 0,
+            });
+            assert_eq!(
+                depth_here(),
+                Depth {
+                    level: 2,
+                    canvases: 1
+                }
+            );
             {
-                let _inner = Nesting::enter(3);
-                assert_eq!(level_here(), 4);
+                let _inner = Nesting::enter(Depth {
+                    level: 3,
+                    canvases: 1,
+                });
+                assert_eq!(
+                    depth_here(),
+                    Depth {
+                        level: 4,
+                        canvases: 2
+                    }
+                );
             }
-            assert_eq!(level_here(), 2);
+            assert_eq!(depth_here().level, 2);
         }
-        assert_eq!(level_here(), 0);
+        assert_eq!(depth_here(), Depth::default());
+    }
+
+    #[test]
+    fn groups_nest_past_the_canvas_cap() {
+        // A look's deck, card, buttons, a transport row and its play button.
+        let leaf = json!({ "id": "leaf", "content": { "kind": "image", "asset": "a" } });
+        let state = canvas(json!([grouped(MAX_CANVAS_DEPTH + 1, leaf)]));
+        let bodies = build_bodies(&state.items, Depth::default(), &mut |_, _, _| Some(()));
+
+        let mut body = &bodies[0];
+        for _ in 0..=MAX_CANVAS_DEPTH {
+            let Body::Group(inner) = body else {
+                panic!("a group short of the cap builds");
+            };
+            body = &inner[0];
+        }
+        assert!(matches!(body, Body::Image));
     }
 
     #[test]
@@ -338,7 +405,7 @@ mod tests {
             { "id": "g", "content": { "kind": "group", "items": [grid("b", Value::Null)] } },
         ]));
         let mut n = 0;
-        let bodies = build_bodies(&state.items, 0, &mut |item, _, _| {
+        let bodies = build_bodies(&state.items, Depth::default(), &mut |item, _, _| {
             n += 1;
             Some((item.id.clone(), n))
         });

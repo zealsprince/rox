@@ -11,11 +11,12 @@
 //! changes in its own unit for a fill or a fit. A fractional x or y is
 //! written back as a fraction, and a fraction plus units moves its units.
 //!
-//! An item in a stack measures from its cell, where the stack puts its box,
-//! instead of from its anchor. The editor keeps the tools that would move it
-//! along the stack's axis switched off.
+//! An item in a stack measures from its cell, where the stack puts its box
+//! and gives it its size, which a child that grows takes, instead of from
+//! its anchor. The editor keeps the tools that would move it along the
+//! stack's axis switched off.
 
-use rox_canvas::{Length, Place, Stack};
+use rox_canvas::{Length, Place, Stack, StackCell};
 
 /// Which line of the parent's box an align uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,11 +68,11 @@ pub(crate) enum Arrange {
 pub(crate) fn arranged(
     place: &Place,
     parent: [f32; 2],
-    cell: Option<[f32; 2]>,
+    cell: Option<StackCell>,
     flat: bool,
     arrange: Arrange,
 ) -> Option<Place> {
-    let size = sizes(place, parent);
+    let size = sizes(place, parent, cell);
     let scale = drawn_scale(place, flat);
     let area = |s: [f32; 2]| s[0] > 0. && s[1] > 0. && s[0].is_finite() && s[1].is_finite();
     if !area(size) || !area(parent) || scale <= 0. {
@@ -95,7 +96,7 @@ pub(crate) fn arranged(
                 resized(place.size[0], parent[0], want[0]),
                 resized(place.size[1], parent[1], want[1]),
             ];
-            let size = sizes(&out, parent);
+            let size = out.size_in(parent);
             let middle = [parent[0] / 2., parent[1] / 2.];
             let units = position_for(&out, parent, cell, size, middle);
             moved_to(&mut out, parent, units);
@@ -107,7 +108,7 @@ pub(crate) fn arranged(
                 resized(place.size[0], parent[0], size[0] * k),
                 resized(place.size[1], parent[1], size[1] * k),
             ];
-            let size = sizes(&out, parent);
+            let size = out.size_in(parent);
             let middle = [parent[0] / 2., parent[1] / 2.];
             let units = position_for(&out, parent, cell, size, middle);
             moved_to(&mut out, parent, units);
@@ -131,10 +132,10 @@ pub(crate) fn free_in(arrange: Arrange, stack: Stack) -> bool {
 pub(crate) fn drawn_box(
     place: &Place,
     parent: [f32; 2],
-    cell: Option<[f32; 2]>,
+    cell: Option<StackCell>,
     flat: bool,
 ) -> [f32; 4] {
-    let size = sizes(place, parent);
+    let size = sizes(place, parent, cell);
     let scale = drawn_scale(place, flat);
     let center = center(place, parent, cell, size);
 
@@ -147,8 +148,11 @@ pub(crate) fn drawn_box(
     ]
 }
 
-fn sizes(place: &Place, parent: [f32; 2]) -> [f32; 2] {
-    place.size_in(parent)
+fn sizes(place: &Place, parent: [f32; 2], cell: Option<StackCell>) -> [f32; 2] {
+    match cell {
+        Some(cell) => cell.size,
+        None => place.size_in(parent),
+    }
 }
 
 /// x and y set to `units`, each axis written in the unit it already uses.
@@ -165,10 +169,10 @@ fn drawn_scale(place: &Place, flat: bool) -> f32 {
 /// The box's middle: the anchor's point on the parent, then the item's own
 /// anchor point placed on it, as the projection lays it out. In a stack's
 /// cell the box's top-left sits at the cell.
-fn center(place: &Place, parent: [f32; 2], cell: Option<[f32; 2]>, size: [f32; 2]) -> [f32; 2] {
+fn center(place: &Place, parent: [f32; 2], cell: Option<StackCell>, size: [f32; 2]) -> [f32; 2] {
     let [x, y, _] = place.offset_in(parent);
-    if let Some(cell) = cell {
-        return [cell[0] + x + size[0] / 2., cell[1] + y + size[1] / 2.];
+    if let Some(StackCell { at, .. }) = cell {
+        return [at[0] + x + size[0] / 2., at[1] + y + size[1] / 2.];
     }
 
     let [fx, fy] = place.anchor.fraction();
@@ -183,14 +187,14 @@ fn center(place: &Place, parent: [f32; 2], cell: Option<[f32; 2]>, size: [f32; 2
 fn position_for(
     place: &Place,
     parent: [f32; 2],
-    cell: Option<[f32; 2]>,
+    cell: Option<StackCell>,
     size: [f32; 2],
     at: [f32; 2],
 ) -> [f32; 2] {
     if let Some(cell) = cell {
         return [
-            at[0] - size[0] / 2. - cell[0],
-            at[1] - size[1] / 2. - cell[1],
+            at[0] - size[0] / 2. - cell.at[0],
+            at[1] - size[1] / 2. - cell.at[1],
         ];
     }
 
@@ -427,7 +431,10 @@ mod tests {
     #[test]
     fn in_a_stack_an_item_measures_from_its_cell_and_moves_only_across() {
         let item = place(Anchor::BottomRight, [5., 3.], units(40., 20.));
-        let cell = Some([100., 50.]);
+        let cell = Some(StackCell {
+            at: [100., 50.],
+            size: [40., 20.],
+        });
         assert!(close(
             drawn_box(&item, STAGE, cell, true),
             [105., 53., 40., 20.]
@@ -457,6 +464,21 @@ mod tests {
         };
         assert!(free_in(Arrange::Align(Line::Bottom), row));
         assert!(!free_in(Arrange::Align(Line::CenterX), row));
+
+        // A child that grew measures by the size its cell gives it.
+        let grown = Some(StackCell {
+            at: [100., 50.],
+            size: [40., 300.],
+        });
+        assert!(close(
+            drawn_box(&item, STAGE, grown, true),
+            [105., 53., 40., 300.]
+        ));
+        let right = arranged(&item, STAGE, grown, true, Arrange::Align(Line::Right)).unwrap();
+        assert!(close(
+            drawn_box(&right, STAGE, grown, true),
+            [960., 53., 40., 300.]
+        ));
     }
 
     #[test]

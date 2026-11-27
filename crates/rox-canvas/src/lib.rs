@@ -16,11 +16,11 @@ mod state;
 pub use mat::Mat4;
 pub use place::{LengthKind, Position};
 pub use project::{
-    Frame, Live, Projected, Viewport, child_frame, child_frames, inside, paint_order, project,
-    project_points, quad_point, rest_size, unit_point, unproject_delta,
+    Frame, Live, Projected, Viewport, box_size, child_frame, child_frames, inside, paint_order,
+    project, project_points, quad_point, rest_size, unit_point, unproject_delta,
 };
-pub use stack::{Stack, StackAlign, StackAxis};
+pub use stack::{Stack, StackAlign, StackAxis, StackCell, StackJustify};
 pub use state::{
     Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Hit,
-    Idle, ImageFit, Length, Look, MAX_DEPTH, Place, Stage, Sway, TargetSize,
+    Idle, ImageFit, Length, Look, MAX_CANVAS_DEPTH, MAX_DEPTH, Place, Stage, Sway, TargetSize,
 };

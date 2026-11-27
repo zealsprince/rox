@@ -3,6 +3,7 @@
 //! `size`, so an anchor is a fraction of that box.
 
 use crate::mat::Mat4;
+use crate::stack::StackCell;
 use crate::state::{Camera, CanvasItem, Fit, Stage};
 
 /// `focal - z` at or under this is behind the camera.
@@ -33,9 +34,9 @@ pub struct Frame {
     /// frame is inside, which a render target's rest size counts.
     pub rest: f32,
     /// Set by a stacking group on the frame for one of its children: where
-    /// that child's box goes, its top-left in the group's units, before its
-    /// own x and y. None places a child by its anchor.
-    pub cell: Option<[f32; 2]>,
+    /// that child's box goes, its top-left in the group's units before its
+    /// own x and y, and its size there. None places a child by its anchor.
+    pub cell: Option<StackCell>,
 }
 
 impl Frame {
@@ -79,7 +80,7 @@ impl Frame {
     }
 
     /// This frame for a child the stack puts at `cell`.
-    pub fn at_cell(self, cell: [f32; 2]) -> Frame {
+    pub fn at_cell(self, cell: StackCell) -> Frame {
         Frame {
             cell: Some(cell),
             ..self
@@ -136,7 +137,7 @@ pub fn project(
     live: &Live,
 ) -> Option<Projected> {
     let view = View::new(camera, viewport, pointer, parent.k);
-    let size = item_size(item, parent);
+    let size = box_size(item, parent);
     let world = parent.transform * local(item, parent, live, flat);
     let center = world.point(center_offset(item, size));
     let (center_px, scale) = view.project(center)?;
@@ -175,7 +176,7 @@ pub fn project(
 
 /// The frame a group hands its children.
 pub fn child_frame(item: &CanvasItem, parent: &Frame, live: &Live) -> Frame {
-    let size = item_size(item, parent);
+    let size = box_size(item, parent);
     let [left, top] = box_origin(item, size);
 
     Frame {
@@ -192,7 +193,8 @@ pub fn child_frame(item: &CanvasItem, parent: &Frame, live: &Live) -> Frame {
 
 /// The frame each child of `group` is placed in, given the frame the group
 /// hands them all: that one again, or for a stacking group each child's own
-/// with its cell. `presence` is how much room each child takes.
+/// with its cell, inside the stack's padding. `presence` is how much room
+/// each child takes.
 pub fn child_frames(
     group: &CanvasItem,
     frame: &Frame,
@@ -203,9 +205,10 @@ pub fn child_frames(
         return vec![*frame; children.len()];
     };
 
-    let entries = crate::stack::entries(children, frame.size, presence);
+    let entries = crate::stack::entries(stack, children, frame.size, presence);
     let (cells, _) = crate::stack::cells(stack, frame.size, &entries);
-    cells.into_iter().map(|cell| frame.at_cell(cell)).collect()
+    let inner = stack.inner_frame(frame);
+    cells.into_iter().map(|cell| inner.at_cell(cell)).collect()
 }
 
 /// Points on a frame's own box, in its units from its top-left, to pixels:
@@ -328,7 +331,7 @@ pub fn quad_point(corners: &[[f32; 2]; 4], unit: [f32; 2]) -> Option<[f32; 2]> {
 /// what routes and sway do to it don't count, so a render target sized from
 /// it holds still while its item moves.
 pub fn rest_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
-    let [width, height] = item_size(item, parent);
+    let [width, height] = box_size(item, parent);
     let k = parent.rest * item.place.scale;
 
     [width * k, height * k]
@@ -388,7 +391,7 @@ pub fn unproject_delta(
     screen_delta: [f32; 2],
 ) -> [f32; 2] {
     let view = View::new(camera, viewport, None, parent.k);
-    let size = item_size(item, parent);
+    let size = box_size(item, parent);
     let world = parent.transform * local(item, parent, &Live::default(), flat);
     let center = world.point(center_offset(item, size));
 
@@ -486,8 +489,13 @@ impl View {
     }
 }
 
-fn item_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
-    item.place.size_in(parent.size)
+/// An item's box in its parent's units: its own size, or in a stack the
+/// size its cell gives it, which a child that grows takes.
+pub fn box_size(item: &CanvasItem, parent: &Frame) -> [f32; 2] {
+    match parent.cell {
+        Some(cell) => cell.size,
+        None => item.place.size_in(parent.size),
+    }
 }
 
 /// The item's top-left in its own space. Its anchor point is the origin.
@@ -509,9 +517,9 @@ fn center_offset(item: &CanvasItem, size: [f32; 2]) -> [f32; 3] {
 fn local(item: &CanvasItem, parent: &Frame, live: &Live, flat: bool) -> Mat4 {
     let place = &item.place;
     let [fx, fy] = place.anchor.fraction();
-    let size = item_size(item, parent);
+    let size = box_size(item, parent);
     let point = match parent.cell {
-        Some(cell) => [cell[0] + fx * size[0], cell[1] + fy * size[1]],
+        Some(cell) => [cell.at[0] + fx * size[0], cell.at[1] + fy * size[1]],
         None => [fx * parent.size[0], fy * parent.size[1]],
     };
     let offset = place.offset_in(parent.size);
@@ -1274,7 +1282,7 @@ mod tests {
         stacked.stack = Some(crate::Stack {
             gap: 10.,
             align: crate::StackAlign::Center,
-            justify: crate::StackAlign::Center,
+            justify: crate::StackJustify::Center,
             ..crate::Stack::default()
         });
         let children = vec![
@@ -1284,8 +1292,8 @@ mod tests {
 
         let frame = child_frame(&stacked, &stage_frame(), &Live::default());
         let frames = child_frames(&stacked, &frame, &children, crate::stack::shown);
-        assert_eq!(frames[0].cell, Some([150., 115.]));
-        assert_eq!(frames[1].cell, Some([100., 165.]));
+        assert_eq!(frames[0].cell.map(|c| c.at), Some([150., 115.]));
+        assert_eq!(frames[1].cell.map(|c| c.at), Some([100., 165.]));
 
         // The first sits in its cell, the second there plus its own x and y.
         let first = put(&children[0], &frames[0], &ORTHO, false);
@@ -1309,5 +1317,32 @@ mod tests {
         stacked.stack = None;
         let plain = child_frames(&stacked, &frame, &children, crate::stack::shown);
         assert!(plain.iter().all(|f| *f == frame));
+    }
+
+    #[test]
+    fn a_grown_child_draws_at_its_grown_size_inside_the_padding() {
+        let mut stacked = group([0., 0., 0.], [0.; 3], [400., 300.]);
+        stacked.place.anchor = Anchor::TopLeft;
+        stacked.stack = Some(crate::Stack {
+            padding: [20., 10., 20., 10.],
+            ..crate::Stack::default()
+        });
+        let mut grower = item(Anchor::Center, [0., 0., 0.], [100., 40.]);
+        grower.place.grow = 1.;
+        let children = vec![item(Anchor::TopLeft, [0., 0., 0.], [100., 80.]), grower];
+
+        let frame = child_frame(&stacked, &stage_frame(), &Live::default());
+        let frames = child_frames(&stacked, &frame, &children, crate::stack::shown);
+
+        // 280 high inside the padding, 80 fixed: the grower is 200 high.
+        assert_eq!(box_size(&children[1], &frames[1]), [100., 200.]);
+        let drawn = put(&children[1], &frames[1], &ORTHO, false);
+        assert!(same(drawn.corners, rect(20., 90., 120., 290.)), "{drawn:?}");
+
+        // Its own children measure against the grown box.
+        assert_eq!(
+            child_frame(&children[1], &frames[1], &Live::default()).size,
+            [100., 200.]
+        );
     }
 }

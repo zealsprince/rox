@@ -1969,7 +1969,7 @@ mod tests {
             let room = card.place.size_in(glass);
 
             for idle in [false, true] {
-                let entries = rox_canvas::stack::entries(items, room, |child| {
+                let entries = rox_canvas::stack::entries(&stack, items, room, |child| {
                     if idle && child.id == "lines" { 0. } else { 1. }
                 });
                 let (cells, run) = rox_canvas::stack::cells(&stack, room, &entries);
@@ -1978,7 +1978,7 @@ mod tests {
                     "at {window:?} the card runs {run} in {}",
                     room[1]
                 );
-                assert!(cells.iter().all(|cell| cell[1] >= -0.5), "{cells:?}");
+                assert!(cells.iter().all(|cell| cell.at[1] >= -0.5), "{cells:?}");
             }
 
             let cover = items

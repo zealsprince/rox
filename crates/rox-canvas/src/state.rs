@@ -8,14 +8,20 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::place::{Position, no_limits};
-use crate::stack::Stack;
+use crate::place::{Position, no_growth, no_limits, no_margin};
+use crate::stack::{Stack, StackAlign};
 
 pub const CANVAS_VERSION: u32 = 1;
 
-/// Canvases inside canvases and groups inside groups, counted together.
-/// Placeholder.
-pub const MAX_DEPTH: usize = 4;
+/// Canvases inside canvases and groups inside groups, counted together: the
+/// bound on how deep reading, building and drawing a hand-edited layout
+/// recurses, and on how deep its JSON nests.
+pub const MAX_DEPTH: usize = 8;
+
+/// Canvases inside canvases alone, through the grids that hold them. Each
+/// one is a panel with docks of its own, so this is the bound on what a
+/// nested layout costs. A group only hands its children a frame.
+pub const MAX_CANVAS_DEPTH: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -418,6 +424,18 @@ pub struct Place {
     /// Degrees about x, y, z.
     pub rotation: [f32; 3],
     pub scale: f32,
+    /// In a stack: its weight in the room left along the axis, 0 for none.
+    /// Its own size is what it grows from.
+    #[serde(skip_serializing_if = "no_growth")]
+    pub grow: f32,
+    /// In a stack: units before and after it along the axis, on top of the
+    /// gap.
+    #[serde(skip_serializing_if = "no_margin")]
+    pub margin: [f32; 2],
+    /// In a stack: where it sits across the axis, in place of the stack's
+    /// align.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_self: Option<StackAlign>,
 }
 
 impl Default for Place {
@@ -431,6 +449,9 @@ impl Default for Place {
             aspect: None,
             rotation: [0.; 3],
             scale: 1.,
+            grow: 0.,
+            margin: [0.; 2],
+            align_self: None,
         }
     }
 }
@@ -1136,7 +1157,7 @@ mod tests {
             levels.push((level, matches!(item.content, Content::Unknown(_))))
         });
 
-        // The four groups that fit are read, and the fifth is held whole.
+        // The groups that fit are read, and the one past them is held whole.
         let expected: Vec<_> = (0..=MAX_DEPTH)
             .map(|level| (level, level == MAX_DEPTH))
             .collect();

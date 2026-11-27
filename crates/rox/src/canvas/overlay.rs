@@ -784,7 +784,9 @@ fn item_rows(
         }
     }
     if crate::canvas::edit::stack_of(&panel.config.canvas, &id).is_some() {
-        rows = rows.child(stack_rows::offset_note());
+        rows = rows
+            .child(stack_rows::offset_note())
+            .child(stack_rows::child_rows(panel, item, cx));
     }
 
     for axis in 0..2 {

@@ -545,53 +545,85 @@ doesn't write it, since a converted layout is fractions of the window and nothin
 A group can stack its children: `"stack"` on the group item lays them out one after
 another along `"axis"` (`"x"` or `"y"`), with `"gap"` units between neighbours,
 `"justify"` placing the run along the axis and `"align"` placing each child across it,
-each `"start"`, `"center"` or `"end"` (`crates/rox-canvas/src/stack.rs`). Fields left
-out take a column from the start with no gap, and a stack that doesn't parse reads as
-none. A cover locked square and two lines of text, centred as one block in whatever
-space the card has:
+each `"start"`, `"center"` or `"end"`, and `"between"` for `"justify"` too
+(`crates/rox-canvas/src/stack.rs`). `"padding"` keeps the children in from the group's
+edges by units per side, left, top, right, bottom, and `"reverse": true` runs them from
+the far end, the first child there, so `"start"` is that end. Fields left out take a
+column from the start with no gap, no padding and no reversal, and a stack that doesn't
+parse reads as none.
+
+A stacked child carries three fields of its own on its place, each ignored outside a
+stack: `"grow"`, its weight in the room the stack has left along the axis, `"margin"`,
+units before and after it along the axis, and `"align_self"`, where it sits across in
+place of the stack's `"align"`. They live on the place because they're more of what the
+place already says, where the box goes and how big, and because a stack already reads
+each child's place, so nothing new has to be threaded through the editor or a case. A
+card whose cover grows square into whatever its lines, seek bar, buttons and volume
+leave, with margins for the air between them:
 
 ```json
 {
   "id": "card",
-  "place": { "anchor": "top", "size": [{ "stage": 1.0 }, { "stage": 1.0, "units": -214.0 }] },
-  "stack": { "axis": "y", "gap": 22.0, "align": "center", "justify": "center" },
+  "place": { "size": [{ "stage": 1.0 }, { "stage": 1.0 }] },
+  "stack": { "axis": "y", "gap": 0.0, "align": "center", "justify": "center", "padding": [20.0, 20.0, 20.0, 20.0] },
   "content": { "kind": "group", "items": [
-    { "id": "cover", "place": { "size": [{ "stage": 0.8 }, { "stage": 0.62 }], "max_size": [460.0, 460.0], "aspect": 1.0 }, "content": { "kind": "image", "asset": "cover" } },
-    { "id": "title", "place": { "size": [{ "stage": 0.9 }, { "units": 40.0 }] }, "content": { "kind": "text", "text": "%title%", "size": 30.0, "color": "text" } },
-    { "id": "artist", "place": { "size": [{ "stage": 0.9 }, { "units": 30.0 }] }, "content": { "kind": "text", "text": "%artist%", "size": 22.0, "color": "text" } }
+    { "id": "cover", "place": { "size": [{ "stage": 0.8, "units": 40.0 }, { "units": 0.0 }], "max_size": [540.0, 540.0], "aspect": 1.0, "grow": 1.0, "margin": [0.0, 12.0] }, "content": { "kind": "image", "asset": "cover" } },
+    { "id": "title", "place": { "size": [{ "stage": 1.0 }, { "units": 38.0 }], "margin": [6.0, 4.0] }, "content": { "kind": "text", "text": "%title%", "size": 26.0, "color": "text" } },
+    { "id": "seek", "place": { "size": [{ "stage": 1.0, "units": 16.0 }, { "units": 30.0 }], "max_size": [480.0, null], "margin": [0.0, 6.0] }, "content": { "kind": "image", "asset": "seek" } }
   ] }
 }
 ```
 
-The stack only decides where each child's box goes. Every child keeps its own size,
-limits and aspect against the group's box, so a fraction along the axis is a fraction
-of the group and not of what's left. Nothing shrinks or grows to fit: a run longer than
-its group runs past it, and the group's inspector says by how many units. The box's
-top-left goes to the child's cell whatever its anchor, and the child's own x and y then
-move it from there, as do its routes and sway on `x` and `y`. Depth, turns and scale
-don't take room, so a pulse on a child's scale never shifts its neighbours, and z order
-and perspective are as for any group: the stack lays out the flat boxes before anything
-is projected (`project::child_frames`, the cell on `Frame`).
+The stack decides where each child's box goes and, for one that grows, how long it is.
+Every child keeps its own size, limits and aspect against the box inside the group's
+padding, so a fraction along the axis is a fraction of that box and not of what's left.
+A margin adds to the gap on its side rather than collapsing into it, the way flex items'
+margins do, and a child that takes no room takes no margin. The run's length is every
+child's length and margins plus the gaps. When it's shorter than the box, the room left
+goes to the children that grow, by weight: a child's own size along the axis is the base
+it grows from, and its limits still hold, so one that reaches its maximum keeps it and
+hands the rest round the others. A child with an aspect grows into the largest box of its
+shape that fits both the length it's offered and the space across its own sizes give it,
+so a square cover is as large as the card's height and width both allow, capped by its
+maximum. Whatever no grower takes goes to `"justify"`, which places the run as before;
+`"between"` shares it out into the gaps, the first child at the start and the last at the
+end, and with one child or nothing left over reads as `"start"`. With growth there's
+nothing left for `"between"` unless every grower stopped short. Nothing grows when the
+run is already longer than the box, and nothing shrinks: such a run runs past it, and
+the group's inspector says by how many units. The box's top-left goes to the child's cell
+whatever its anchor, and the child's own x and y then move it from there, as do its
+routes and sway on `x` and `y`. Depth, turns and scale don't take room, so a pulse on a
+child's scale never shifts its neighbours, and z order and perspective are as for any
+group: the stack lays out the flat boxes before anything is projected
+(`project::child_frames`, the cell on `Frame` with its size, which `project::box_size`
+reads in place of the child's own).
 
-A child switched off takes no room and no gap. Off design mode a child whose case hides
-it gives its room up over the same ease its fade takes, sitting in the middle of the
-share it has left, so its neighbours glide closed while it fades and open again as it
-comes back (`crates/rox/src/canvas/stack.rs`, a second set of fades kept for room). In
+A child switched off takes no room, no gap and no margin. Off design mode a child whose
+case hides it gives its room up over the same ease its fade takes, sitting in the middle
+of the share it has left, so its neighbours glide closed while it fades and open again as
+it comes back (`crates/rox/src/canvas/stack.rs`, a second set of fades kept for room). A
+grower fading out keeps its grown box and takes a share of its room by its presence. In
 design mode every child that's switched on keeps its room whatever its case, so a hidden
 one draws as a ghost in its own slot and the layout holds still while it's edited.
 
 In the editor a drag along a stack's axis reorders: the child takes the slot past every
 sibling whose middle its own has crossed, and its offset along the axis stays as it was.
+A reversed stack reads the drag against the list, so the slot still follows the pointer.
 Across the axis the drag moves its offset, with snapping only across. A set dragged in a
 stack doesn't reorder and moves only across. Arrow keys nudge the offset on both axes. A
-resize changes only the size and leaves the stack to move the box, a change of anchor
-moves nothing, and the aligns along the axis, Fill and Fit are off with a tooltip saying
-why, as are the set's aligns and distribute along it. Switching a stack on puts every
-child's x and y back to zero so the stack alone places them, and switching it off
-re-places each child where the stack had it. An item moved into a stack, lifted into one
-by an ungroup, or a group made from stacked siblings starts with zero offsets in the
-first one's slot. The group's inspector carries the stack's switch and its rows, and a
-stacked child's x and y rows say they're offsets.
+resize changes only the size and leaves the stack to move the box, and a side no handle
+moved keeps its length as saved. On a child that grows, the stack sets its length along
+the axis, and both sides for one with an aspect, so the handles that would move those
+sides are greyed and their tooltip says why. A change of anchor moves nothing, and the
+aligns along the axis, Fill and Fit are off with a tooltip saying why, as are the set's
+aligns and distribute along it. Switching a stack on puts every child's x and y back to
+zero so the stack alone places them, and switching it off re-places each child where the
+stack had it, a grown child at its grown size. An item moved into a stack, lifted into
+one by an ungroup, or a group made from stacked siblings starts with zero offsets in the
+first one's slot. The group's inspector carries the stack's switch and its rows, padding,
+`"between"` and the reversal among them, and a stacked child's rows say its x and y are
+offsets and carry Grow, Margin and its own Alignment. Each choice there is its own undo
+step.
 
 The editor can hold several items at once. The selection is one ordered set on the panel
 (`Selection`, `crates/rox/src/canvas/selection.rs`), and the last item picked is its
@@ -971,8 +1003,12 @@ anything inside it notifies, or on a window refresh.
 
 Canvases nest: a canvas panel can sit in a grid inside another canvas, and it projects its
 own items inside its bounds under its own camera. Canvases inside grids and groups inside
-groups count together against `rox_canvas::MAX_DEPTH`, and a group or a canvas-holding grid
-past it is kept as saved and not built, so a hand-edited layout can't recurse.
+groups count together against `rox_canvas::MAX_DEPTH` (8), which bounds how deep reading,
+building and drawing recurse and how deep a saved layout's JSON nests. Canvases alone
+also count against `rox_canvas::MAX_CANVAS_DEPTH` (4), since each one is a panel with
+docks of its own, where a group only hands its children a frame. A group or a
+canvas-holding grid past either is kept as saved and not built, so a hand-edited layout
+can't recurse (`canvas::Depth` carries both counts through a grid's restore).
 `Workspace::docks` is the window's dock followed by every dock a canvas in it hosts,
 nested ones included. Focus Search and the control socket's Milkdrop lookup walk it,
 and the Composition view lists each grid under its canvas.

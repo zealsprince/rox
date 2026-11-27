@@ -13,7 +13,7 @@ use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
 use rox_dock::{DockArea, DockAreaState, DockEvent, PanelInfo, PanelView, StackPanel};
 use serde_json::Value;
 
-use crate::canvas::Nesting;
+use crate::canvas::{Depth, Nesting};
 use crate::panels::canvas::CanvasPanel;
 use crate::workspace::{LAYOUT_VERSION, empty_center};
 use rox_panel_api::panel::AppState;
@@ -39,7 +39,7 @@ pub(crate) fn usable(dump: &Value) -> Option<DockAreaState> {
 pub(crate) fn restore(
     id: &str,
     dump: &Value,
-    level: usize,
+    depth: Depth,
     state: &AppState,
     window: &mut Window,
     cx: &mut Context<CanvasPanel>,
@@ -56,8 +56,8 @@ pub(crate) fn restore(
         empty_center(&area.downgrade(), window, cx).0
     } else {
         // A canvas panel the registry builds inside this dump reads its
-        // level from here.
-        let _nesting = Nesting::enter(level);
+        // depth from here.
+        let _nesting = Nesting::enter(depth);
         dump.center.to_item(area.downgrade(), window, cx)
     };
     area.update(cx, |area, cx| area.set_center(center, window, cx));

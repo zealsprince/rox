@@ -11,7 +11,7 @@
 //! (the inspector's rows for it, the handles, Step Out) reads the primary,
 //! so a selection of one behaves as the single selection always did.
 
-use rox_canvas::{CanvasItem, Content, Place, paint_order};
+use rox_canvas::{CanvasItem, Content, Place, StackCell, paint_order};
 
 use crate::canvas::align::{self, Line};
 use crate::canvas::edit;
@@ -300,8 +300,8 @@ pub(crate) fn rect_between(a: [f32; 2], b: [f32; 2]) -> [f32; 4] {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Member {
     pub place: Place,
-    /// Where its stack puts it, if it's in one.
-    pub cell: Option<[f32; 2]>,
+    /// Where its stack puts it and how big, if it's in one.
+    pub cell: Option<StackCell>,
     /// A flat item draws without its scale.
     pub flat: bool,
 }

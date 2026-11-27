@@ -261,6 +261,15 @@ pub(crate) fn no_limits(limits: &[Option<f32>; 2]) -> bool {
     limits.iter().all(Option::is_none)
 }
 
+/// No growth, which is what a place saved before stacks could grow holds.
+pub(crate) fn no_growth(grow: &f32) -> bool {
+    *grow == 0.
+}
+
+pub(crate) fn no_margin(margin: &[f32; 2]) -> bool {
+    *margin == [0.; 2]
+}
+
 /// One of x and y as JSON: a bare number of units, or a tagged length.
 #[derive(Deserialize)]
 #[serde(untagged)]

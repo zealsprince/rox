@@ -35,8 +35,8 @@ use gpui::{
 use gpui_component::Icon;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use rox_canvas::{
-    Anchor, Camera, CanvasItem, CanvasState, Content, Frame, ImageFit, Length, Live, Place,
-    Position, Viewport, child_frame, inside, paint_order, project, unit_point,
+    Anchor, Camera, CanvasItem, CanvasState, Content, Frame, Hit as HitTest, ImageFit, Length,
+    Live, Place, Position, Viewport, child_frame, inside, paint_order, project, unit_point,
 };
 use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canvas::edit::{self, Edges, History};
+use crate::canvas::fades::{self, Fades};
 use crate::canvas::grid::{self, Grid};
 use crate::canvas::image::{self, Images};
 use crate::canvas::overlay::Inspector;
@@ -151,9 +152,13 @@ pub(crate) struct Shape {
     pub label: SharedString,
     pub kind: ShapeKind,
     pub locked: bool,
-    /// Drawn as a ghost in design mode because a case hides it or a group
-    /// around it. It can be picked, and a click passes through it.
+    /// A click passes through it: a case hides it or a group around it (a
+    /// ghost in design mode, which can still be picked), it's fading out, or
+    /// it says `hit: false`.
     pub hidden: bool,
+    /// Where it takes the pointer when that's by its picture: each image it
+    /// draws. None takes its whole box.
+    pub pictures: Option<Vec<image::Picture>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -552,6 +557,8 @@ pub struct CanvasPanel {
     hovered: Option<String>,
     /// The hover and pressed looks of the click item under the pointer.
     looks: canvas::looks::Looks,
+    /// Each item's last case, and the ease of any that just changed.
+    fades: Fades,
     /// The export card or the place confirm, over the whole window.
     pub(crate) object_dialog: Option<objects::Dialog>,
     /// The playing track's marks, resolved only while an item follows the
@@ -708,6 +715,7 @@ impl CanvasPanel {
             pointing: Rc::default(),
             hovered: None,
             looks: canvas::looks::Looks::default(),
+            fades: Fades::default(),
             object_dialog: None,
             marks: MarkCache::default(),
             cases: Cases::new(),
@@ -1152,8 +1160,13 @@ impl CanvasPanel {
             values: &values,
             cases: &self.cases,
             looks: &looks,
+            inherited: None,
             preview,
             ghost: false,
+            through: false,
+            fades: &mut self.fades,
+            now: Instant::now(),
+            still: still || design,
             images: &mut self.images,
             shaders: &mut self.shaders,
             textures: &mut self.textures,
@@ -1174,6 +1187,12 @@ impl CanvasPanel {
         let Draw { layers, shapes, .. } = draw;
         self.shapes = shapes;
         self.images.wake_when_due(cx);
+
+        // Every item a theme switch moves starts its fade in this render, so
+        // they share one burst of frames.
+        if self.fades.settle() {
+            window.request_animation_frame();
+        }
 
         // Where time alone moves things, the next frame waits until the
         // motion would show.
@@ -1398,10 +1417,19 @@ struct Draw<'a> {
     cases: &'a Cases,
     /// How far each item's hover and pressed looks show.
     looks: &'a canvas::looks::Shown,
+    /// How far the looks show on the group around these items, for the ones
+    /// its command covers.
+    inherited: Option<[f32; 2]>,
     /// The selected item's id and the case the inspector previews on it.
     preview: Option<(&'a str, &'a str)>,
-    /// Inside a group its case hides, in design mode.
+    /// Inside a group its case hides, in design mode, or one fading out.
     ghost: bool,
+    /// Inside a group that lets the pointer through.
+    through: bool,
+    fades: &'a mut Fades,
+    now: Instant,
+    /// Cases cut rather than ease: Reduce Motion, or design mode.
+    still: bool,
     images: &'a mut Images,
     shaders: &'a mut Shaders,
     textures: &'a mut HashMap<String, Entity<TextureView>>,
@@ -1441,23 +1469,35 @@ fn place(
             .filter(|(id, _)| *id == item.id)
             .map(|(_, case)| case);
         let applied = states::resolve(item, draw.cases, preview);
-        let applied = match draw.looks.get(&item.id) {
-            Some(weights) => canvas::looks::over(item, applied, *weights),
-            None => applied,
+        let length = fades::length(item, draw.still);
+        let faded = draw.fades.step(&item.id, &applied, length, draw.now);
+        let weights = canvas::looks::weights(item, draw.looks, draw.inherited);
+        let faded = match weights {
+            Some(weights) => canvas::looks::over(item, applied.case, faded, weights),
+            None => faded,
         };
 
         // Off design mode a hidden case takes the item, and a group's
-        // children, off the stage and out of the hit walk. In design mode it
-        // draws as a ghost so it can still be picked.
-        if !applied.visible && !at.design {
+        // children, out of the hit walk as its fade starts and off the stage
+        // once it's done. In design mode it draws as a ghost so it can still
+        // be picked.
+        if !faded.shown && !at.design {
             draw.targets.hold(&item.id);
             continue;
         }
-        let ghost = draw.ghost || !applied.visible;
+        let ghost = draw.ghost
+            || if at.design {
+                !applied.visible
+            } else {
+                !faded.pointer
+            };
+        // A grid's panels take their own input, so it can't let it through.
+        let through = draw.through
+            || (item.hit == HitTest::Off && !matches!(item.content, Content::Grid { .. }));
 
         let mut live = routes::live_for(draw.lives, item);
-        if applied.visible {
-            live = states::fold(live, &applied);
+        if applied.visible || !at.design {
+            live = states::fold(live, faded.opacity);
         } else if !draw.ghost {
             live.opacity *= states::GHOST;
         }
@@ -1479,7 +1519,8 @@ fn place(
             }),
             kind,
             locked: item.locked,
-            hidden: ghost,
+            hidden: ghost || through,
+            pictures: None,
         };
         let projected = || {
             project(
@@ -1498,14 +1539,18 @@ fn place(
                 let Some(projected) = projected() else {
                     continue;
                 };
+                let mut elements = vec![grid_element(
+                    item,
+                    grid,
+                    projected.corners,
+                    projected.opacity,
+                )];
+                if ghost && !at.design {
+                    elements.push(blocker(projected.corners));
+                }
                 layers.push(Layer {
                     depth: projected.depth,
-                    elements: vec![grid_element(
-                        item,
-                        grid,
-                        projected.corners,
-                        projected.opacity,
-                    )],
+                    elements,
                     shapes: vec![shape(projected.corners, ShapeKind::Grid)],
                 });
             }
@@ -1524,8 +1569,13 @@ fn place(
                     values: draw.values,
                     cases: draw.cases,
                     looks: draw.looks,
+                    inherited: weights,
                     preview: draw.preview,
                     ghost,
+                    through,
+                    fades: &mut *draw.fades,
+                    now: draw.now,
+                    still: draw.still,
                     images: &mut *draw.images,
                     shaders: &mut *draw.shaders,
                     textures: &mut *draw.textures,
@@ -1553,15 +1603,26 @@ fn place(
             }
 
             (Body::Image, _) => {
-                let element =
-                    image::element(item, applied.asset, parent, at, &live, draw.images, cx);
+                let by_picture = !at.design && item.hit == HitTest::Picture;
+                let drawn = image::element(
+                    item,
+                    &faded.pictures,
+                    parent,
+                    at,
+                    &live,
+                    draw.images,
+                    by_picture,
+                    cx,
+                );
                 let Some(projected) = projected() else {
                     continue;
                 };
+                let mut shape = shape(projected.corners, ShapeKind::Perspective);
+                shape.pictures = drawn.pictures;
                 layers.push(Layer {
                     depth: projected.depth,
-                    elements: element.map(|(_, e)| e).into_iter().collect(),
-                    shapes: vec![shape(projected.corners, ShapeKind::Perspective)],
+                    elements: drawn.elements,
+                    shapes: vec![shape],
                 });
             }
 
@@ -1596,7 +1657,7 @@ fn place(
                     text: SharedString::from(line.render(draw.values)),
                     family: font.clone(),
                     size: size * parent.k * projected.scale,
-                    color: text::color(applied.color.unwrap_or(color.as_str())),
+                    color: text::mixed(&faded.colors, color),
                     opacity: projected.opacity,
                     align: *align,
                 };
@@ -1672,6 +1733,21 @@ fn place(
             draw.shapes.extend(layer.shapes);
         }
     }
+}
+
+/// Over a grid fading out, so its panels let go of the pointer as the fade
+/// starts and not when it ends.
+fn blocker(corners: [[f32; 2]; 4]) -> AnyElement {
+    let (origin, extent) = canvas::bbox(&corners);
+
+    div()
+        .absolute()
+        .left(px(origin[0]))
+        .top(px(origin[1]))
+        .w(px(extent[0]))
+        .h(px(extent[1]))
+        .occlude()
+        .into_any_element()
 }
 
 /// The screen box around every shape, as corners. None for no shapes.
@@ -3197,7 +3273,13 @@ pub(crate) fn hit(shapes: &[Shape], canvas: &CanvasState, point: [f32; 2]) -> Hi
         .rev()
         .filter(|shape| shape.kind != ShapeKind::Group && !shape.hidden)
         .filter(|shape| canvas.find(&shape.id).is_some_and(|item| item.visible))
-        .find(|shape| inside(&shape.corners, point));
+        .find(|shape| {
+            inside(&shape.corners, point)
+                && shape
+                    .pictures
+                    .as_ref()
+                    .is_none_or(|pictures| pictures.iter().any(|p| p.hits(point)))
+        });
     let Some(front) = front else {
         return Hit::Nothing;
     };
@@ -3460,12 +3542,7 @@ impl CanvasPanel {
             Hit::Command { id, .. } => Some(id.as_str()),
             _ => None,
         };
-        let over = over.filter(|id| {
-            self.config
-                .canvas
-                .find(id)
-                .is_some_and(canvas::looks::wears)
-        });
+        let over = over.filter(|id| self.config.canvas.find(id).is_some_and(canvas::looks::worn));
 
         self.looks
             .point(over, self.pressed.as_deref(), Instant::now())
@@ -4357,6 +4434,7 @@ mod tests {
             kind,
             locked: false,
             hidden: false,
+            pictures: None,
         }
     }
 

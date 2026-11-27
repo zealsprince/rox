@@ -30,6 +30,9 @@ pub(crate) struct Applied<'a> {
     pub opacity: f32,
     pub asset: Option<&'a str>,
     pub color: Option<&'a str>,
+    /// The entry drawn, whose hover and pressed looks stand in for the
+    /// item's own.
+    pub case: Option<&'a Case>,
 }
 
 impl Default for Applied<'_> {
@@ -39,6 +42,7 @@ impl Default for Applied<'_> {
             opacity: 1.,
             asset: None,
             color: None,
+            case: None,
         }
     }
 }
@@ -89,9 +93,9 @@ pub(crate) fn read(canvas: &CanvasState, live: &buttons::Live) -> Cases {
 }
 
 /// What `item` looks like in the case its state is in, or in `preview` when
-/// the inspector names one. An empty or unknown state, a case the state
-/// doesn't have, and a case with no entry all give the default, which
-/// changes nothing.
+/// the inspector names one, a look's preview after a colon left off. An
+/// empty or unknown state, a case the state doesn't have, and a case with no
+/// entry all give the default, which changes nothing.
 pub(crate) fn resolve<'a>(
     item: &'a CanvasItem,
     cases: &Cases,
@@ -103,6 +107,7 @@ pub(crate) fn resolve<'a>(
 
     let known = |id: &&str| spec.cases.iter().any(|case| case.id == *id);
     let current = preview
+        .map(|preview| preview.split_once(':').map_or(preview, |(case, _)| case))
         .filter(known)
         .or_else(|| cases.get(spec.id).copied());
     let Some(current) = current else {
@@ -126,13 +131,15 @@ pub(crate) fn resolve<'a>(
         opacity,
         asset: named(&entry.asset),
         color: named(&entry.color),
+        case: Some(entry),
     }
 }
 
-/// The item's live offsets with its case folded in: the case's opacity rides
-/// the same product a route's does, so a group's case reaches its children.
-pub(crate) fn fold(mut live: Live, applied: &Applied) -> Live {
-    live.opacity *= applied.opacity;
+/// The item's live offsets with its case's opacity folded in, eased and with
+/// its looks: it rides the same product a route's does, so a group's case
+/// reaches its children.
+pub(crate) fn fold(mut live: Live, opacity: f32) -> Live {
+    live.opacity *= opacity;
     live
 }
 
@@ -284,6 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn a_case_looks_preview_draws_its_case() {
+        let button = play_button();
+        let paused = cases(&[("player.playback", "paused")]);
+
+        let previewed = resolve(&button, &paused, Some("playing:hover"));
+        assert_eq!(previewed.asset, Some("pause"));
+        assert_eq!(
+            previewed.case.map(|case| case.when.as_str()),
+            Some("playing")
+        );
+
+        // The item's own look names no case, so the live one draws under it.
+        assert!(!resolve(&button, &paused, Some(":hover")).visible);
+    }
+
+    #[test]
     fn a_cases_opacity_multiplies_the_items() {
         let mut button = play_button();
         button.opacity = 0.8;
@@ -311,7 +334,7 @@ mod tests {
             viewport,
             None,
             false,
-            &fold(routed, &applied),
+            &fold(routed, applied.opacity),
         )
         .expect("in front of the camera");
         assert!((projected.opacity - 0.8 * 0.5 * 0.5).abs() < 1e-6);

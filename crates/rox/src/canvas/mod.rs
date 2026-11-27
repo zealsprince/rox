@@ -11,6 +11,7 @@
 pub(crate) mod align;
 pub(crate) mod cost;
 pub(crate) mod edit;
+pub(crate) mod fades;
 pub(crate) mod grid;
 pub(crate) mod image;
 pub(crate) mod looks;

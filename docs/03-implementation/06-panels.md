@@ -548,8 +548,9 @@ state's cases it can say whether it shows and an opacity that multiplies its own
 image can take another asset in a case and a text item another color. A case with no
 entry draws the item as it is. A state id or a case id the build doesn't have changes
 nothing, so a canvas from a newer build draws those items as if they followed nothing.
-The ids are kept as saved. A hidden case takes the item off the stage and out of the
-click walk, and a group's children go with it. The case's opacity rides the same product
+The ids are kept as saved. A hidden case takes the item out of the click walk at once and
+off the stage once its fade is done (below), and a group's children go with it. The
+case's opacity rides the same product
 a route's does, so it reaches a group's children and composes with routes and with the
 Rest setting. A shader item's opacity doesn't reach its quad, so a shader takes only the
 hiding. In design mode a hidden item draws as a ghost at a quarter of its opacity and can
@@ -566,9 +567,49 @@ once its flip has landed. A canvas where nothing follows a state reads none of i
 redraws for none of it. A case's image is an asset in the store like the
 item's own: an object exports it with the item, and placing rewrites it to the store's id.
 
-An item with a click command can also carry a `hover` look, for while the pointer is over
-it, and a `pressed` look, for while a left press that landed on it is held and the pointer
-is still over it (`crates/rox/src/canvas/looks.rs`). A look holds what a case can change
+A change of case eases (`crates/rox/src/canvas/fades.rs`). The canvas keeps each drawn
+item's last case, and when it moves the item eases from the look it showed to the new one
+over 180 ms with a smoothstep (`fades::EASE`), or over its own `ease` in milliseconds,
+held to 5000. `"ease": 0` keeps the cut, for an item where a hard switch is the point. An
+item that leaves it out writes nothing new:
+
+```json
+{ "id": "play-body", "state": "player.playback", "ease": 250,
+  "cases": [{ "when": "playing", "asset": "gel_green" }],
+  "content": { "kind": "image", "asset": "gel_aqua", "fit": "contain" } }
+```
+
+Opacity blends and a text color blends. Two images crossfade as two draws of the item,
+each with its own fit and nine-slice cut, since a case's image has its own size in texels:
+the incoming one comes in over the first half of the ease and the outgoing one goes over
+the second, so two opaque pictures never dip through each other (`Mix::cross`). The top
+picture keeps the item's animation clock. A case that hides the item fades it out, and the
+item leaves the click walk as the fade starts: its shape passes the pointer, and a grid's
+panels sit under an occluding blocker for the length of the fade. A case that shows it
+takes the pointer at once and fades in. A change that lands mid-fade carries on from the
+opacity it had reached, starting from whichever look was showing more, so a color or an
+image can step once there. A canvas opens on its cases as they are: an item drawn for the
+first time, or again after its group hid it, cuts.
+
+A grid and a render target ease only their opacity, since a case gives neither an image
+and a grid can't crossfade two layouts. A shader item cuts, since its quad takes no
+opacity. Design mode, the inspector's previews and Reduce Motion cut as before. A fade asks
+for frames only while it runs, and every item one change moves starts its fade in the same
+render, so a theme switch is one burst of frames, not one per item. A text color named
+by a role reads the theme of the frame it draws in, so across a theme switch the blend
+runs between the two roles as the new theme paints them. Measured 2026-11-26 in a debug
+build in a headless sway at 1920x1080, design mode off, nothing playing, `debug.frames`
+over 1.5 s from 0.2 s before the switch, three switches each way: Aero drew 31 to 32
+frames across a switch before cases eased and 38 to 40 after, against 31 at rest in both,
+its paced drift. Under Reduce Motion it drew none at rest and 2 across a switch.
+
+An item a click command covers can also carry a `hover` look, for while the pointer is
+over it, and a `pressed` look, for while a left press that landed on it is held and the
+pointer is still over it (`crates/rox/src/canvas/looks.rs`). The command can be its own or
+a group's around it: the click walk runs the nearest command in the item's chain, and the
+looks follow the click, so hovering a group with a command shows the look on every item
+inside it that has no command of its own. A child with its own command is a button of its
+own and shows its looks only when it's the one hovered. A look holds what a case can change
 but whether the item shows, since a hover that hid its item would lose the pointer: an
 opacity that multiplies, and an image or a text color in place of the one its case gives.
 Each is optional, saved only when it changes something, and one that doesn't parse costs
@@ -582,25 +623,66 @@ only itself:
 ```
 
 The looks go on top of whichever case is active, the pressed look's over the hover
-look's, so a pressed look that leaves the image alone keeps the hover's. They show off
-design mode only, and only on the item the click walk would run (`hit`): the front item
-under the pointer, by its projected corners so a tilted item hovers only inside its quad,
-or the nearest group around it that has a command. A render target that takes the pointer
+look's, so a pressed look that leaves the image alone keeps the hover's. A case can carry
+its own `hover` and `pressed`, which stand in for the item's while that case is drawn, so
+a button whose body turns green while playing can light a green body under the pointer.
+A case with no look of its own keeps the item's. A button is one group:
+
+```json
+{ "id": "play", "action": "toggle_playback", "content": { "kind": "group", "items": [
+    { "id": "play-body", "state": "player.playback",
+      "hover": { "asset": "gel_aqua_lit" }, "pressed": { "asset": "gel_aqua_down" },
+      "cases": [{ "when": "playing", "asset": "gel_green",
+                  "hover": { "asset": "gel_green_lit" }, "pressed": { "asset": "gel_green_down" } }],
+      "hit": "picture",
+      "content": { "kind": "image", "asset": "gel_aqua", "fit": "contain" } },
+    { "id": "play-glyph", "hit": false, "state": "player.playback",
+      "cases": [{ "when": "playing", "asset": "glyph_pause" }],
+      "content": { "kind": "image", "asset": "glyph_play", "fit": "contain" } } ] } }
+```
+
+The looks name no other item: a look on a group naming its children by id would break
+when placing an object renames them, so each item carries its own look and the group's
+command decides when it shows. They show off design mode only, and only on what the click
+walk would run (`hit`): the front item under the pointer, by its projected corners so a
+tilted item hovers only inside its quad, or the nearest group around it that has a
+command, with everything that group covers. A render target that takes the pointer
 has no command over it, so it never shows one. The pointer leaving the window clears
 them, through gpui's exit event, which the click layer also uses to tell a render target
 the pointer has gone. Only the pointer hovers: there's no keyboard focus on canvas items.
-Each look eases in and out over 140 ms with a smoothstep. Opacity blends, and an image or
-a color switches halfway through. A canvas asks for frames only while an ease runs: in
+Each look eases in and out over 140 ms with a smoothstep. Opacity and a color blend, and
+an image crossfades in over what the case draws, the same way a case change does. A canvas asks for frames only while an ease runs: in
 a debug build in a headless sway, a hover drew 9 frames in 800 ms and none in the 1.5 s
 before or after it. Under Reduce Motion (below) a look lands in the frame its pointer
 moved, with no ease and no frames after (`Looks::shown`).
 
-In design mode the inspector shows a While Hovered and a While Pressed block on an item
-with a command, with the case block's opacity slider and image or color picker, and an eye
-that previews the look on the canvas as the case eye does. Each edit is one undo step,
-and a slider drag merges into one. A look edited back to changing nothing is dropped.
-Asset collection and rewriting walk the looks' images with the cases' (`assets`,
-`assets_mut`), so an object exports them and placing rewrites them.
+An item says where it takes the pointer with `hit`. Left out, it takes its whole box, as
+every item has. `false` lets the pointer through to whatever is behind it, as if the item
+weren't there: a glyph over a button's body passes the pointer to the body, and the
+group's command covers the body as before. Where nothing else of the group lies behind,
+the pointer goes on past the group. `false` on a group lets the pointer through every item
+inside it. `"picture"` takes it only where an image item draws at least half opaque
+(`image::Picture`): the pointer's point is mapped back through the projected face with the
+same inverse `unit_point` gives a render target, then through the fit's crop or the
+nine-slice cut to one texel, whose alpha decides. It's one texel read per image under the
+pointer per move, from the decoded copy the image keeps, on the frame showing now. During
+a crossfade either picture counts. An image still decoding takes nothing. Anything but an
+image reads `"picture"` as its box, and a grid ignores `hit`, since its panels take their
+own input. Design mode picks every item by its box whatever it says.
+
+In design mode the inspector shows a While Hovered and a While Pressed block on an item a
+command covers, with the case block's opacity slider and image or color picker, and an
+eye that previews the look on the canvas as the case eye does. Each case block that shows
+its item carries the same two blocks for the case's own looks, as While Hovered in This
+Case and While Pressed in This Case, each with an eye that previews that case under that
+look. A Takes the Pointer row picks Whole box, Lets it through, or on an image Its
+picture. An item that follows a state has a Case Change row under its
+state: the default, a cut, or 100, 250, 500 or 1000 ms, and a length a file holds outside
+those shows as it is. Each edit is one undo step, and a slider drag merges into one. A
+look edited back to changing nothing is dropped, and a case left with nothing goes with
+it. Asset collection and rewriting walk the looks' images with the cases', the cases' own
+looks included (`assets`, `assets_mut`), so an object exports them and placing rewrites
+them.
 
 A canvas's routes drive `<item id>.<property>` targets: opacity and scale take a share of
 the item's own setting, a position or rotation axis a share of its sway. Music routes
@@ -745,6 +827,8 @@ arithmetic), `crates/rox/src/panels/canvas/set.rs` (the marquee and the set's ed
 and `overlay/set_rows.rs` (the inspector), `patches/gpui/e7-image-patch-inner-edges.patch`
 (`paint_image_patch`), `crates/rox/src/canvas/states.rs` (items that follow state),
 `crates/rox/src/canvas/looks.rs` (hover and pressed looks),
+`crates/rox/src/canvas/fades.rs` (eased case changes), `overlay/motion_rows.rs` (the
+pointer and ease rows),
 `crates/rox/src/canvas/routes.rs` (routes on items, the canvas clock, time routes at
 rest), `crates/rox/src/canvas/pace.rs` (frames for time-only motion),
 `crates/rox/src/integrations/motion.rs` (the desktop's reduced-motion preference),

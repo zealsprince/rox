@@ -42,6 +42,7 @@ use crate::objects::{self, Dialog};
 use crate::panels::canvas::{self, CanvasPanel};
 use crate::panels::controls;
 
+mod motion_rows;
 mod place_rows;
 mod set_rows;
 mod slice_rows;
@@ -935,6 +936,7 @@ fn item_rows(
         rows = rows.child(command_row(item, cx));
     }
     rows = rows.children(looks::rows(panel, item, cx));
+    rows = rows.children(motion_rows::hit_row(item, cx));
 
     rows.child(actions(item, cx))
         .child(content_rows(panel, item, window, cx))
@@ -1039,6 +1041,7 @@ fn state_rows(panel: &CanvasPanel, item: &CanvasItem, cx: &mut Context<CanvasPan
         ));
 
     if let Some(spec) = states::followed(item) {
+        rows = rows.child(motion_rows::ease_row(item, cx));
         for case in spec.cases {
             rows = rows.child(case_block(panel, item, spec, case, cx));
         }
@@ -1129,6 +1132,7 @@ fn case_block(
             Content::Text { .. } => body = body.child(case_color(&item.id, case.id, &entry, cx)),
             _ => {}
         }
+        body = body.children(looks::case_rows(panel, item, case.id, cx));
     }
 
     div()

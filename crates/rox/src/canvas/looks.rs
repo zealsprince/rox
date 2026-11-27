@@ -6,42 +6,98 @@
 //! walk, or the group whose command covers it. Nothing but the pointer
 //! hovers, so the keyboard never shows a look.
 //!
-//! Each look eases in and out over [`EASE`]. Opacity blends. An image or a
-//! color can't, so it switches halfway through the ease. A look asks for
-//! frames only while an ease runs.
+//! A group's command covers every item inside it that has no command of its
+//! own, and the looks reach them the same way: hovering the group shows each
+//! covered item's own look, so a button's body can light while its glyph
+//! stays as it is. A case can carry its own hover and pressed looks, which
+//! stand in for the item's while that case is drawn.
+//!
+//! Each look eases in and out over [`EASE`]. Opacity and a text color blend,
+//! and an image crossfades to the look's. A look asks for frames only while
+//! an ease runs.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui::{AnyElement, Context, ElementId, SharedString, Window, div, prelude::*};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
-use rox_canvas::{CanvasItem, Content, Look};
+use rox_canvas::{CanvasItem, CanvasState, Case, Content, Look};
 use rox_design::assets::icons;
 use rox_design::{palette, tokens};
 use rox_panel_api::panel::{self, setting_row};
 use rox_panel_kit::Tip;
 use rox_panel_kit::ui as settings_ui;
 
+use crate::canvas::fades::Faded;
 use crate::canvas::overlay;
-use crate::canvas::states::Applied;
+use crate::canvas::states;
 use crate::panels::canvas::{self, CanvasPanel};
 
 /// How long a look takes to come in or go. Short enough that a quick click
 /// still shows its press.
 pub(crate) const EASE: Duration = Duration::from_millis(140);
 
-/// The preview the inspector names in place of a case, for each look. No
-/// state's case id starts with a colon, so the case preview never takes one.
-pub(crate) const PREVIEW_HOVER: &str = ":hover";
-pub(crate) const PREVIEW_PRESSED: &str = ":pressed";
-
 /// How far each look shows on an item this frame, hover then pressed, 0 to
 /// 1. An item missing from it shows neither.
 pub(crate) type Shown = HashMap<String, [f32; 2]>;
 
-/// Whether the item carries either look.
+/// Whether the item carries a look, its cases' included.
 pub(crate) fn wears(item: &CanvasItem) -> bool {
-    item.hover.is_some() || item.pressed.is_some()
+    item.hover.is_some()
+        || item.pressed.is_some()
+        || item
+            .cases
+            .iter()
+            .any(|case| case.hover.is_some() || case.pressed.is_some())
+}
+
+/// Whether hovering `item` shows any look: its own, or one on an item its
+/// command covers inside it.
+pub(crate) fn worn(item: &CanvasItem) -> bool {
+    if wears(item) {
+        return true;
+    }
+
+    match &item.content {
+        Content::Group { items } => items
+            .iter()
+            .any(|child| !canvas::commands(child) && worn(child)),
+        _ => false,
+    }
+}
+
+/// Whether a command covers the item `id`: its own, or a group's around it.
+/// Only then can its looks show.
+pub(crate) fn covered(canvas: &CanvasState, id: &str) -> bool {
+    fn walk(items: &[CanvasItem], id: &str, above: bool) -> Option<bool> {
+        items.iter().find_map(|item| {
+            let here = above || canvas::commands(item);
+            if item.id == id {
+                return Some(here);
+            }
+
+            match &item.content {
+                Content::Group { items } => walk(items, id, here),
+                _ => None,
+            }
+        })
+    }
+
+    walk(&canvas.items, id, false).unwrap_or(false)
+}
+
+/// How far the looks show on `item`: its own weights when it's the hovered
+/// item or previewed, else the group's around it that its command covers.
+pub(crate) fn weights(
+    item: &CanvasItem,
+    shown: &Shown,
+    inherited: Option<[f32; 2]>,
+) -> Option<[f32; 2]> {
+    // The command list is a scan, so it's asked only under a lit group.
+    match shown.get(&item.id) {
+        Some(weights) => Some(*weights),
+        None => inherited.filter(|_| !canvas::commands(item)),
+    }
 }
 
 /// One look's ease on one item.
@@ -185,28 +241,45 @@ pub(crate) fn this_frame(
     shown
 }
 
-/// The inspector's preview of a look on the selected item, at full weight.
+/// The inspector's preview of a look on the selected item, at full weight,
+/// named where a case's would be: `:hover`, or a case's own look as
+/// `playing:hover`. No state's case id holds a colon, so a case preview
+/// never reads as a look.
 pub(crate) fn preview(shown: &mut Shown, id: &str, case: &str) {
-    let weights = match case {
-        PREVIEW_HOVER => [1., 0.],
-        PREVIEW_PRESSED => [1., 1.],
+    let look = case.split_once(':').map(|(_, look)| look);
+    let weights = match look {
+        Some("hover") => [1., 0.],
+        Some("pressed") => [1., 1.],
         _ => return,
     };
     shown.insert(id.to_string(), weights);
 }
 
-/// `applied` with the item's looks laid over at `weights`. A look's
-/// opacity multiplies, so the pressed look's goes on top of the hover
-/// look's; its image or color takes over once it's halfway in.
+/// The looks `item` wears in `case`: the case's own where it has one, else
+/// the item's.
+fn looks_in<'a>(item: &'a CanvasItem, case: Option<&'a Case>) -> [Option<&'a Look>; 2] {
+    [
+        case.and_then(|case| case.hover.as_ref())
+            .or(item.hover.as_ref()),
+        case.and_then(|case| case.pressed.as_ref())
+            .or(item.pressed.as_ref()),
+    ]
+}
+
+/// `faded` with the looks `item` wears in `case` laid over at `weights`. A
+/// look's opacity multiplies, so the pressed look's goes on top of the hover
+/// look's. Its image crossfades in over what the case draws, and its color
+/// blends in.
 pub(crate) fn over<'a>(
     item: &'a CanvasItem,
-    mut applied: Applied<'a>,
-    [hover, press]: [f32; 2],
-) -> Applied<'a> {
+    case: Option<&'a Case>,
+    mut faded: Faded<'a>,
+    weights: [f32; 2],
+) -> Faded<'a> {
     let named = |text: &'a str| Some(text).filter(|text| !text.is_empty());
 
-    for (look, weight) in [(&item.hover, hover), (&item.pressed, press)] {
-        let Some(look) = look.as_ref().filter(|_| weight > 0.) else {
+    for (look, weight) in looks_in(item, case).into_iter().zip(weights) {
+        let Some(look) = look.filter(|_| weight > 0.) else {
             continue;
         };
 
@@ -216,15 +289,17 @@ pub(crate) fn over<'a>(
         } else {
             1.
         };
-        applied.opacity *= 1. + (opacity - 1.) * weight;
+        faded.opacity *= 1. + (opacity - 1.) * weight;
 
-        if weight >= 0.5 {
-            applied.asset = named(&look.asset).or(applied.asset);
-            applied.color = named(&look.color).or(applied.color);
+        if let Some(asset) = named(&look.asset) {
+            faded.pictures.cross(Some(asset), weight);
+        }
+        if let Some(color) = named(&look.color) {
+            faded.colors.blend(Some(color), weight);
         }
     }
 
-    applied
+    faded
 }
 
 /// Which look an inspector row edits.
@@ -235,44 +310,88 @@ enum Which {
 }
 
 impl Which {
-    fn of(self, item: &CanvasItem) -> Option<&Look> {
-        match self {
-            Which::Hover => item.hover.as_ref(),
-            Which::Pressed => item.pressed.as_ref(),
-        }
-    }
-
-    fn slot(self, item: &mut CanvasItem) -> &mut Option<Look> {
-        match self {
-            Which::Hover => &mut item.hover,
-            Which::Pressed => &mut item.pressed,
-        }
-    }
-
     fn key(self) -> &'static str {
         match self {
             Which::Hover => "hover",
             Which::Pressed => "pressed",
         }
     }
+}
 
-    fn preview(self) -> &'static str {
-        match self {
-            Which::Hover => PREVIEW_HOVER,
-            Which::Pressed => PREVIEW_PRESSED,
+/// Where a look an inspector row edits lives: on the item, or on one of its
+/// cases.
+#[derive(Clone, Copy, PartialEq)]
+struct Slot {
+    which: Which,
+    case: Option<&'static str>,
+}
+
+impl Slot {
+    fn of(self, item: &CanvasItem) -> Option<&Look> {
+        let pick = |hover, pressed| match self.which {
+            Which::Hover => hover,
+            Which::Pressed => pressed,
+        };
+
+        match self.case {
+            None => pick(&item.hover, &item.pressed).as_ref(),
+            Some(when) => item
+                .cases
+                .iter()
+                .find(|case| case.when == when)
+                .and_then(|case| pick(&case.hover, &case.pressed).as_ref()),
+        }
+    }
+
+    /// Unique among the inspector's rows, for element ids and scrubs.
+    fn key(self) -> String {
+        match self.case {
+            None => self.which.key().to_string(),
+            Some(when) => format!("{when}:{}", self.which.key()),
+        }
+    }
+
+    fn preview(self) -> String {
+        format!("{}:{}", self.case.unwrap_or(""), self.which.key())
+    }
+
+    /// The undo key a run of edits to `field` merges under.
+    fn undo_key(self, field: &str) -> &'static str {
+        match (self.case.is_some(), self.which, field) {
+            (false, Which::Hover, "opacity") => "look.hover.opacity",
+            (false, Which::Hover, _) => "look.hover.color",
+            (false, Which::Pressed, "opacity") => "look.pressed.opacity",
+            (false, Which::Pressed, _) => "look.pressed.color",
+            (true, Which::Hover, "opacity") => "case.look.hover.opacity",
+            (true, Which::Hover, _) => "case.look.hover.color",
+            (true, Which::Pressed, "opacity") => "case.look.pressed.opacity",
+            (true, Which::Pressed, _) => "case.look.pressed.color",
         }
     }
 }
 
 /// Edits one look, making it first if there's none. A look edited back to
-/// changing nothing goes, so an untouched one saves as nothing at all.
-fn edit_look(item: &mut CanvasItem, which: Which, edit: impl FnOnce(&mut Look)) {
-    let slot = which.slot(item);
-    let look = slot.get_or_insert_with(Look::default);
-    edit(look);
+/// changing nothing goes, so an untouched one saves as nothing at all, and a
+/// case left with nothing else goes with it.
+fn edit_look(item: &mut CanvasItem, slot: Slot, edit: impl FnOnce(&mut Look)) {
+    let apply = |hover: &mut Option<Look>, pressed: &mut Option<Look>| {
+        let held = match slot.which {
+            Which::Hover => hover,
+            Which::Pressed => pressed,
+        };
+        let look = held.get_or_insert_with(Look::default);
+        edit(look);
 
-    if look.is_plain() {
-        *slot = None;
+        if look.is_plain() {
+            *held = None;
+        }
+    };
+
+    match slot.case {
+        None => apply(&mut item.hover, &mut item.pressed),
+        Some(when) => {
+            states::edit_case(item, when, |case| apply(&mut case.hover, &mut case.pressed))
+        }
     }
 }
 
@@ -281,47 +400,71 @@ fn edit_look(item: &mut CanvasItem, which: Which, edit: impl FnOnce(&mut Look)) 
 fn change_look(
     this: &mut CanvasPanel,
     id: &str,
-    which: Which,
+    slot: Slot,
     field: &'static str,
     edit: impl FnOnce(&mut Look) + 'static,
     cx: &mut Context<CanvasPanel>,
 ) {
     let id = id.to_string();
-    let key = match (which, field) {
-        (Which::Hover, "opacity") => "look.hover.opacity",
-        (Which::Hover, "color") => "look.hover.color",
-        (Which::Pressed, "opacity") => "look.pressed.opacity",
-        _ => "look.pressed.color",
-    };
     this.change_later(
-        key,
+        slot.undo_key(field),
         move |canvas| {
             if let Some(item) = canvas.find_mut(&id) {
-                edit_look(item, which, edit);
+                edit_look(item, slot, edit);
             }
         },
         cx,
     );
 }
 
-/// The two looks' blocks, for an item a click runs a command on. None for
-/// one without, whose looks would never show.
+/// The two looks' blocks, for an item a command covers: its own, or a
+/// group's around it. None for one with neither, whose looks would never
+/// show.
 pub(crate) fn rows(
     panel: &CanvasPanel,
     item: &CanvasItem,
     cx: &mut Context<CanvasPanel>,
 ) -> Option<AnyElement> {
-    if !canvas::commands(item) {
+    blocks(panel, item, None, cx)
+}
+
+/// A case's own two looks, in its block, which stand in for the item's own
+/// while that case is drawn. None where no command covers the item.
+pub(crate) fn case_rows(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    when: &'static str,
+    cx: &mut Context<CanvasPanel>,
+) -> Option<AnyElement> {
+    blocks(panel, item, Some(when), cx)
+}
+
+fn blocks(
+    panel: &CanvasPanel,
+    item: &CanvasItem,
+    case: Option<&'static str>,
+    cx: &mut Context<CanvasPanel>,
+) -> Option<AnyElement> {
+    if !covered(&panel.config.canvas, &item.id) {
         return None;
     }
+
+    let hover = Slot {
+        which: Which::Hover,
+        case,
+    };
+    let pressed = Slot {
+        which: Which::Pressed,
+        case,
+    };
 
     Some(
         div()
             .flex()
             .flex_col()
             .gap(tokens::SPACE_SM)
-            .child(block(panel, item, Which::Hover, cx))
-            .child(block(panel, item, Which::Pressed, cx))
+            .child(block(panel, item, hover, cx))
+            .child(block(panel, item, pressed, cx))
             .into_any_element(),
     )
 }
@@ -331,37 +474,40 @@ pub(crate) fn rows(
 fn block(
     panel: &CanvasPanel,
     item: &CanvasItem,
-    which: Which,
+    slot: Slot,
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
-    let look = which.of(item).cloned().unwrap_or_default();
-    let previewing = panel.inspector.preview() == Some((item.id.as_str(), which.preview()));
+    let look = slot.of(item).cloned().unwrap_or_default();
+    let shows = slot.preview();
+    let previewing = panel.inspector.preview() == Some((item.id.as_str(), shows.as_str()));
 
     let me = cx.entity().downgrade();
     let preview_id = item.id.clone();
     let mut eye = settings_ui::icon_button(icons::EYE, false, move |_, _, cx| {
         let id = preview_id.clone();
         me.update(cx, |this, cx| {
-            this.inspector.toggle_preview(id, which.preview());
+            this.inspector.toggle_preview(id, &slot.preview());
             cx.notify();
         })
         .ok();
     })
     .keyed(ElementId::Name(
-        format!("canvas-look-preview:{}", which.key()).into(),
+        format!("canvas-look-preview:{}", slot.key()).into(),
     ));
     if previewing {
         eye = eye.bg(palette::alpha(palette::accent(), 0x40));
     }
     let eye = Tip::keyed(
-        ElementId::Name(format!("canvas-look-preview-tip:{}", which.key()).into()),
+        ElementId::Name(format!("canvas-look-preview-tip:{}", slot.key()).into()),
         rox_i18n::t!("canvas-look-preview"),
     )
     .apply(div().child(eye));
 
-    let label = match which {
-        Which::Hover => rox_i18n::t!("canvas-look-hover"),
-        Which::Pressed => rox_i18n::t!("canvas-look-pressed"),
+    let label = match (slot.which, slot.case.is_some()) {
+        (Which::Hover, false) => rox_i18n::t!("canvas-look-hover"),
+        (Which::Pressed, false) => rox_i18n::t!("canvas-look-pressed"),
+        (Which::Hover, true) => rox_i18n::t!("canvas-case-look-hover"),
+        (Which::Pressed, true) => rox_i18n::t!("canvas-case-look-pressed"),
     };
     let header = settings_ui::block_header(
         div()
@@ -380,16 +526,16 @@ fn block(
         .flex_col()
         .gap(tokens::SPACE_SM)
         .child(header)
-        .child(opacity_row(panel, item, which, look.opacity, cx));
+        .child(opacity_row(panel, item, slot, look.opacity, cx));
 
     match &item.content {
-        Content::Image { .. } => body = body.child(image_row(&item.id, which, &look, cx)),
-        Content::Text { .. } => body = body.child(color_row(&item.id, which, &look, cx)),
+        Content::Image { .. } => body = body.child(image_row(&item.id, slot, &look, cx)),
+        Content::Text { .. } => body = body.child(color_row(&item.id, slot, &look, cx)),
         _ => {}
     }
 
     div()
-        .id(SharedString::from(format!("canvas-look-{}", which.key())))
+        .id(SharedString::from(format!("canvas-look-{}", slot.key())))
         .child(settings_ui::nested(body))
         .into_any_element()
 }
@@ -397,11 +543,11 @@ fn block(
 fn opacity_row(
     panel: &CanvasPanel,
     item: &CanvasItem,
-    which: Which,
+    slot: Slot,
     opacity: f32,
     cx: &mut Context<CanvasPanel>,
 ) -> AnyElement {
-    let scrub = panel.inspector.scrub(&format!("look:{}", which.key()));
+    let scrub = panel.inspector.scrub(&format!("look:{}", slot.key()));
 
     let id = item.id.clone();
     let slider = panel::value_slider_edit_sized(
@@ -418,7 +564,7 @@ fn opacity_row(
             change_look(
                 this,
                 &id,
-                which,
+                slot,
                 "opacity",
                 move |look| look.opacity = f.clamp(0., 1.),
                 cx,
@@ -440,7 +586,7 @@ fn opacity_row(
 }
 
 /// The image picker, headed by the image the case shows.
-fn image_row(id: &str, which: Which, look: &Look, cx: &mut Context<CanvasPanel>) -> AnyElement {
+fn image_row(id: &str, slot: Slot, look: &Look, cx: &mut Context<CanvasPanel>) -> AnyElement {
     let label = if look.asset.is_empty() {
         rox_i18n::t!("canvas-case-same-image")
     } else {
@@ -473,7 +619,7 @@ fn image_row(id: &str, which: Which, look: &Look, cx: &mut Context<CanvasPanel>)
                                 this.change(
                                     |canvas| {
                                         if let Some(item) = canvas.find_mut(&id) {
-                                            edit_look(item, which, |look| look.asset = asset);
+                                            edit_look(item, slot, |look| look.asset = asset);
                                         }
                                     },
                                     window,
@@ -491,20 +637,21 @@ fn image_row(id: &str, which: Which, look: &Look, cx: &mut Context<CanvasPanel>)
             .ok();
     })
     .keyed(ElementId::Name(
-        format!("canvas-look-image:{}", which.key()).into(),
+        format!("canvas-look-image:{}", slot.key()).into(),
     ));
 
     setting_row(rox_i18n::t!("canvas-image-asset"), None, pick).into_any_element()
 }
 
 /// The color picker, headed by the color the case gives.
-fn color_row(id: &str, which: Which, look: &Look, cx: &mut Context<CanvasPanel>) -> AnyElement {
+fn color_row(id: &str, slot: Slot, look: &Look, cx: &mut Context<CanvasPanel>) -> AnyElement {
     let mut roles = vec![(String::new(), rox_i18n::t!("canvas-case-same-color"))];
     roles.extend(overlay::text_roles(&look.color));
 
     let id = id.to_string();
     let picker = panel::picker(
-        match which {
+        // Each block carries its own element id, so these repeat safely.
+        match slot.which {
             Which::Hover => "canvas-look-color-hover",
             Which::Pressed => "canvas-look-color-pressed",
         },
@@ -512,7 +659,7 @@ fn color_row(id: &str, which: Which, look: &Look, cx: &mut Context<CanvasPanel>)
         roles,
         false,
         move |this: &mut CanvasPanel, role: String, cx| {
-            change_look(this, &id, which, "color", move |look| look.color = role, cx)
+            change_look(this, &id, slot, "color", move |look| look.color = role, cx)
         },
         cx,
     );
@@ -525,6 +672,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::canvas::states::Applied;
 
     fn button() -> CanvasItem {
         serde_json::from_value(json!({
@@ -617,25 +765,28 @@ mod tests {
         assert!(!more);
     }
 
+    fn rest() -> Faded<'static> {
+        Faded::at_once(&Applied::default())
+    }
+
     #[test]
     fn the_pressed_look_goes_on_top_of_the_hover_look() {
         let item = button();
-        let rest = Applied::default();
 
-        assert_eq!(over(&item, rest, [0., 0.]), rest);
+        assert_eq!(over(&item, None, rest(), [0., 0.]), rest());
 
-        let hovered = over(&item, rest, [1., 0.]);
+        let hovered = over(&item, None, rest(), [1., 0.]);
         assert_eq!(hovered.opacity, 0.5);
-        assert_eq!(hovered.asset, Some("lit"));
+        assert_eq!(hovered.pictures.parts(), &[(Some("lit"), 1.)]);
 
-        let pressed = over(&item, rest, [1., 1.]);
+        let pressed = over(&item, None, rest(), [1., 1.]);
         assert_eq!(pressed.opacity, 0.25);
-        assert_eq!(pressed.asset, Some("down"));
+        assert_eq!(pressed.pictures.top(), Some("down"));
 
-        // Under halfway the image hasn't switched yet, and the opacity is
-        // on its way.
-        let early = over(&item, rest, [0.25, 0.]);
-        assert_eq!(early.asset, None);
+        // A quarter in, the look's image is coming in over the item's own,
+        // which still shows whole, and the opacity is on its way.
+        let early = over(&item, None, rest(), [0.25, 0.]);
+        assert_eq!(early.pictures.parts(), &[(None, 1.), (Some("lit"), 0.5)]);
         assert!((early.opacity - 0.875).abs() < 1e-6);
     }
 
@@ -646,47 +797,154 @@ mod tests {
             opacity: 0.8,
             ..Look::default()
         });
-        let case = Applied {
+        let case = Faded::at_once(&Applied {
             opacity: 0.5,
             asset: Some("pause"),
             ..Applied::default()
-        };
+        });
 
-        let pressed = over(&item, case, [1., 1.]);
-        assert_eq!(pressed.asset, Some("lit"), "the hover's image stays");
+        let pressed = over(&item, None, case, [1., 1.]);
+        assert_eq!(
+            pressed.pictures.top(),
+            Some("lit"),
+            "the hover's image stays"
+        );
         assert!((pressed.opacity - 0.5 * 0.5 * 0.8).abs() < 1e-6);
 
         item.hover = None;
-        assert_eq!(over(&item, case, [1., 1.]).asset, Some("pause"));
+        assert_eq!(
+            over(&item, None, case, [1., 1.]).pictures.top(),
+            Some("pause")
+        );
 
         // A file can say anything; what draws stays in range.
         item.pressed = Some(Look {
             opacity: f32::NAN,
             ..Look::default()
         });
-        assert_eq!(over(&item, case, [1., 1.]).opacity, 0.5);
+        assert_eq!(over(&item, None, case, [1., 1.]).opacity, 0.5);
+    }
+
+    #[test]
+    fn a_cases_own_look_stands_in_for_the_items() {
+        let item: CanvasItem = serde_json::from_value(json!({
+            "id": "play-body",
+            "state": "player.playback",
+            "hover": { "asset": "gel_lit" },
+            "cases": [{ "when": "playing", "asset": "gel_green", "hover": { "asset": "gel_green_lit" } }],
+            "content": { "kind": "image", "asset": "gel" },
+        }))
+        .expect("an item parses");
+        let playing = &item.cases[0];
+        let case = Faded::at_once(&Applied {
+            asset: Some("gel_green"),
+            case: Some(playing),
+            ..Applied::default()
+        });
+
+        let lit = over(&item, Some(playing), case, [1., 0.]);
+        assert_eq!(lit.pictures.top(), Some("gel_green_lit"));
+
+        // In a case with no look of its own, the item's own shows.
+        assert_eq!(
+            over(&item, None, rest(), [1., 0.]).pictures.top(),
+            Some("gel_lit")
+        );
+
+        // Neither the case nor the item has a pressed look, so the hover's
+        // image holds.
+        assert_eq!(
+            over(&item, Some(playing), case, [1., 1.]).pictures.top(),
+            Some("gel_green_lit")
+        );
+        assert!(wears(&item));
     }
 
     #[test]
     fn a_look_edited_back_to_plain_saves_as_nothing() {
         let mut item = button();
         item.hover = None;
+        let hover = Slot {
+            which: Which::Hover,
+            case: None,
+        };
 
-        edit_look(&mut item, Which::Hover, |look| look.opacity = 0.7);
+        edit_look(&mut item, hover, |look| look.opacity = 0.7);
         assert_eq!(item.hover.as_ref().map(|look| look.opacity), Some(0.7));
 
-        edit_look(&mut item, Which::Hover, |look| look.opacity = 1.);
+        edit_look(&mut item, hover, |look| look.opacity = 1.);
         assert!(item.hover.is_none());
         assert!(serde_json::to_value(&item).unwrap().get("hover").is_none());
+
+        // A case's look, edited back, takes the case it made with it.
+        let in_case = Slot {
+            which: Which::Pressed,
+            case: Some("playing"),
+        };
+        edit_look(&mut item, in_case, |look| look.asset = "down".into());
+        assert_eq!(item.cases.len(), 1);
+        assert_eq!(
+            in_case.of(&item).map(|look| look.asset.as_str()),
+            Some("down")
+        );
+
+        edit_look(&mut item, in_case, |look| look.asset.clear());
+        assert!(item.cases.is_empty());
+    }
+
+    fn gel_button() -> CanvasState {
+        serde_json::from_value(json!({ "items": [{
+            "id": "play",
+            "action": "toggle_playback",
+            "content": { "kind": "group", "items": [
+                { "id": "play-body", "hover": { "asset": "gel_lit" },
+                  "content": { "kind": "image", "asset": "gel" } },
+                { "id": "play-glyph", "hit": false,
+                  "content": { "kind": "image", "asset": "glyph" } },
+                { "id": "play-menu", "action": "next_track",
+                  "hover": { "opacity": 0.5 },
+                  "content": { "kind": "image", "asset": "menu" } },
+            ] },
+        }] }))
+        .expect("a canvas parses")
+    }
+
+    #[test]
+    fn a_groups_hover_reaches_what_its_command_covers() {
+        let canvas = gel_button();
+        let group = canvas.find("play").unwrap();
+        assert!(!wears(group) && worn(group), "the body's look counts");
+
+        assert!(covered(&canvas, "play-body"));
+        assert!(covered(&canvas, "play-glyph"));
+        assert!(!covered(&canvas, "nowhere"));
+
+        let mut shown = Shown::new();
+        shown.insert("play".into(), [1., 0.]);
+        let from_group = weights(group, &shown, None);
+        assert_eq!(from_group, Some([1., 0.]));
+
+        let body = canvas.find("play-body").unwrap();
+        assert_eq!(weights(body, &shown, from_group), Some([1., 0.]));
+
+        // A child with its own command is its own button and lights only
+        // when it's the one hovered.
+        let menu = canvas.find("play-menu").unwrap();
+        assert_eq!(weights(menu, &shown, from_group), None);
+        shown.insert("play-menu".into(), [1., 0.]);
+        assert_eq!(weights(menu, &shown, None), Some([1., 0.]));
     }
 
     #[test]
     fn the_inspector_previews_a_look_at_full_weight() {
         let mut shown = Shown::new();
-        preview(&mut shown, "play", PREVIEW_PRESSED);
+        preview(&mut shown, "play", ":pressed");
         assert_eq!(shown["play"], [1., 1.]);
 
         preview(&mut shown, "other", "playing");
         assert!(!shown.contains_key("other"), "a case id isn't a look");
+
+        preview(&mut shown, "body", "playing:hover");
+        assert_eq!(shown["body"], [1., 0.], "a case's own look previews too");
     }
 }

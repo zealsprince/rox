@@ -31,6 +31,7 @@ use rox_core::settings::AssetKind;
 use rox_core::settings::assets;
 use rox_design::palette;
 
+use crate::canvas::fades::Mix;
 use crate::canvas::slice::{self, Slices};
 use crate::canvas::{Placing, bbox, on_stage};
 use crate::panels::canvas::CanvasPanel;
@@ -477,36 +478,180 @@ pub(crate) fn fit(how: ImageFit, item: [f32; 2], image: [f32; 2]) -> (Bounds<f32
     }
 }
 
-/// The image's element with its depth, or None while nothing should show.
-/// `case` is the asset the item's case shows, drawn when the store holds it.
+/// What an image item draws this frame, and where it takes the pointer when
+/// it takes it by its picture.
+#[derive(Default)]
+pub(crate) struct Drawn {
+    pub elements: Vec<AnyElement>,
+    /// One per image drawn, None unless asked for.
+    pub pictures: Option<Vec<Picture>>,
+}
+
+/// Where one drawn image covers the screen, for a hit against its picture.
+#[derive(Clone)]
+pub(crate) struct Picture {
+    /// The face on screen, clockwise from its top-left.
+    corners: [[f32; 2]; 4],
+    image: Arc<RenderImage>,
+    frame: usize,
+    map: Map,
+}
+
+/// How a point across the face finds its texel.
+#[derive(Clone)]
+enum Map {
+    /// The fraction of the image the face samples.
+    Fit(Bounds<f32>),
+    /// The cut's grid lines on the face, in its units, and the texel lines
+    /// they sample.
+    Slice {
+        face: [f32; 2],
+        xs: [f32; 4],
+        ys: [f32; 4],
+        tx: [u32; 4],
+        ty: [u32; 4],
+    },
+}
+
+/// The least alpha that takes the pointer: half opaque, so a soft shadow or
+/// glow round a picture doesn't.
+const PICTURE_ALPHA: u8 = 128;
+
+impl Picture {
+    pub(crate) fn hits(&self, point: [f32; 2]) -> bool {
+        if !rox_canvas::inside(&self.corners, point) {
+            return false;
+        }
+        let Some([u, v]) = rox_canvas::unit_point(&self.corners, point) else {
+            return false;
+        };
+
+        let pixels = self.image.size(self.frame);
+        let size = [pixels.width.0.max(0) as u32, pixels.height.0.max(0) as u32];
+        if size[0] == 0 || size[1] == 0 {
+            return false;
+        }
+
+        let [x, y] = match &self.map {
+            Map::Fit(source) => [
+                (source.origin.x + u.clamp(0., 1.) * source.size.width) * size[0] as f32,
+                (source.origin.y + v.clamp(0., 1.) * source.size.height) * size[1] as f32,
+            ],
+            Map::Slice {
+                face,
+                xs,
+                ys,
+                tx,
+                ty,
+            } => [
+                along(u.clamp(0., 1.) * face[0], xs, tx),
+                along(v.clamp(0., 1.) * face[1], ys, ty),
+            ],
+        };
+
+        let texel = |at: f32, side: u32| (at.max(0.) as u32).min(side - 1) as usize;
+        let at = (texel(y, size[1]) * size[0] as usize + texel(x, size[0])) * 4 + 3;
+
+        self.image
+            .as_bytes(self.frame)
+            .and_then(|bytes| bytes.get(at))
+            .is_some_and(|alpha| *alpha >= PICTURE_ALPHA)
+    }
+}
+
+/// A distance across a sliced face, in its units, to the texel it samples:
+/// linear within each of the cut's three spans.
+fn along(at: f32, lines: &[f32; 4], texels: &[u32; 4]) -> f32 {
+    let span = (0..3).find(|i| at < lines[i + 1]).unwrap_or(2);
+    let (from, to) = (lines[span], lines[span + 1]);
+    let t = if to > from {
+        (at - from) / (to - from)
+    } else {
+        0.
+    };
+
+    texels[span] as f32 + t * (texels[span + 1] - texels[span]) as f32
+}
+
+/// The image's elements, back to front: each of `pictures` that has landed
+/// with its weight on the item's opacity. `pictures` names the item's own
+/// with None, and a name the store doesn't hold draws the item's own, so a
+/// case or look naming a missing image falls back the way it always has.
+/// With `hit` the result also carries where each draws, for a hit against
+/// its picture.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn element(
     item: &CanvasItem,
-    case: Option<&str>,
+    pictures: &Mix,
     parent: &Frame,
     at: &Placing,
     live: &Live,
     images: &mut Images,
+    hit: bool,
     cx: &mut Context<CanvasPanel>,
-) -> Option<(f32, AnyElement)> {
-    let Content::Image {
-        asset: own,
-        fit: how,
-        slice,
-    } = &item.content
-    else {
-        return None;
+) -> Drawn {
+    let Content::Image { asset: own, .. } = &item.content else {
+        return Drawn::default();
     };
-    let insets = slice.filter(|insets| insets.iter().any(|n| *n > 0));
 
     // Every case's image starts decoding with the item's own, so a case
     // flip has its picture ready. Each one decodes once per store revision.
     for named in item.assets() {
         images.look(named, cx);
     }
-    let asset = match case {
-        Some(case) if !matches!(images.look(case, cx), Look::Missing) => case,
-        _ => own.as_str(),
+
+    let mut drawn = Drawn {
+        elements: Vec::new(),
+        pictures: hit.then(Vec::new),
     };
+    let layers = pictures.parts();
+    for (ix, (name, weight)) in layers.iter().enumerate() {
+        let asset = match name {
+            Some(name) if !matches!(images.look(name, cx), Look::Missing) => name,
+            _ => own.as_str(),
+        };
+
+        // The top picture keeps the item's own clock, so an animation the
+        // ease lands on plays on without a jump.
+        let clock = if ix + 1 == layers.len() {
+            item.id.clone()
+        } else {
+            format!("{}\u{1}{ix}", item.id)
+        };
+        let top = ix + 1 == layers.len();
+
+        let mut layer = *live;
+        layer.opacity *= weight;
+        layer_element(
+            item, asset, &clock, top, parent, at, &layer, images, &mut drawn, cx,
+        );
+    }
+
+    drawn
+}
+
+/// One picture of an image item. `top` is the one a missing image's outline
+/// stands in for in design mode.
+#[allow(clippy::too_many_arguments)]
+fn layer_element(
+    item: &CanvasItem,
+    asset: &str,
+    clock: &str,
+    top: bool,
+    parent: &Frame,
+    at: &Placing,
+    live: &Live,
+    images: &mut Images,
+    drawn: &mut Drawn,
+    cx: &mut Context<CanvasPanel>,
+) {
+    let Content::Image {
+        fit: how, slice, ..
+    } = &item.content
+    else {
+        return;
+    };
+    let insets = slice.filter(|insets| insets.iter().any(|n| *n > 0));
 
     // The item's own box, turned and scaled, is the frame the face sits in.
     // The face rides that frame, so it takes no offsets of its own.
@@ -547,41 +692,69 @@ pub(crate) fn element(
                 frame.size,
                 [pixels.width.0 as f32, pixels.height.0 as f32],
             );
-            let projected = face_on(face)?;
+            let Some(projected) = face_on(face) else {
+                return;
+            };
 
             // Off the stage it can't be seen, so its clock stops too.
             if !on_stage(&projected.corners, at.viewport) {
-                return None;
+                return;
             }
 
             let cut = match insets {
                 Some(insets) => {
                     let slices = slice::cut(insets, texels, frame.size);
                     let grid = std::array::from_fn(|i| [slices.xs[i % 4], slices.ys[i / 4]]);
-                    let points = project_points(&frame, &at.camera, at.viewport, at.pointer, grid)?;
-                    Some((slices, points))
+                    let Some(points) =
+                        project_points(&frame, &at.camera, at.viewport, at.pointer, grid)
+                    else {
+                        return;
+                    };
+                    Some((insets, slices, points))
                 }
                 None => None,
             };
-            let frame = images.frame(&item.id, &image, Instant::now());
+            let index = images.frame(clock, &image, Instant::now());
 
-            let element = match cut {
-                Some((slices, points)) => {
-                    nine(slices, points, texels, image, frame, projected.opacity)
+            if let Some(pictures) = &mut drawn.pictures {
+                let map = match &cut {
+                    Some((insets, slices, _)) => {
+                        let [left, top, right, bottom] = slice::held(*insets, texels);
+                        Map::Slice {
+                            face: frame.size,
+                            xs: slices.xs,
+                            ys: slices.ys,
+                            tx: [0, left, texels[0] - right, texels[0]],
+                            ty: [0, top, texels[1] - bottom, texels[1]],
+                        }
+                    }
+                    None => Map::Fit(source),
+                };
+                pictures.push(Picture {
+                    corners: projected.corners,
+                    image: image.clone(),
+                    frame: index,
+                    map,
+                });
+            }
+
+            drawn.elements.push(match cut {
+                Some((_, slices, points)) => {
+                    nine(slices, points, texels, image, index, projected.opacity)
                 }
-                None => quad(projected.corners, image, frame, source, projected.opacity),
-            };
-            Some((projected.depth, element))
+                None => quad(projected.corners, image, index, source, projected.opacity),
+            });
         }
 
-        Look::Pending => None,
+        Look::Pending => {}
 
-        Look::Missing if at.design => {
-            let projected = face_on(frame.size)?;
-            Some((projected.depth, missing(&projected.corners, asset)))
+        Look::Missing if at.design && top => {
+            if let Some(projected) = face_on(frame.size) {
+                drawn.elements.push(missing(&projected.corners, asset));
+            }
         }
 
-        Look::Missing => None,
+        Look::Missing => {}
     }
 }
 
@@ -902,6 +1075,55 @@ mod tests {
     fn a_one_frame_gif_is_a_still() {
         let image = decode(&gif(1, 4, 50)).expect("decodes");
         assert_eq!(image.frame_count(), 1);
+    }
+
+    /// A 4 by 2 PNG whose left half is clear and right half opaque.
+    fn half_clear() -> Arc<RenderImage> {
+        let image = image::RgbaImage::from_fn(4, 2, |x, _| {
+            image::Rgba([255, 255, 255, if x < 2 { 0 } else { 255 }])
+        });
+        let mut out = Cursor::new(Vec::new());
+        image
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("a png encodes");
+        decode(&out.into_inner()).expect("decodes")
+    }
+
+    #[test]
+    fn a_picture_takes_the_pointer_only_where_it_draws() {
+        let full = Bounds {
+            origin: point(0., 0.),
+            size: size(1., 1.),
+        };
+        let picture = Picture {
+            corners: [[0., 0.], [40., 0.], [40., 20.], [0., 20.]],
+            image: half_clear(),
+            frame: 0,
+            map: Map::Fit(full),
+        };
+
+        assert!(!picture.hits([10., 10.]), "clear");
+        assert!(picture.hits([30., 10.]), "opaque");
+        assert!(!picture.hits([50., 10.]), "off the face");
+
+        // Tilted, the same texel answers where the face draws it.
+        let tilted = Picture {
+            corners: [[0., 0.], [40., 5.], [40., 15.], [0., 20.]],
+            ..picture.clone()
+        };
+        assert!(tilted.hits([30., 10.]));
+        assert!(!tilted.hits([39., 1.]), "outside the narrowed side");
+    }
+
+    #[test]
+    fn a_sliced_face_maps_each_span_to_its_own_texels() {
+        let lines = [0., 10., 90., 100.];
+        let texels = [0, 4, 12, 16];
+
+        assert_eq!(along(5., &lines, &texels), 2.);
+        assert_eq!(along(50., &lines, &texels), 8.);
+        assert_eq!(along(95., &lines, &texels), 14.);
+        assert_eq!(along(100., &lines, &texels), 16.);
     }
 
     #[test]

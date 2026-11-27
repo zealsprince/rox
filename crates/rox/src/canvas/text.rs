@@ -16,6 +16,7 @@ use rox_design::palette;
 use rox_panel_api::panel::AppState;
 use rox_services::discord_presence::{PresenceSample, format_quality};
 
+use crate::canvas::fades::Mix;
 use crate::canvas::{self, Body};
 
 /// The now-playing fields a text item fills. Every placeholder name parses,
@@ -172,6 +173,38 @@ pub(crate) fn color(name: &str) -> Rgba {
     }
 
     palette::parse_hex(name).unwrap_or_else(palette::text)
+}
+
+/// The colors a case's ease and the looks blend this frame, each part named
+/// as [`color`] reads it, None for the item's own `own`.
+pub(crate) fn mixed(colors: &Mix, own: &str) -> Rgba {
+    let mut out = Rgba {
+        r: 0.,
+        g: 0.,
+        b: 0.,
+        a: 0.,
+    };
+    let mut total = 0.;
+
+    for (name, weight) in colors.parts() {
+        let part = color(name.unwrap_or(own));
+        out.r += part.r * weight;
+        out.g += part.g * weight;
+        out.b += part.b * weight;
+        out.a += part.a * weight;
+        total += weight;
+    }
+
+    if total <= 0. {
+        return color(own);
+    }
+
+    Rgba {
+        r: out.r / total,
+        g: out.g / total,
+        b: out.b / total,
+        a: out.a / total,
+    }
 }
 
 /// How one text item paints this frame.

@@ -19,6 +19,6 @@ pub use project::{
     quad_point, rest_size, unit_point, unproject_delta,
 };
 pub use state::{
-    Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Idle,
-    ImageFit, Length, Look, MAX_DEPTH, Place, Stage, Sway, TargetSize,
+    Align, Anchor, CANVAS_VERSION, Camera, CanvasItem, CanvasState, Case, Content, Cost, Fit, Hit,
+    Idle, ImageFit, Length, Look, MAX_DEPTH, Place, Stage, Sway, TargetSize,
 };

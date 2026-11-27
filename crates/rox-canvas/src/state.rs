@@ -148,6 +148,15 @@ pub struct CanvasItem {
         skip_serializing_if = "Option::is_none"
     )]
     pub pressed: Option<Look>,
+    /// Whether the item takes the pointer off design mode: `false` lets it
+    /// through to what's behind, and `"picture"` takes it only where its
+    /// image draws at least half opaque. Left out takes the whole box.
+    #[serde(deserialize_with = "lenient_hit", skip_serializing_if = "Hit::is_box")]
+    pub hit: Hit,
+    /// How long a change of case eases, in milliseconds. Left out takes the
+    /// app's default, and 0 cuts at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ease: Option<u32>,
     pub content: Content,
 }
 
@@ -166,6 +175,8 @@ impl Default for CanvasItem {
             cases: Vec::new(),
             hover: None,
             pressed: None,
+            hit: Hit::Box,
+            ease: None,
             content: Content::default(),
         }
     }
@@ -178,11 +189,16 @@ impl CanvasItem {
     /// is never left behind.
     pub fn assets(&self) -> impl Iterator<Item = &str> {
         let looks = [&self.hover, &self.pressed].into_iter().flatten();
+        let case_looks = self
+            .cases
+            .iter()
+            .flat_map(|case| [&case.hover, &case.pressed].into_iter().flatten());
         self.content
             .asset()
             .into_iter()
             .chain(self.cases.iter().map(|case| case.asset.as_str()))
             .chain(looks.map(|look| look.asset.as_str()))
+            .chain(case_looks.map(|look| look.asset.as_str()))
             .filter(|asset| !asset.is_empty())
     }
 
@@ -205,7 +221,59 @@ impl CanvasItem {
                 f(&mut look.asset);
             }
         }
+
+        for case in &mut self.cases {
+            for look in [&mut case.hover, &mut case.pressed].into_iter().flatten() {
+                if !look.asset.is_empty() {
+                    f(&mut look.asset);
+                }
+            }
+        }
     }
+}
+
+/// Where an item takes the pointer off design mode. Saved as `true`, `false`
+/// or `"picture"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Hit {
+    /// Its whole box, as an item always has.
+    #[default]
+    Box,
+    /// Nowhere: the pointer goes on to whatever is behind it.
+    Off,
+    /// Where its image draws at least half opaque. Anything but an image
+    /// reads this as its box.
+    Picture,
+}
+
+impl Hit {
+    pub fn is_box(&self) -> bool {
+        *self == Hit::Box
+    }
+}
+
+impl Serialize for Hit {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Hit::Box => serializer.serialize_bool(true),
+            Hit::Off => serializer.serialize_bool(false),
+            Hit::Picture => serializer.serialize_str("picture"),
+        }
+    }
+}
+
+/// A `hit` this build doesn't read takes the whole box, so it costs the
+/// setting and not the item.
+fn lenient_hit<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Hit, D::Error> {
+    Ok(match Value::deserialize(deserializer)? {
+        Value::Bool(true) | Value::Null => Hit::Box,
+        Value::Bool(false) => Hit::Off,
+        Value::String(how) if how == "picture" => Hit::Picture,
+        other => {
+            log::warn!("canvas: reading a hit of {other} as the whole box");
+            Hit::Box
+        }
+    })
 }
 
 /// One case of the state an item follows: whether it shows, and its look.
@@ -226,6 +294,18 @@ pub struct Case {
     /// Text items: the color in this case. Empty keeps the item's own.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub color: String,
+    /// The item's hover look while in this case, in place of its own.
+    #[serde(
+        deserialize_with = "lenient_look",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hover: Option<Look>,
+    /// The item's pressed look while in this case, in place of its own.
+    #[serde(
+        deserialize_with = "lenient_look",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pressed: Option<Look>,
 }
 
 impl Default for Case {
@@ -236,6 +316,8 @@ impl Default for Case {
             opacity: 1.,
             asset: String::new(),
             color: String::new(),
+            hover: None,
+            pressed: None,
         }
     }
 }
@@ -1377,6 +1459,79 @@ mod tests {
         assert!(item.pressed.as_ref().unwrap().asset.is_empty());
         assert!(!item.pressed.as_ref().unwrap().is_plain());
         assert!(Look::default().is_plain());
+    }
+
+    #[test]
+    fn hit_and_ease_round_trip_and_a_plain_item_writes_neither() {
+        let plain = serde_json::to_value(grid("g")).unwrap();
+        assert!(plain.get("hit").is_none() && plain.get("ease").is_none());
+
+        for (saved, hit) in [
+            (json!(false), Hit::Off),
+            (json!("picture"), Hit::Picture),
+            (json!(true), Hit::Box),
+        ] {
+            let item: CanvasItem =
+                serde_json::from_value(json!({ "id": "x", "hit": saved.clone(), "ease": 0 }))
+                    .unwrap();
+            assert_eq!(item.hit, hit);
+            assert_eq!(item.ease, Some(0));
+
+            let again = serde_json::to_value(&item).unwrap();
+            let written = if hit.is_box() { None } else { Some(&saved) };
+            assert_eq!(again.get("hit"), written);
+            assert_eq!(again["ease"], json!(0));
+        }
+
+        // A hit this build doesn't read costs the setting, not the item.
+        let odd: CanvasItem =
+            serde_json::from_value(json!({ "id": "x", "hit": "alpha", "opacity": 0.5 })).unwrap();
+        assert_eq!((odd.hit, odd.opacity), (Hit::Box, 0.5));
+    }
+
+    #[test]
+    fn a_cases_looks_round_trip_and_name_their_assets() {
+        let saved = json!({
+            "id": "play-body",
+            "state": "player.playback",
+            "cases": [{
+                "when": "playing", "visible": true, "opacity": 1.0, "asset": "gel_green",
+                "hover": { "opacity": 1.0, "asset": "gel_green_lit" },
+                "pressed": { "opacity": 0.5 },
+            }],
+            "content": { "kind": "image", "asset": "gel", "fit": "contain" },
+        });
+        let mut item: CanvasItem = serde_json::from_value(saved.clone()).unwrap();
+        assert!(!item.cases[0].is_plain());
+        assert_eq!(
+            serde_json::to_value(&item).unwrap()["cases"],
+            saved["cases"]
+        );
+        assert_eq!(
+            item.assets().collect::<Vec<_>>(),
+            ["gel", "gel_green", "gel_green_lit"]
+        );
+
+        item.assets_mut(&mut |asset| asset.push_str("-2"));
+        let hover = item.cases[0].hover.as_ref().unwrap();
+        assert_eq!(hover.asset, "gel_green_lit-2");
+
+        // A case look that doesn't parse costs the look, not the case.
+        let odd: CanvasItem = serde_json::from_value(json!({
+            "id": "x",
+            "cases": [{ "when": "on", "asset": "a", "hover": 7 }],
+        }))
+        .unwrap();
+        assert_eq!(odd.cases[0].asset, "a");
+        assert!(odd.cases[0].hover.is_none());
+    }
+
+    #[test]
+    fn an_item_saved_before_hit_ease_and_case_looks_writes_back_the_same() {
+        let saved = r#"{"id":"b","name":"","place":{"anchor":"center","position":[0.0,0.0,0.0],"size":[{"units":480.0},{"units":320.0}],"rotation":[0.0,0.0,0.0],"scale":1.0},"visible":true,"locked":false,"opacity":1.0,"action":"next_track","state":"app.theme","cases":[{"when":"dark","visible":true,"opacity":1.0,"asset":"night"}],"hover":{"opacity":0.8},"content":{"kind":"image","asset":"day","fit":"contain"}}"#;
+        let item: CanvasItem = serde_json::from_str(saved).unwrap();
+
+        assert_eq!(serde_json::to_string(&item).unwrap(), saved);
     }
 
     #[test]
